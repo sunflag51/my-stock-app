@@ -31,8 +31,9 @@ if "last_ticker" not in st.session_state:
 if "last_company" not in st.session_state:
     st.session_state.last_company = ""
 
-st.markdown("**📈 株価テクニカル＆ファンダメンタル分析**")
-st.markdown("ボリンジャーバンド、一目均衡表などの判定に加え、底打ちスコアリングシステムを搭載しています。")
+# スマホ向けに文字サイズを調整（マークダウンを標準テキストに変更）
+st.write("**📈 株価テクニカル＆ファンダメンタル分析**")
+st.caption("ボリンジャーバンド、一目均衡表などの判定に加え、底打ちスコアリングシステムを搭載しています。")
 
 col1, col2, col3, col4 = st.columns(4)
 
@@ -94,9 +95,9 @@ if st.session_state.is_analyzed:
 
     with st.spinner(f"データを取得・分析中..."):
         
-        # 記憶しておいたデータを呼び出す（一瞬で終わります）
+        # 記憶しておいたデータを呼び出す
         raw_df, info = get_stock_data(ticker_to_analyze)
-        df = raw_df.copy() # 安全のためコピーして使用
+        df = raw_df.copy()
 
         if df.empty or len(df) < 80:
             st.error(f"エラー: 銘柄「{ticker_to_analyze}」のデータが見つかりません。")
@@ -108,10 +109,11 @@ if st.session_state.is_analyzed:
             latest_vol = df['Volume'].iloc[-1]
 
             st.markdown("---")
+            # 見出しサイズをh3から単純な太字に変更
             if company_to_analyze:
-                st.subheader(f"🏢 {company_to_analyze}【{ticker_to_analyze}】の基本情報 (ファンダメンタル)")
+                st.write(f"**🏢 {company_to_analyze}【{ticker_to_analyze}】の基本情報**")
             else:
-                st.subheader(f"🏢 【{ticker_to_analyze}】の基本情報 (ファンダメンタル)")
+                st.write(f"**🏢 【{ticker_to_analyze}】の基本情報**")
             
             info_c1, info_c2, info_c3, info_c4 = st.columns(4)
             
@@ -121,19 +123,19 @@ if st.session_state.is_analyzed:
             dy = info.get("dividendYield", info.get("trailingAnnualDividendYield", "N/A"))
             if isinstance(dy, (int, float)): 
                 if dy > 0.20: 
-                    dy = f"{dy:.2f} ％ (※Yahoo補正)"
+                    dy = f"{dy:.2f} % (※Yahoo補正)"
                 else:
-                    dy = f"{dy * 100:.2f} ％"
+                    dy = f"{dy * 100:.2f} %"
             elif dy == "N/A": 
-                dy = "無配 または取得不可"
+                dy = "取得不可"
             
             pbr = info.get("priceToBook", "N/A")
             if isinstance(pbr, (int, float)): pbr = f"{pbr:.2f} 倍"
 
-            info_c1.metric("現在の株価", f"${latest_close:.2f}")
-            info_c2.metric("PER (株価収益率)", pe)
-            info_c3.metric("配当利回り (年間)", dy)
-            info_c4.metric("PBR (株価純資産倍率)", pbr)
+            info_c1.metric("株価", f"${latest_close:.2f}")
+            info_c2.metric("PER", pe)
+            info_c3.metric("利回り", dy)
+            info_c4.metric("PBR", pbr)
             st.markdown("---")
 
             # --- テクニカル指標の計算 ---
@@ -186,7 +188,7 @@ if st.session_state.is_analyzed:
             df['K'], df['D'] = k_list, d_list
             df['J'] = 3 * df['K'] - 2 * df['D']
 
-            # OBV (On Balance Volume)
+            # OBV
             direction = df['Close'].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
             df['OBV'] = (df['Volume'] * direction).cumsum()
 
@@ -221,7 +223,7 @@ if st.session_state.is_analyzed:
                 ax1.fill_between(df_plot.index, df_plot['SenkouA'], df_plot['SenkouB'], 
                                  where=df_plot['SenkouA'] < df_plot['SenkouB'], facecolor='lightgreen', alpha=0.3)
 
-            ax1.set_title(f"{ticker_to_analyze} - Technical Dashboard", fontsize=14)
+            ax1.set_title(f"{ticker_to_analyze} - Technical Dashboard", fontsize=12)
             ax1.legend(loc='upper left', fontsize='small'); ax1.grid(True, alpha=0.3)
 
             ax2.bar(df_plot.index, df_plot['Volume'], label='Volume', color='gray', alpha=0.7)
@@ -249,7 +251,7 @@ if st.session_state.is_analyzed:
             # 📊 自動底打ちスコアリングシステム（80点満点）
             # ==========================================
             st.markdown("---")
-            st.header("🎯 総合・底打ち判定スコアリング")
+            st.write("**🎯 総合・底打ち判定スコアリング**")
             
             body = abs(latest_close - latest_open)
             lower_shadow = min(latest_close, latest_open) - latest_low
@@ -281,103 +283,64 @@ if st.session_state.is_analyzed:
             # ==========================================
             # 👤 手動入力スコア（30点満点）
             # ==========================================
-            st.subheader("📝 ご自身の判断入力（ファンダメンタル・市場環境）")
-            st.markdown("以下の項目をスライダーで評価してください。スライダーを動かすとスコアが即座に連動します。")
+            st.write("📝 **ファンダメンタル・市場環境（手動入力）**")
+            st.caption("スライダーを動かすとスコアが即座に連動します。")
             
             man_col1, man_col2, man_col3 = st.columns(3)
             with man_col1:
-                score_1 = st.slider("①ファンダメンタルズ (0～15点)", 0, 15, 7, help="業績悪化はないか、下落理由は一時的か")
+                score_1 = st.slider("①業績・悪材料 (0～15点)", 0, 15, 7)
             with man_col2:
-                score_2 = st.slider("②市場・セクター環境 (0～10点)", 0, 10, 5, help="主要指数や同業他社は強い動きか")
+                score_2 = st.slider("②市場環境 (0～10点)", 0, 10, 5)
             with man_col3:
-                score_10 = st.slider("⑩リスクリワード (0～5点)", 0, 5, 2, help="損切り幅に対して上昇余地が大きいか")
+                score_10 = st.slider("⑩リスクリワード (0～5点)", 0, 5, 2)
             
             manual_score = score_1 + score_2 + score_10
             total_raw_score = auto_score + manual_score
-            final_score = int((total_raw_score / 110) * 100) # 100点満点に換算
+            final_score = int((total_raw_score / 110) * 100)
 
             st.markdown("---")
             
-            # 判定コメントの生成
+            # 判定コメント
             if final_score >= 90:
-                judge_text = "✨ **非常に多くの確認材料が一致！極めて強い底打ちシグナル**"
+                judge_text = "✨ 非常に多くの確認材料が一致！極めて強い底打ちシグナル"
                 color = "green"
             elif final_score >= 75:
-                judge_text = "🟢 **底打ち確認材料がかなりそろった。有力な買い場候補**"
+                judge_text = "🟢 底打ち確認材料がかなりそろった。有力な買い場候補"
                 color = "green"
             elif final_score >= 60:
-                judge_text = "🟡 **初期改善だが未完成。打診買い（試し玉）レベル**"
+                judge_text = "🟡 初期改善だが未完成。打診買い（試し玉）レベル"
                 color = "orange"
             elif final_score >= 40:
-                judge_text = "🟠 **売られ過ぎ・底打ち候補。まだ反転の決定打に欠ける**"
+                judge_text = "🟠 売られ過ぎ・底打ち候補。まだ反転の決定打に欠ける"
                 color = "orange"
             else:
-                judge_text = "🔴 **下落途中、または証拠不足。「落ちるナイフ」の可能性あり**"
+                judge_text = "🔴 下落途中、または証拠不足。「落ちるナイフ」の可能性あり"
                 color = "red"
 
-            st.markdown(f"<h2 style='text-align: center; color: {color};'>総合判定スコア: {final_score} 点 / 100点</h2>", unsafe_allow_html=True)
-            st.markdown(f"<h4 style='text-align: center;'>{judge_text}</h4>", unsafe_allow_html=True)
+            # スマホ用に文字サイズを小さく
+            st.markdown(f"<div style='text-align: center; color: {color}; font-size: 24px; font-weight: bold;'>総合スコア: {final_score} 点 / 100点</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 14px; margin-top: 10px;'>{judge_text}</div>", unsafe_allow_html=True)
+            st.caption(f"内訳：自動 {auto_score}/80点 ＋ 手動 {manual_score}/30点 （合計 {total_raw_score}/110 を100点満点換算）")
 
-            st.caption(f"内訳：自動解析 {auto_score}点/80点 ＋ 手動評価 {manual_score}点/30点 （合計 {total_raw_score}/110 を100点満点換算）")
-
-            # 💡 【追加】判定の詳しい内訳と計算基準をアプリ内に表示
-            with st.expander("詳細なテクニカル自動採点の内訳と計算・判定基準を見る", expanded=False):
-                st.markdown(f"### ③ セリングクライマックス判定: **{score_3} / 12点**")
-                st.markdown("""
-                **【チェック内容】** パニック売りが終わり、大口の買い（底打ち）が入ったか。
-                - **出来高急増:** 今日の取引量が過去20日平均の1.5倍以上か。
-                - **長い下ヒゲ:** ローソク足の下ヒゲが実体（箱の部分）の2倍以上あるか。
-                *※ 両方クリアで12点、どちらか片方で6点。*
-                ---
-                """)
-
-                st.markdown(f"### ④ ボリンジャーバンド(-2σ)判定: **{score_4} / 10点**")
-                st.markdown("""
-                **【チェック内容】** 売られすぎ限界ラインまで落ちた後、安全圏に戻れたか。
-                - **-2σタッチ:** 今日の最安値が-2σラインに一度でも触れた（または下回った）か。
-                - **バンド内回復:** 今日の終値が-2σラインより上に回復して終わったか。
-                *※ 両方クリアで10点、タッチしたまま沈んで終われば5点。*
-                ---
-                """)
-
-                st.markdown(f"### ⑤ RSI/MACD/KDJ 勢い判定: **{score_5} / 12点**")
-                st.markdown("""
-                **【チェック内容】** 株価下落の「スピード・勢い」が弱まり、上向きに変わり始めたか。
-                - **RSI (4点):** 30以下（売られすぎ）、または短期線が長期線を上回っているか。
-                - **MACD (4点):** MACD線がシグナル線を上回っているか。
-                - **KDJ (4点):** K線がD線より上にあるか（上昇トレンド継続中）。
-                *※ 各条件をクリアするごとに4点加算。*
-                ---
-                """)
-
-                st.markdown(f"### ⑥ ローソク足底型判定: **{score_6} / 10点**")
-                st.markdown("""
-                **【チェック内容】** 今日の値動きに、買い手が圧倒的に強くなった「反転のサイン」が出たか。
-                - **強気包み足 (10点):** 昨日の下落分を、今日の大きな上昇がすっぽりと包み込んで打ち消した状態。
-                - **長い下ヒゲ (5点):** 包み足ではないが、下ヒゲが実体の2倍以上ある状態。
-                ---
-                """)
-
-                st.markdown(f"### ⑦ ダウ理論(安値切り上げ)判定: **{score_7} / 16点**")
-                st.markdown("""
-                **【チェック内容】** 下りの階段がストップし、上向きに変わり始めたか（最重要項目）。
-                - **安値の切り上げ:** 今日の最安値が、直近10日間の最安値より高い位置で踏みとどまった。
-                - **終値の上昇:** 今日の終値が、昨日よりも高かった。
-                *※ 両方クリアで16点満点。下落トレンド（安値更新）が続いている間は0点。*
-                ---
-                """)
-
-                st.markdown(f"### ⑧ 出来高/OBV(資金流入)判定: **{score_8} / 10点**")
-                st.markdown("""
-                **【チェック内容】** 一時的な反発ではなく、大口の本物の資金が入り始めているか。
-                - **OBV上昇:** OBV（買いパワーを示す指標）が昨日より上がっているか。
-                *※ 上がっていれば10点。*
-                ---
-                """)
-
-                st.markdown(f"### ⑨ 移動平均線(短期/中期)判定: **{score_9} / 10点**")
-                st.markdown("""
-                **【チェック内容】** 株価が平均値の壁を突破し、トレンドが上向きに変わったか。
-                - **20日線突破 (10点):** 株価が20日移動平均線を上抜けた。
-                - **5日線突破 (5点):** 20日線は越えていないが、5日移動平均線を上抜けた。
-                """)
+            # 💡 スマホ用にコンパクトな判定解説
+            with st.expander("詳細な自動採点の内訳と判定基準を見る", expanded=False):
+                st.write(f"**③ セリングクライマックス: {score_3} / 12点**")
+                st.caption("パニック売りが終わり、大口の買いが入ったか。\n・取引量が過去20日平均の1.5倍以上\n・下ヒゲが実体の2倍以上\n(両方クリアで12点、片方で6点)")
+                
+                st.write(f"**④ ボリンジャーバンド(-2σ): {score_4} / 10点**")
+                st.caption("売られすぎ限界ライン到達後、安全圏に戻れたか。\n・今日の安値が-2σにタッチした\n・今日の終値が-2σより上で終わった\n(両方クリアで10点、タッチして沈んだままなら5点)")
+                
+                st.write(f"**⑤ RSI/MACD/KDJ 勢い: {score_5} / 12点**")
+                st.caption("下落スピードが弱まり、上向きに変わり始めたか。\n・RSIが30以下、または短期線>長期線 (4点)\n・MACDがシグナル線を上回っている (4点)\n・KDJのK線がD線より上にある (4点)")
+                
+                st.write(f"**⑥ ローソク足底型: {score_6} / 10点**")
+                st.caption("買い手が圧倒的に強くなったサインが出たか。\n・強気包み足 (10点)\n・包み足ではないが長い下ヒゲが出現 (5点)")
+                
+                st.write(f"**⑦ ダウ理論(安値切り上げ): {score_7} / 16点**")
+                st.caption("下りの階段がストップし、上向きに変わり始めたか。\n・今日の最安値が直近10日間の最安値より高い\n・今日の終値が昨日よりも高い\n(両方クリアで16点、下落トレンド中は0点)")
+                
+                st.write(f"**⑧ 出来高/OBV(資金流入): {score_8} / 10点**")
+                st.caption("大口の本物の資金が入り始めているか。\n・OBV(買いパワーを示す指標)が昨日より上昇\n(クリアで10点)")
+                
+                st.write(f"**⑨ 移動平均線(短期/中期): {score_9} / 10点**")
+                st.caption("平均値の壁を突破し、トレンドが上向いたか。\n・株価が20日移動平均線を上抜けた (10点)\n・株価が5日移動平均線を上抜けた (5点)")
