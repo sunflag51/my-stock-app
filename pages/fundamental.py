@@ -133,102 +133,101 @@ if st.session_state.f_analyzed:
             score_total = 0
             results = []
 
-            # ① 売上高成長
+            # ① 売上高成長 (満点12)
             if rev_growth is not None:
                 if rev_growth >= 0.15:
-                    r1 = ("○", "二桁成長を継続中（+15%以上）", 12)
+                    r1 = ("○", "二桁成長を継続中（+15%以上）", 12, 12)
                 elif rev_growth > 0:
-                    r1 = ("△", "プラス成長だが成長率は15%未満", 7)
+                    r1 = ("△", "プラス成長だが成長率は15%未満", 7, 12)
                 else:
-                    r1 = ("×", "前年比で減収傾向", 0)
+                    r1 = ("×", "前年比で減収傾向", 0, 12)
             else:
-                r1 = ("△", "データなし", 5)
+                r1 = ("△", "データなし", 5, 12)
             results.append(("① 売上高の伸び", r1))
 
-            # ② 営業利益率の高さ
+            # ② 営業利益率の高さ (満点12)
             if op_margin is not None:
                 if op_margin >= 0.25:
-                    r2 = ("○", f"営業利益率 {op_margin*100:.1f}%（極めて高収益）", 12)
+                    r2 = ("○", f"営業利益率 {op_margin*100:.1f}%（極めて高収益）", 12, 12)
                 elif op_margin >= 0.10:
-                    r2 = ("△", f"営業利益率 {op_margin*100:.1f}%（一般的な水準）", 7)
+                    r2 = ("△", f"営業利益率 {op_margin*100:.1f}%（一般的な水準）", 7, 12)
                 else:
-                    r2 = ("×", f"営業利益率 {op_margin*100:.1f}%（低収益・コスト圧迫）", 0)
+                    r2 = ("×", f"営業利益率 {op_margin*100:.1f}%（低収益・コスト圧迫）", 0, 12)
             else:
-                r2 = ("△", "データなし", 5)
+                r2 = ("△", "データなし", 5, 12)
             results.append(("② 本業の稼ぐ力", r2))
 
-            # ③ 粗利益率（強み・価格競争力）
+            # ③ 粗利益率（強み・価格競争力） (満点11)
             if gross_margin is not None:
                 if gross_margin >= 0.50:
-                    r3 = ("○", f"売上総利益率 {gross_margin*100:.1f}%（強力な製品・サービス力）", 11)
+                    r3 = ("○", f"売上総利益率 {gross_margin*100:.1f}%（強力な製品・サービス力）", 11, 11)
                 elif gross_margin >= 0.30:
-                    r3 = ("△", f"売上総利益率 {gross_margin*100:.1f}%（標準水準）", 6)
+                    r3 = ("△", f"売上総利益率 {gross_margin*100:.1f}%（標準水準）", 6, 11)
                 else:
-                    r3 = ("×", f"売上総利益率 {gross_margin*100:.1f}%（価格決定力が弱い）", 0)
+                    r3 = ("×", f"売上総利益率 {gross_margin*100:.1f}%（価格決定力が弱い）", 0, 11)
             else:
-                r3 = ("△", "データなし", 5)
+                r3 = ("△", "データなし", 5, 11)
             results.append(("③ 利益率の質（粗利）", r3))
 
-            # ④ 純利益の質（一時的な利益の乖離チェック）
+            # ④ 純利益の質（一時的な利益の乖離チェック） (満点11)
             if pe_trailing and pe_forward:
-                # 過去PERが予想PERより極端に低い場合は一時的利益の疑い
                 if pe_trailing < (pe_forward * 0.75):
-                    r4 = ("△", f"実績PER({pe_trailing:.1f}倍) < 予想PER({pe_forward:.1f}倍)。一時的利益で実績が底上げされている可能性あり", 6)
+                    r4 = ("△", f"実績PER({pe_trailing:.1f}倍) < 予想PER({pe_forward:.1f}倍)。一時的利益で実績が底上げされている可能性あり", 6, 11)
                 else:
-                    r4 = ("○", "営業利益と純利益の推移に極端な乖離なし", 11)
+                    r4 = ("○", "営業利益と純利益の推移に極端な乖離なし", 11, 11)
             else:
-                r4 = ("○", "安定的な利益構造", 8)
+                r4 = ("○", "安定的な利益構造", 8, 11)
             results.append(("④ 純利益の質", r4))
 
-            # ⑤ 営業キャッシュフロー
+            # ⑤ 営業キャッシュフロー (満点11)
             if op_cf is not None:
                 if op_cf > 0:
-                    r5 = ("○", f"営業CFプラス (${op_cf/1e9:,.1f}B)。本業でしっかり現金を回収", 11)
+                    r5 = ("○", f"営業CFプラス (${op_cf/1e9:,.1f}B)。本業でしっかり現金を回収", 11, 11)
                 else:
-                    r5 = ("×", "営業CFマイナス。帳簿上の利益に対して現金が回収できていない", 0)
+                    r5 = ("×", "営業CFマイナス。帳簿上の利益に対して現金が回収できていない", 0, 11)
             else:
-                r5 = ("△", "データなし", 5)
+                r5 = ("△", "データなし", 5, 11)
             results.append(("⑤ 現金の創出（営業CF）", r5))
 
-            # ⑥ フリーキャッシュフロー
+            # ⑥ フリーキャッシュフロー (満点11)
             if fcf is not None:
                 if fcf > 0:
-                    r6 = ("○", f"FCFプラス (${fcf/1e9:,.1f}B)。将来投資後も自由に使える現金が残る", 11)
+                    r6 = ("○", f"FCFプラス (${fcf/1e9:,.1f}B)。将来投資後も自由に使える現金が残る", 11, 11)
                 else:
-                    r6 = ("×", "FCFマイナス。設備投資過多または本業資金不足", 0)
+                    r6 = ("×", "FCFマイナス。設備投資過多または本業資金不足", 0, 11)
             else:
-                r6 = ("△", "データなし", 5)
+                r6 = ("△", "データなし", 5, 11)
             results.append(("⑥ 余力資金（FCF）", r6))
 
-            # ⑦ 財務状態（ネットキャッシュ）
+            # ⑦ 財務状態（ネットキャッシュ） (満点11)
             if net_cash > 0:
-                r7 = ("○", f"実質無借金（現金超過 約${net_cash/1e9:,.1f}B）。倒産リスク極めて低", 11)
+                r7 = ("○", f"実質無借金（現金超過 約${net_cash/1e9:,.1f}B）。倒産リスク極めて低", 11, 11)
             elif abs(net_cash) < cash:
-                r7 = ("△", "負債が現金を上回るが、営業CFでカバー可能な範囲", 6)
+                r7 = ("△", "負債が現金を上回るが、営業CFでカバー可能な範囲", 6, 11)
             else:
-                r7 = ("×", f"多額の純負債あり（負債超過 約${abs(net_cash)/1e9:,.1f}B）", 0)
+                r7 = ("×", f"多額の純負債あり（負債超過 約${abs(net_cash)/1e9:,.1f}B）", 0, 11)
             results.append(("⑦ 財務と借金の状態", r7))
 
-            # ⑧ バリュエーション妥当性
+            # ⑧ バリュエーション妥当性 (満点11)
             eval_pe = pe_forward if pe_forward else pe_trailing
             if eval_pe is not None:
                 if eval_pe <= 22:
-                    r8 = ("○", f"PER {eval_pe:.1f}倍。割高感は控えめ", 11)
+                    r8 = ("○", f"PER {eval_pe:.1f}倍。割高感は控えめ", 11, 11)
                 elif eval_pe <= 35:
-                    r8 = ("△", f"PER {eval_pe:.1f}倍。高成長の維持が前提のプレミアム価格", 6)
+                    r8 = ("△", f"PER {eval_pe:.1f}倍。高成長の維持が前提のプレミアム価格", 6, 11)
                 else:
-                    r8 = ("×", f"PER {eval_pe:.1f}倍。市場の期待が極めて高く割高圏", 0)
+                    r8 = ("×", f"PER {eval_pe:.1f}倍。市場の期待が極めて高く割高圏", 0, 11)
             else:
-                r8 = ("△", "PER取得不可", 5)
+                r8 = ("△", "PER取得不可", 5, 11)
             results.append(("⑧ 株価の割安度(PER)", r8))
 
-            # ⑨ 将来成長と総合評価
+            # ⑨ 将来成長と総合評価 (満点10)
             if (rev_growth and rev_growth > 0.1) and (op_margin and op_margin > 0.15):
-                r9 = ("○", "売上・利益率ともに高い競争優位性を維持", 10)
+                r9 = ("○", "売上・利益率ともに高い競争優位性を維持", 10, 10)
             elif rev_growth and rev_growth > 0:
-                r9 = ("△", "成長は継続中だが競争激化やマクロ環境に留意", 6)
+                r9 = ("△", "成長は継続中だが競争激化やマクロ環境に留意", 6, 10)
             else:
-                r9 = ("×", "成長停滞または利益圧迫リスクあり", 0)
+                r9 = ("×", "成長停滞または利益圧迫リスクあり", 0, 10)
             results.append(("⑨ 将来性と競争優位", r9))
 
             # 合計スコア計算
@@ -246,10 +245,10 @@ if st.session_state.f_analyzed:
             st.markdown(f"<div style='text-align: center; font-size: 18px; font-weight: bold; color: {color};'>総合健全性スコア: {total_score} 点 / 100点</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 12px; margin-bottom: 15px;'>評価: {label}</div>", unsafe_allow_html=True)
 
-            # チェックリストのスマホ向け表示（文字サイズ縮小）
-            for title, (mark, comment, pt) in results:
+            # チェックリストのスマホ向け表示（💡 〇点 / 〇点 の形式に変更）
+            for title, (mark, comment, pt, max_pt) in results:
                 icon = "🟢" if mark == "○" else ("🟡" if mark == "△" else "🔴")
-                st.markdown(f"<div style='font-size: 13px;'>{icon} <b>{title}</b> [{mark}] ({pt}点)</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size: 13px;'>{icon} <b>{title}</b> [{mark}] ({pt}点 / {max_pt}点)</div>", unsafe_allow_html=True)
                 st.markdown(f"<div style='font-size: 11px; color: gray; margin-bottom: 5px;'>↳ {comment}</div>", unsafe_allow_html=True)
 
             # ====================================================
