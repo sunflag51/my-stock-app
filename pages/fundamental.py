@@ -114,7 +114,8 @@ if st.session_state.f_analyzed:
             
             st.markdown("---")
             title_display = f"{c_name}【{t_symbol}】" if c_name else f"【{t_symbol}】"
-            st.write(f"### 🏢 {title_display} 財務サマリー")
+            # 💡見出しをスマホ用に小さく変更
+            st.write(f"**🏢 {title_display} 財務サマリー**")
             
             # スマホ用 4連メトリクス
             m1, m2, m3, m4 = st.columns(4)
@@ -241,7 +242,8 @@ if st.session_state.f_analyzed:
             else:
                 color, label = "red", "業績悪化または割高リスクが高い状態"
 
-            st.markdown(f"<div style='text-align: center; font-size: 22px; font-weight: bold; color: {color};'>総合健全性スコア: {total_score} 点 / 100点</div>", unsafe_allow_html=True)
+            # 💡スマホ用にフォントサイズをやや小さく(22px -> 20px)
+            st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold; color: {color};'>総合健全性スコア: {total_score} 点 / 100点</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 13px; margin-bottom: 15px;'>評価: {label}</div>", unsafe_allow_html=True)
 
             # チェックリストのスマホ向け表示
