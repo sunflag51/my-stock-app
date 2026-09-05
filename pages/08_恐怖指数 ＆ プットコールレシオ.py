@@ -1,177 +1,240 @@
-import subprocess
-import sys
-
-try:
-    import matplotlib.pyplot as plt
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib"])
-    import matplotlib.pyplot as plt
-
 import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
 
-st.set_page_config(page_title="リスクリワード＆資金管理", layout="wide")
+# --- ページ基本設定 ---
+st.set_page_config(page_title="市場動向＆エントリー診断", layout="wide")
 
+# 💡 データ取得関数（キャッシュで高速化）
 @st.cache_data(ttl=600)
-def get_stock_data(ticker):
-    stock = yf.Ticker(ticker)
-    df = stock.history(period="1y")
-    return df
-
-st.write("**⚖️ リスクリワード＆資金管理シミュレーター**")
-st.caption("エントリー前に「損切り・利益目標・購入株数」を計算し、期待値の高い（2:1以上）ポイントを探ります。")
-
-col1, col2 = st.columns([3, 1])
-with col1:
-    sheet_link = "https://docs.google.com/spreadsheets/d/1XZwIJaNVQG-q5SMVJQOXsvcsexTU0eVUCbaH7zscMnU/edit?usp=drivesdk"
-    base_options = ["NVDA (エヌビディア)", "GOOG (アルファベット)", "KO (コカ・コーラ)", "V (ビザ)", "AAPL (アップル)", "ISRG (インテュイティブ)", "COST (コストコ)", "MSFT (マイクロソフト)"]
-    sheet_options = []
-    if sheet_link.startswith("http"):
+def get_market_data(target_symbol):
+    # 比較用ティッカー一覧
+    tickers = {
+        "米国市場 (S&P500)": "SPY",
+        "ハイテク (NASDAQ100)": "QQQ",
+        "半導体ETF (SMH)": "SMH",
+        "半導体ETF (SOXX)": "SOXX",
+        "対象銘柄": target_symbol,
+        "競合GPU (AMD)": "AMD",
+        "カスタム半導体 (AVGO)": "AVGO",
+        "製造受託 (TSM)": "TSM",
+        "米10年債利回り": "^TNX",
+        "恐怖指数 (VIX)": "^VIX"
+    }
+    
+    data = {}
+    history = {}
+    
+    for label, t in tickers.items():
         try:
-            csv_url = sheet_link.split("/edit")[0] + "/export?format=csv"
-            df_meigara = pd.read_csv(csv_url, header=None)
-            for _, row in df_meigara.iterrows():
-                name = str(row.iloc[0]).strip()
-                code = str(row.iloc[1]).strip()
-                if name not in ["企業名", "名前", "nan"] and code != "nan":
-                    sheet_options.append(f"{code} ({name})")
+            stock = yf.Ticker(t)
+            df = stock.history(period="6mo")
+            if not df.empty:
+                history[label] = df
+                data[label] = {
+                    "symbol": t,
+                    "latest": df['Close'].iloc[-1],
+                    "chg_1d": ((df['Close'].iloc[-1] / df['Close'].iloc[-2]) - 1) * 100 if len(df) >= 2 else 0.0,
+                    "chg_1w": ((df['Close'].iloc[-1] / df['Close'].iloc[-6]) - 1) * 100 if len(df) >= 6 else 0.0,
+                    "chg_1m": ((df['Close'].iloc[-1] / df['Close'].iloc[-22]) - 1) * 100 if len(df) >= 22 else 0.0,
+                    "info": stock.info if t not in ["^TNX", "^VIX"] else {}
+                }
         except:
             pass
             
-    all_options = base_options + sheet_options + ["その他（手入力）"]
-    ticker_choice = st.selectbox("シミュレーション対象:", all_options, index=0)
-    
-    if ticker_choice == "その他（手入力）":
-        symbol_clean = st.text_input("銘柄コードを入力 (例: NVDA):", value="NVDA").strip().upper()
-    else:
-        symbol_clean = ticker_choice.split(" ")[0].upper()
+    return data, history
+
+# スマホ向けコンパクトヘッダー
+st.write("**🌐 米国市場動向＆エントリー前総合診断**")
+st.caption("市場全体 → セクター → 金利・VIX → 企業業績 → 株価位置を順に確認し、感情的な高値掴みを防ぎます。")
+
+# 銘柄選択
+col1, col2 = st.columns([3, 1])
+with col1:
+    target_ticker = st.selectbox(
+        "診断対象の銘柄を選択:",
+        ["NVDA (NVIDIA)", "AAPL (Apple)", "GOOG (Alphabet)", "MSFT (Microsoft)", "AMZN (Amazon)"],
+        index=0
+    )
+    symbol_clean = target_ticker.split(" ")[0]
 
 with col2:
     st.write("")
     st.write("")
-    run_btn = st.button("データ取得・計算開始", type="primary")
+    run_btn = st.button("市場環境を診断", type="primary")
 
-if "rr_analyzed" not in st.session_state:
-    st.session_state.rr_analyzed = False
+if "market_analyzed" not in st.session_state:
+    st.session_state.market_analyzed = False
 
 if run_btn:
-    st.session_state.rr_analyzed = True
+    st.session_state.market_analyzed = True
 
-if st.session_state.rr_analyzed:
-    with st.spinner(f"【{symbol_clean}】のチャートデータを計算中..."):
-        df = get_stock_data(symbol_clean)
+if st.session_state.market_analyzed:
+    with st.spinner("米国市場全体・セクター・マクロ指標を取得中..."):
+        m_data, m_hist = get_market_data(symbol_clean)
         
-        if df.empty or len(df) < 60:
-            st.error("データが十分に取得できませんでした。")
+        if "対象銘柄" not in m_data or "米国市場 (S&P500)" not in m_data:
+            st.error("市場データの取得に失敗しました。時間をおいて再試行してください。")
         else:
-            # 各種テクニカル値の計算
-            latest_close = df['Close'].iloc[-1]
-            high_52w = df['High'].max()
-            low_52w = df['Low'].min()
-            
-            ma5 = df['Close'].rolling(5).mean().iloc[-1]
-            ma10 = df['Close'].rolling(10).mean().iloc[-1]
-            ma20 = df['Close'].rolling(20).mean().iloc[-1]
-            ma60 = df['Close'].rolling(60).mean().iloc[-1]
-            
-            std20 = df['Close'].rolling(20).std().iloc[-1]
-            bb_upper = ma20 + (std20 * 2)
-            bb_lower = ma20 - (std20 * 2)
-            
-            # バンド幅の計算（過去6ヶ月との比較）
-            df_6mo = df.iloc[-126:].copy()
-            df_6mo['MA20'] = df_6mo['Close'].rolling(20).mean()
-            df_6mo['STD'] = df_6mo['Close'].rolling(20).std()
-            df_6mo['BandWidth'] = ((df_6mo['MA20'] + df_6mo['STD']*2) - (df_6mo['MA20'] - df_6mo['STD']*2)) / df_6mo['MA20'] * 100
-            
-            current_bw = df_6mo['BandWidth'].iloc[-1]
-            bw_min = df_6mo['BandWidth'].min()
-            bw_max = df_6mo['BandWidth'].max()
-            bw_percentile = (current_bw - bw_min) / (bw_max - bw_min) * 100 if bw_max != bw_min else 50
-            
-            # --- セクション1：ボリンジャーバンドと値幅分析 ---
+            # ==========================================
+            # 1. マクロ環境（金利・恐怖指数）
+            # ==========================================
             st.markdown("---")
-            st.write("**📏 1. ボリンジャーバンド状態 (スクイーズ判定)**")
+            st.write("### 🏛️ 1. 金利・市場心理（マクロ指標）")
             
-            if bw_percentile <= 20:
-                bw_status = "🟢 スクイーズ（収縮）中。次の大きな値動きの準備期間"
-            elif bw_percentile >= 80:
-                bw_status = "🔴 拡大（エクスパンション）終了または過熱気味"
+            c_tnx = m_data.get("米10年債利回り", {}).get("latest", 0.0)
+            c_vix = m_data.get("恐怖指数 (VIX)", {}).get("latest", 0.0)
+            
+            mac1, mac2 = st.columns(2)
+            # TNX (米10年債利回りは指数値が利回りそのもの)
+            tnx_status = "⚠️ 警戒 (高水準・急上昇)" if c_tnx >= 4.5 else ("🟡 通常水準" if c_tnx >= 4.0 else "🟢 追い風 (低水準)")
+            mac1.metric("米10年債利回り (^TNX)", f"{c_tnx:.2f}%", tnx_status)
+            
+            vix_status = "🔴 強い恐怖 (パニック)" if c_vix >= 25 else ("🟡 やや警戒" if c_vix >= 18 else "🟢 落ち着いている")
+            mac2.metric("恐怖指数 (VIX)", f"{c_vix:.2f}", vix_status)
+            
+            # ==========================================
+            # 2. 市場・セクター・競合 騰落率一覧テーブル
+            # ==========================================
+            st.markdown("---")
+            st.write("### 📊 2. 相対強度（市場 vs セクター vs 対象企業）")
+            st.caption("下落時に「市場全体が悪いのか」「セクター固有か」「企業固有か」を切り分けます。")
+            
+            table_rows = []
+            for name, d in m_data.items():
+                if name in ["米10年債利回り", "恐怖指数 (VIX)"]:
+                    continue
+                table_rows.append({
+                    "分類・銘柄": f"{name} ({d['symbol']})",
+                    "現在値": f"${d['latest']:.2f}",
+                    "前日比": f"{d['chg_1d']:+.2f}%",
+                    "1週間比": f"{d['chg_1w']:+.2f}%",
+                    "1ヶ月比": f"{d['chg_1m']:+.2f}%"
+                })
+            
+            st.table(pd.DataFrame(table_rows))
+            
+            # 相対判定ロジック
+            spy_1m = m_data.get("米国市場 (S&P500)", {}).get("chg_1m", 0.0)
+            smh_1m = m_data.get("半導体ETF (SMH)", {}).get("chg_1m", 0.0)
+            tgt_1m = m_data.get("対象銘柄", {}).get("chg_1m", 0.0)
+            
+            if tgt_1m > smh_1m and smh_1m > spy_1m:
+                rel_comment = "🟢 **極めて強い環境**: 対象銘柄がセクターをアウトパフォームし、セクターも市場全体を牽引しています。"
+            elif smh_1m > spy_1m and tgt_1m < smh_1m:
+                rel_comment = "🟡 **セクター内出遅れ**: 半導体全体は強い一方、対象銘柄に個別の一服感・固有要因があります。"
+            elif spy_1m < 0 and smh_1m < 0:
+                rel_comment = "🔴 **逆風環境**: 市場全体およびセクター全体に売りが先行しています。無理なエントリーは避ける局面です。"
             else:
-                bw_status = "🟡 通常のバンド幅（トレンド発生中または移行期）"
-                
-            st.write(f"- 現在のバンド幅: **{current_bw:.2f}％** (過去半年で下から {bw_percentile:.1f}％ の位置)")
-            st.write(f"- 状態判定: **{bw_status}**")
-            
+                rel_comment = "⚪ **中立環境**: 市場環境と連動した推移です。"
+            st.markdown(rel_comment)
+
+            # ==========================================
+            # 3. エントリー前 100点チェック表
+            # ==========================================
             st.markdown("---")
-            st.write("**🎯 2. 損切り・利確の目安となる価格ライン**")
-            st.caption("現在値付近でエントリーする場合、以下のラインを「損切り」や「目標」の参考にします。")
+            st.write("### 🎯 3. エントリー前 100点チェック表")
+            st.caption("感情的なエントリーを排除するための客観的採点表です。")
+
+            # 採点計算
+            scores = {}
             
-            line_data = [
-                {"ライン": "52週高値", "価格": f"${high_52w:.2f}", "意味": "最初の上値抵抗候補・最大目標"},
-                {"ライン": "BB上限 (+2σ)", "価格": f"${bb_upper:.2f}", "意味": "短期的な上側の目安・買われ過ぎライン"},
-                {"ライン": "5日移動平均線", "価格": f"${ma5:.2f}", "意味": "非常に短期の支持候補"},
-                {"ライン": "20日移動平均線", "価格": f"${ma20:.2f}", "意味": "短期トレンドの中心・BB中央線"},
-                {"ライン": "60日移動平均線", "価格": f"${ma60:.2f}", "意味": "中期的な支持候補"},
-                {"ライン": "BB下限 (-2σ)", "価格": f"${bb_lower:.2f}", "意味": "深い調整時の下側目安"}
-            ]
-            st.table(pd.DataFrame(line_data))
-
-            # --- セクション2：シミュレーター入力 ---
-            st.markdown("---")
-            st.write("**💻 3. 購入プラン・シミュレーター**")
-            
-            st.write("**STEP1: 価格設定**")
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                entry_p = st.number_input("① エントリー予定価格 ($)", value=float(f"{latest_close:.2f}"), step=1.0)
-            with c2:
-                stop_p = st.number_input("② 損切り価格 ($)", value=float(f"{ma20 - 1.0:.2f}"), step=1.0)
-            with c3:
-                target_p = st.number_input("③ 目標価格 ($)", value=float(f"{high_52w:.2f}"), step=1.0)
-
-            st.write("**STEP2: 資金管理**")
-            st.caption("※現在GOOG(27株)やAAPL(59株)等のテクノロジー株を既に保有している場合、同じハイテク株を追加すると相場下落時のダメージが重なります。1回の許容損失額は資産全体の1〜2%以内に抑えるのが基本です。")
-            max_loss = st.number_input("④ 今回のトレードで許容できる最大損失額 ($)", value=100.0, step=10.0)
-
-            # --- 計算処理 ---
-            if entry_p <= stop_p:
-                st.error("損切り価格はエントリー価格より低く設定してください。")
-            elif target_p <= entry_p:
-                st.error("目標価格はエントリー価格より高く設定してください。")
+            # ① 米国市場全体 (15点)
+            spy_df = m_hist.get("米国市場 (S&P500)")
+            if spy_df is not None and len(spy_df) >= 50:
+                spy_ma50 = spy_df['Close'].rolling(50).mean().iloc[-1]
+                spy_above = spy_df['Close'].iloc[-1] > spy_ma50
+                scores["米国市場全体 (SPY)"] = 15 if (spy_above and spy_1m > 0) else (8 if spy_above else 0)
             else:
-                loss_width = entry_p - stop_p
-                profit_width = target_p - entry_p
-                rr_ratio = profit_width / loss_width
-                req_win_rate = 1 / (1 + rr_ratio) * 100
-                
-                max_shares = int(max_loss // loss_width)
-                actual_loss = max_shares * loss_width
-                total_investment = max_shares * entry_p
+                scores["米国市場全体 (SPY)"] = 10
 
-                st.markdown("---")
-                st.write("**📋 4. シミュレーション結果**")
-                
-                res1, res2, res3 = st.columns(3)
-                res1.metric("1株あたりの損失幅", f"${loss_width:.2f}")
-                res2.metric("1株あたりの利益幅", f"${profit_width:.2f}")
-                
-                rr_color = "🟢 良好" if rr_ratio >= 2.0 else ("🟡 妥協点" if rr_ratio >= 1.5 else "🔴 不利")
-                res3.metric("リスクリワード比", f"{rr_ratio:.2f} : 1", rr_color)
+            # ② ハイテク市場 (10点)
+            qqq_1m = m_data.get("ハイテク (NASDAQ100)", {}).get("chg_1m", 0.0)
+            scores["ハイテク市場 (QQQ)"] = 10 if qqq_1m >= spy_1m else (5 if qqq_1m > 0 else 0)
 
-                st.write("**【勝率と資金管理】**")
-                res4, res5, res6 = st.columns(3)
-                res4.metric("損益分岐に必要な勝率", f"約 {req_win_rate:.1f} ％", "低勝率でも利益が残るか確認" if req_win_rate <= 40 else "高勝率が必要")
-                res5.metric("購入可能株数", f"最大 {max_shares} 株")
-                res6.metric("必要資金 (エントリー総額)", f"${total_investment:.2f}")
+            # ③ 半導体セクター (15点)
+            scores["半導体セクター (SMH/SOXX)"] = 15 if (smh_1m > 0 and smh_1m >= qqq_1m) else (8 if smh_1m > 0 else 0)
 
-                # 判定アドバイス
-                st.write("**💡 最終アドバイス**")
-                if rr_ratio < 1.5:
-                    st.warning(f"現在、1ドルの損失リスクに対して {rr_ratio:.2f}ドルしか利益が見込めません。目標価格（{target_p}ドル）が現実に到達可能か再考するか、エントリー価格（{entry_p}ドル）がもっと下がる（押し目）のを待つことをお勧めします。")
-                elif rr_ratio >= 2.0:
-                    st.success(f"リスクリワード {rr_ratio:.2f}：1 と非常に良好です。勝率が {req_win_rate:.1f}％ 以上あればトータルで利益が出る計算です。損切りライン（{stop_p}ドル）が支持線の下に正しく置かれているか確認し、計画通りに実行してください。")
+            # ④ ブレッドス・VIX (10点)
+            scores["恐怖指数・市場心理 (VIX)"] = 10 if c_vix < 18 else (5 if c_vix < 25 else 0)
+
+            # ⑤ 金利・経済指標 (10点)
+            scores["長期金利環境 (^TNX)"] = 10 if c_tnx < 4.0 else (6 if c_tnx < 4.5 else 2)
+
+            # ⑥ 業績・成長性 (15点)
+            tgt_info = m_data.get("対象銘柄", {}).get("info", {})
+            rev_growth = tgt_info.get("revenueGrowth", 0.0)
+            op_margins = tgt_info.get("operatingMargins", 0.0)
+            scores["企業業績・成長性"] = 15 if (rev_growth and rev_growth >= 0.15 and op_margins and op_margins >= 0.25) else 8
+
+            # ⑦ バリュエーション (10点)
+            f_pe = tgt_info.get("forwardPE", None)
+            t_pe = tgt_info.get("trailingPE", None)
+            pe_val = f_pe if f_pe else (t_pe if t_pe else 30)
+            scores["割高感・PER"] = 10 if pe_val < 25 else (6 if pe_val < 40 else 2)
+
+            # ⑧ テクニカル・株価位置 (10点)
+            tgt_df = m_hist.get("対象銘柄")
+            if tgt_df is not None and len(tgt_df) >= 50:
+                tgt_ma20 = tgt_df['Close'].rolling(20).mean().iloc[-1]
+                high_52w = tgt_df['High'].max()
+                cur_close = tgt_df['Close'].iloc[-1]
+                diff_52w = ((cur_close / high_52w) - 1) * 100
+                
+                # 高値に近すぎる（過熱）場合は減点し、適切な押し目を高得点化
+                if cur_close > tgt_ma20 and diff_52w > -3.0:
+                    scores["株価位置・過熱度"] = 5  # 高値圏で買われすぎ
+                elif cur_close > tgt_ma20 and -8.0 <= diff_52w <= -3.0:
+                    scores["株価位置・過熱度"] = 10 # 良好な押し目形成
+                elif cur_close > tgt_ma20:
+                    scores["株価位置・過熱度"] = 8
                 else:
-                    st.info(f"リスクリワード {rr_ratio:.2f}：1 は最低限の基準を満たしています。目標価格に到達する強い根拠（セクターの強さ・出来高の増加）があるか、もう一度チャートを確認してください。")
+                    scores["株価位置・過熱度"] = 2  # 20日線割れ
+            else:
+                scores["株価位置・過熱度"] = 5
+
+            auto_total = sum(scores.values())
+
+            # ⑨ 資産配分・自己規律 (手動スライダー 5点)
+            st.write("**自己点検スライダー（資産配分・集中リスク）**")
+            score_asset = st.slider(
+                "⑨ 同セクター・同業種への過度な集中がなく、重要指標発表直前ではないか (0～5点):",
+                0, 5, 3
+            )
+
+            final_entry_score = auto_total + score_asset
+
+            # 判定カラーとメッセージ
+            if final_entry_score >= 80:
+                e_color = "green"
+                e_label = "🟢 外部環境・企業条件ともに合致。エントリー好機"
+            elif final_entry_score >= 65:
+                e_color = "orange"
+                e_label = "🟡 環境は概ね良好だが、一部指標（金利または高値圏過熱）に留意"
+            elif final_entry_score >= 50:
+                e_color = "orange"
+                e_label = "🟠 確認不足・逆風要素あり。打診買いにとどめるか押し目待ち"
+            else:
+                e_color = "red"
+                e_label = "🔴 エントリー非推奨。市場・セクターまたは高値過熱のリスク過大"
+
+            st.markdown(f"<div style='text-align: center; font-size: 24px; font-weight: bold; color: {e_color};'>総合エントリー適性スコア: {final_entry_score} 点 / 100点</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 14px; margin-top: 8px;'>{e_label}</div>", unsafe_allow_html=True)
+
+            # 内訳表示
+            with st.expander("各項目の採点詳細を見る", expanded=True):
+                for k, v in scores.items():
+                    st.write(f"- {k}: **{v}点**")
+                st.write(f"- 資産配分・イベント（手動点検）: **{score_asset}点**")
+
+            # ==========================================
+            # 4. 初心者向け実践チェック手順まとめ
+            # ==========================================
+            st.markdown("---")
+            st.write("### 🧭 4. エントリー判断の最終アドバイス")
+            st.caption("""
+            1. **良い会社（業績○）でも高値掴みは避ける**: 52週高値から3%以内かつ20日線から乖離している局面は、急いで飛び乗らず「20日線付近までの押し目」を待つのが基本です。
+            2. **半導体ETF（SMH）との連動を確認**: SMHが下げている日に個別銘柄だけが逆行高している場合は、一時的な短期資金の可能性を考慮してください。
+            3. **ポートフォリオの偏りを確認**: すでに大型テクノロジー株を保有している場合、同じハイテク株への過度な集中買い増しになっていないか確認してください。
+            """)
