@@ -79,7 +79,7 @@ if st.session_state.inst_analyzed:
             
             # --- 1. 機関投資家保有サマリー ---
             st.markdown("---")
-            st.write("### 🏢 1. 機関投資家保有比率（13F報告ベース）")
+            st.write("**🏢 1. 機関投資家保有比率（13F報告ベース）**")
             
             inst_pct = info.get("heldPercentInstitutions", None)
             insider_pct = info.get("heldPercentInsiders", None)
@@ -105,19 +105,19 @@ if st.session_state.inst_analyzed:
 
             # --- 2. 資金フロー＆需給指標の計算 ---
             st.markdown("---")
-            st.write("### 🌊 2. 大口資金フロー＆需給シグナル（直近5〜20日）")
+            st.write("**🌊 2. 大口資金フロー＆需給シグナル（直近5〜20日）**")
             
-            # CMF (チャイキンマネーフロー: 大口の蓄積/分配を測る指標)
-            # CLV = ((Close - Low) - (High - Close)) / (High - Low)
+            # CMF (チャイキンマネーフロー)
             clv = ((df['Close'] - df['Low']) - (df['High'] - df['Close'])) / (df['High'] - df['Low'])
             clv = clv.fillna(0.0)
             cmf_20 = (clv * df['Volume']).rolling(20).sum() / df['Volume'].rolling(20).sum()
             latest_cmf = cmf_20.iloc[-1]
             
-            # 直近5日間の資金流入日数と上昇日/下落日出来高
+            # 直近5日間の値動き
             df_5d = df.iloc[-5:].copy()
             up_days_5d = (df_5d['Close'] > df_5d['Open']).sum()
             
+            # 出来高比率
             df_20d = df.iloc[-20:].copy()
             up_vol = df_20d[df_20d['Close'] >= df_20d['Open']]['Volume'].mean()
             down_vol = df_20d[df_20d['Close'] < df_20d['Open']]['Volume'].mean()
@@ -134,9 +134,9 @@ if st.session_state.inst_analyzed:
             f2.metric("直近5日の陽線日数", f"{up_days_5d}日 / 5日中", "買い先行" if up_days_5d >= 3 else "売り優勢")
             f3.metric("出来高比率 (上昇日/下落日)", f"{vol_ratio:.2f}倍", "健全な買い" if vol_ratio > 1.1 else "下落日出来高が優勢")
 
-            # --- 3. 推定コスト分布（価格帯別出来高プロファイル） ---
+            # --- 3. 推定コスト分布 ---
             st.markdown("---")
-            st.write("### 📊 3. 推定コスト分布（価格帯別出来高 Volume by Price）")
+            st.write("**📊 3. 推定コスト分布（価格帯別出来高 Volume by Price）**")
             st.caption("過去6ヶ月間に最も取引が集中した価格帯（平均保有コストの目安）を推計します。")
             
             bins = 10
@@ -146,7 +146,6 @@ if st.session_state.inst_analyzed:
             poc_high = bin_edges[max_bin_idx + 1]
             poc_mid = (poc_low + poc_high) / 2
             
-            # 含み益圏の推定比率 (現在値より下の出来高合計 / 全出来高)
             vol_below_cur = df[df['Close'] <= cur_price]['Volume'].sum()
             total_vol = df['Volume'].sum()
             profit_ratio = (vol_below_cur / total_vol) * 100 if total_vol > 0 else 50.0
@@ -157,14 +156,13 @@ if st.session_state.inst_analyzed:
             p_status = "⚠️ 含み益過多（利益確定売りに警戒）" if profit_ratio > 85 else ("🟢 底堅い支持圏" if profit_ratio > 40 else "🔴 含み損過多（戻り売りに警戒）")
             cp2.metric("推定・含み益保有比率", f"{profit_ratio:.1f} %", p_status)
 
-            # --- 4. 「仕込み度」12点満点スコアリング ---
+            # --- 4. 「仕込み度」スコアリング ---
             st.markdown("---")
-            st.write("### 🎯 4. 機関・大口「仕込み度」スコアリング (12点満点)")
+            st.write("**🎯 4. 機関・大口「仕込み度」スコアリング (12点満点)**")
             st.caption("客観的な6項目（各0〜2点）から、機関投資家の実質的な買い集めが入っているかを総合評価します。")
 
             score_items = []
             
-            # ① 機関保有比率 (0〜2点)
             if inst_pct and inst_pct >= 0.70:
                 s1 = (2, "機関保有比率70%以上（機関投資家の主要投資先）")
             elif inst_pct and inst_pct >= 0.50:
@@ -173,7 +171,6 @@ if st.session_state.inst_analyzed:
                 s1 = (0, "機関保有比率50%未満（個人主導または機関関心薄）")
             score_items.append(("① 機関投資家保有比率", s1))
 
-            # ② 資金フロー (CMF指標) (0〜2点)
             if latest_cmf >= 0.05:
                 s2 = (2, f"CMF {latest_cmf:+.2f}（大口の継続的買いが確認）")
             elif latest_cmf >= -0.05:
@@ -182,7 +179,6 @@ if st.session_state.inst_analyzed:
                 s2 = (0, f"CMF {latest_cmf:+.2f}（大口の資金流出・分配傾向）")
             score_items.append(("② 大口マネーフロー (CMF)", s2))
 
-            # ③ 直近5日間の値動き (0〜2点)
             if up_days_5d >= 4:
                 s3 = (2, "直近5日中4日以上で陽線（大口が下値を支えている）")
             elif up_days_5d >= 2:
@@ -191,7 +187,6 @@ if st.session_state.inst_analyzed:
                 s3 = (0, "直近5日で売りが先行（下落継続中）")
             score_items.append(("③ 直近5日間の値動き安定度", s3))
 
-            # ④ 出来高の質 (上昇日 vs 下落日) (0〜2点)
             if vol_ratio >= 1.2:
                 s4 = (2, f"上昇日平均出来高が下落日の{vol_ratio:.1f}倍（買い意欲が明確）")
             elif vol_ratio >= 0.9:
@@ -200,14 +195,12 @@ if st.session_state.inst_analyzed:
                 s4 = (0, f"下落日の出来高が急増（{vol_ratio:.1f}倍、手放し売りが優勢）")
             score_items.append(("④ 出来高の質（上昇日/下落日）", s4))
 
-            # ⑤ OBVトレンド (0〜2点)
             if obv_rising:
                 s5 = (2, "OBVが上昇基調（出来高を伴う買いが先行）")
             else:
                 s5 = (0, "OBVが低下基調（資金が流出傾向）")
             score_items.append(("⑤ 累積出来高 (OBV) トレンド", s5))
 
-            # ⑥ コスト分布・支持帯判定 (0〜2点)
             ma20 = df['Close'].rolling(20).mean().iloc[-1]
             if cur_price >= poc_mid and cur_price >= ma20:
                 s6 = (2, "現在値が主要商い価格帯および20日線の上（下値が固い構造）")
@@ -217,7 +210,6 @@ if st.session_state.inst_analyzed:
                 s6 = (0, "主要商い価格帯を下抜け（上値に戻り売り圧力が残る）")
             score_items.append(("⑥ コスト分布・支持帯の維持", s6))
 
-            # 合計点計算
             total_inst_score = sum([s[1][0] for s in score_items])
 
             if total_inst_score >= 10:
@@ -242,7 +234,7 @@ if st.session_state.inst_analyzed:
 
             # --- 5. 初心者向け実践アドバイス ---
             st.markdown("---")
-            st.write("### 🧭 5. 実践チェックリスト")
+            st.write("**🧭 5. 実践チェックリスト**")
             st.caption("""
             1. **大口の1日流入で飛びつかない**: 最低でも5〜10営業日、大口資金が継続して下値を支えているか確認してください。
             2. **利益圏比率85%以上の高値追いは慎重に**: 機関保有が多くても、多くの投資家が大きな含み益を持っている位置では、決算や悪材料を契機に機関投資家の利益確定売りが出やすくなります。
