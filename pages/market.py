@@ -75,8 +75,8 @@ def get_market_data(target_symbol, sec_name, sec_tic, p1_n, p1_t, p2_n, p2_t, p3
             
     return data, history, f"{sec_name} ({sec_tic})"
 
-# スマホ向けコンパクトヘッダー
-st.write("**🌐 米国市場動向＆エントリー前総合診断**")
+# スマホ向けコンパクトヘッダー（文字サイズ縮小）
+st.markdown("<div style='font-size: 14px; font-weight: bold;'>🌐 米国市場動向＆エントリー前総合診断</div>", unsafe_allow_html=True)
 st.caption("市場全体 → セクター → 金利・VIX → 企業業績 → 株価位置を順に確認し、感情的な高値掴みを防ぎます。")
 
 # 銘柄選択（スプレッドシート連動対応）
@@ -134,7 +134,7 @@ if st.session_state.market_analyzed:
             # 1. マクロ環境（金利・恐怖指数）
             # ==========================================
             st.markdown("---")
-            st.write("### 🏛️ 1. 金利・市場心理（マクロ指標）")
+            st.markdown("<div style='font-size: 14px; font-weight: bold;'>🏛️ 1. 金利・市場心理（マクロ指標）</div>", unsafe_allow_html=True)
             
             c_tnx = m_data.get("米10年債利回り", {}).get("latest", 0.0)
             c_vix = m_data.get("恐怖指数 (VIX)", {}).get("latest", 0.0)
@@ -150,7 +150,7 @@ if st.session_state.market_analyzed:
             # 2. 市場・セクター・競合 騰落率一覧テーブル
             # ==========================================
             st.markdown("---")
-            st.write("### 📊 2. 相対強度（市場 vs セクター vs 対象企業）")
+            st.markdown("<div style='font-size: 14px; font-weight: bold;'>📊 2. 相対強度（市場 vs セクター vs 対象企業）</div>", unsafe_allow_html=True)
             st.caption(f"下落時に「市場全体が悪いのか」「セクター固有か」「企業固有か」を切り分けます。")
             
             table_rows = []
@@ -165,13 +165,16 @@ if st.session_state.market_analyzed:
                     "1ヶ月比": f"{d['chg_1m']:+.2f}%"
                 })
             
-            st.table(pd.DataFrame(table_rows))
+            # テーブルをHTML化して文字サイズを小さくする
+            html_table = pd.DataFrame(table_rows).to_html(index=False, classes='table table-sm', border=0)
+            st.markdown(f"<div style='font-size: 12px;'>{html_table}</div>", unsafe_allow_html=True)
             
             # 相対判定ロジック
             spy_1m = m_data.get("米国市場 (S&P500)", {}).get("chg_1m", 0.0)
             sec_1m = m_data.get(sector_full_label, {}).get("chg_1m", 0.0)
             tgt_1m = m_data.get("対象銘柄", {}).get("chg_1m", 0.0)
             
+            st.write("") # スペーサー
             if tgt_1m > sec_1m and sec_1m > spy_1m:
                 rel_comment = f"🟢 **極めて強い環境**: 対象銘柄がセクター({sec_tic})をアウトパフォームし、セクターも市場全体を牽引しています。"
             elif sec_1m > spy_1m and tgt_1m < sec_1m:
@@ -180,13 +183,13 @@ if st.session_state.market_analyzed:
                 rel_comment = "🔴 **逆風環境**: 市場全体およびセクター全体に売りが先行しています。無理なエントリーは避ける局面です。"
             else:
                 rel_comment = "⚪ **中立環境**: 市場環境と連動した推移です。"
-            st.markdown(rel_comment)
+            st.markdown(f"<div style='font-size: 13px;'>{rel_comment}</div>", unsafe_allow_html=True)
 
             # ==========================================
             # 3. エントリー前 100点チェック表
             # ==========================================
             st.markdown("---")
-            st.write("### 🎯 3. エントリー前 100点チェック表")
+            st.markdown("<div style='font-size: 14px; font-weight: bold;'>🎯 3. エントリー前 100点チェック表</div>", unsafe_allow_html=True)
             st.caption("感情的なエントリーを排除するための客観的採点表です。")
 
             scores = {}
@@ -255,7 +258,7 @@ if st.session_state.market_analyzed:
             auto_total = sum([v[0] for v in scores.values()])
 
             # ⑨ 資産配分・自己規律 (手動スライダー 5点)
-            st.write("**自己点検スライダー（資産配分・集中リスク）**")
+            st.markdown("<div style='font-size: 13px; font-weight: bold;'>自己点検スライダー（資産配分・集中リスク）</div>", unsafe_allow_html=True)
             score_asset = st.slider(
                 "⑨ 同セクター・同業種への過度な集中がなく、重要指標発表直前ではないか (0～5点):",
                 0, 5, 3
@@ -277,20 +280,20 @@ if st.session_state.market_analyzed:
                 e_color = "red"
                 e_label = "🔴 エントリー非推奨。市場・セクターまたは高値過熱のリスク過大"
 
-            st.markdown(f"<div style='text-align: center; font-size: 24px; font-weight: bold; color: {e_color};'>総合エントリー適性スコア: {final_entry_score} 点 / 100点</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; font-size: 14px; margin-top: 8px;'>{e_label}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 18px; font-weight: bold; color: {e_color};'>総合エントリー適性スコア: {final_entry_score} 点 / 100点</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 12px; margin-top: 8px;'>{e_label}</div>", unsafe_allow_html=True)
 
-            # 💡 【修正箇所】内訳表示（何点中の何点か分かるように変更）
+            # 内訳表示（文字サイズ縮小）
             with st.expander("各項目の採点詳細を見る", expanded=True):
                 for k, (v, max_v) in scores.items():
-                    st.write(f"- {k}: **{v}点 / {max_v}点**")
-                st.write(f"- 資産配分・イベント（手動点検）: **{score_asset}点 / 5点**")
+                    st.markdown(f"<div style='font-size: 13px;'>- {k}: <b>{v}点 / {max_v}点</b></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size: 13px;'>- 資産配分・イベント（手動点検）: <b>{score_asset}点 / 5点</b></div>", unsafe_allow_html=True)
 
             # ==========================================
             # 4. 初心者向け実践チェック手順まとめ
             # ==========================================
             st.markdown("---")
-            st.write("### 🧭 4. エントリー判断の最終アドバイス")
+            st.markdown("<div style='font-size: 14px; font-weight: bold;'>🧭 4. エントリー判断の最終アドバイス</div>", unsafe_allow_html=True)
             st.caption(f"""
             1. **良い会社でも高値掴みは避ける**: 52週高値から3%以内かつ20日線から乖離している局面は、急いで飛び乗らず「20日線付近までの押し目」を待つのが基本です。
             2. **セクターETF（{sec_tic}）との連動を確認**: {sec_tic} が下げている日に対象銘柄だけが逆行高している場合は、一時的な短期資金の可能性を考慮してください。
