@@ -27,8 +27,8 @@ if "f_ticker" not in st.session_state:
 if "f_company" not in st.session_state:
     st.session_state.f_company = ""
 
-# スマホ向けコンパクトヘッダー
-st.write("**📑 企業ファンダメンタルズ分析（9大原則）**")
+# スマホ向けコンパクトヘッダー（文字サイズ縮小）
+st.markdown("<div style='font-size: 14px; font-weight: bold;'>📑 企業ファンダメンタルズ分析（9大原則）</div>", unsafe_allow_html=True)
 st.caption("「良い会社か」「今の株価で買って割高ではないか」を9項目で厳密に判定します。")
 
 # 銘柄選択
@@ -114,8 +114,8 @@ if st.session_state.f_analyzed:
             
             st.markdown("---")
             title_display = f"{c_name}【{t_symbol}】" if c_name else f"【{t_symbol}】"
-            # 💡見出しをスマホ用に小さく変更
-            st.write(f"**🏢 {title_display} 財務サマリー**")
+            # 💡見出しをスマホ用にさらに小さく変更
+            st.markdown(f"<div style='font-size: 14px; font-weight: bold;'>🏢 {title_display} 財務サマリー</div>", unsafe_allow_html=True)
             
             # スマホ用 4連メトリクス
             m1, m2, m3, m4 = st.columns(4)
@@ -128,7 +128,7 @@ if st.session_state.f_analyzed:
             # 9大チェックリスト自動判定
             # ====================================================
             st.markdown("---")
-            st.write("**📋 9大ファンダメンタル判定チェックリスト**")
+            st.markdown("<div style='font-size: 14px; font-weight: bold;'>📋 9大ファンダメンタル判定チェックリスト</div>", unsafe_allow_html=True)
             
             score_total = 0
             results = []
@@ -242,22 +242,22 @@ if st.session_state.f_analyzed:
             else:
                 color, label = "red", "業績悪化または割高リスクが高い状態"
 
-            # 💡スマホ用にフォントサイズをやや小さく(22px -> 20px)
-            st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold; color: {color};'>総合健全性スコア: {total_score} 点 / 100点</div>", unsafe_allow_html=True)
-            st.markdown(f"<div style='text-align: center; font-size: 13px; margin-bottom: 15px;'>評価: {label}</div>", unsafe_allow_html=True)
+            # 💡スマホ用にフォントサイズをさらに小さく(20px -> 18px)
+            st.markdown(f"<div style='text-align: center; font-size: 18px; font-weight: bold; color: {color};'>総合健全性スコア: {total_score} 点 / 100点</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='text-align: center; font-size: 12px; margin-bottom: 15px;'>評価: {label}</div>", unsafe_allow_html=True)
 
-            # チェックリストのスマホ向け表示
+            # チェックリストのスマホ向け表示（文字サイズ縮小）
             for title, (mark, comment, pt) in results:
                 icon = "🟢" if mark == "○" else ("🟡" if mark == "△" else "🔴")
-                st.write(f"{icon} **{title}** [{mark}] ({pt}点)")
-                st.caption(f"↳ {comment}")
+                st.markdown(f"<div style='font-size: 13px;'>{icon} <b>{title}</b> [{mark}] ({pt}点)</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size: 11px; color: gray; margin-bottom: 5px;'>↳ {comment}</div>", unsafe_allow_html=True)
 
             # ====================================================
             # 詳細データテーブル（スマホ向けコンパクト表示）
             # ====================================================
             st.markdown("---")
             with st.expander("📊 財務データの詳細数値テーブルを見る", expanded=False):
-                st.write("**【損益・収益性】**")
+                st.markdown("<div style='font-size: 13px; font-weight: bold;'>【損益・収益性】</div>", unsafe_allow_html=True)
                 p_data = {
                     "項目": ["総売上高", "粗利益率", "営業利益率", "純利益率"],
                     "数値": [
@@ -267,9 +267,11 @@ if st.session_state.f_analyzed:
                         f"{net_margin*100:.2f}%" if net_margin else "N/A"
                     ]
                 }
-                st.table(pd.DataFrame(p_data))
+                # テーブルをHTMLで描画して文字サイズを小さくする
+                html_table_p = pd.DataFrame(p_data).to_html(index=False, classes='table table-sm', border=0)
+                st.markdown(f"<div style='font-size: 12px;'>{html_table_p}</div>", unsafe_allow_html=True)
 
-                st.write("**【キャッシュフロー・財務】**")
+                st.markdown("<br><div style='font-size: 13px; font-weight: bold;'>【キャッシュフロー・財務】</div>", unsafe_allow_html=True)
                 c_data = {
                     "項目": ["営業CF", "フリーCF (FCF)", "保有現金・短期投資", "有利子負債", "実質現金超過(ネットキャッシュ)"],
                     "数値": [
@@ -280,9 +282,10 @@ if st.session_state.f_analyzed:
                         f"${net_cash/1e9:,.2f}B"
                     ]
                 }
-                st.table(pd.DataFrame(c_data))
+                html_table_c = pd.DataFrame(c_data).to_html(index=False, classes='table table-sm', border=0)
+                st.markdown(f"<div style='font-size: 12px;'>{html_table_c}</div>", unsafe_allow_html=True)
 
-                st.write("**【バリュエーション指標】**")
+                st.markdown("<br><div style='font-size: 13px; font-weight: bold;'>【バリュエーション指標】</div>", unsafe_allow_html=True)
                 v_data = {
                     "項目": ["実績PER (過去12ヶ月)", "予想PER (将来利益)", "PBR (純資産倍率)", "PSR (売上高倍率)"],
                     "数値": [
@@ -292,4 +295,5 @@ if st.session_state.f_analyzed:
                         f"{psr:.2f}倍" if psr else "N/A"
                     ]
                 }
-                st.table(pd.DataFrame(v_data))
+                html_table_v = pd.DataFrame(v_data).to_html(index=False, classes='table table-sm', border=0)
+                st.markdown(f"<div style='font-size: 12px;'>{html_table_v}</div>", unsafe_allow_html=True)
