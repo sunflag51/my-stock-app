@@ -109,7 +109,6 @@ if st.session_state.is_analyzed:
             latest_vol = df['Volume'].iloc[-1]
 
             st.markdown("---")
-            # 見出しサイズをh3から単純な太字に変更
             if company_to_analyze:
                 st.write(f"**🏢 {company_to_analyze}【{ticker_to_analyze}】の基本情報**")
             else:
@@ -248,11 +247,36 @@ if st.session_state.is_analyzed:
             st.pyplot(fig)
 
             # ==========================================
-            # 📊 自動底打ちスコアリングシステム（80点満点）
+            # 📊 自動底打ちスコアリングシステム（95点分が自動！）
             # ==========================================
             st.markdown("---")
             st.write("**🎯 総合・底打ち判定スコアリング**")
             
+            # 💡 追加：①ファンダメンタルズの自動計算 (15点満点)
+            rev_growth = info.get("revenueGrowth", 0)
+            op_margin = info.get("operatingMargins", 0)
+            pe_trailing = info.get("trailingPE", 0)
+            pe_forward = info.get("forwardPE", 0)
+            op_cf = info.get("operatingCashflow", 0)
+            fcf = info.get("freeCashflow", 0)
+
+            # 売上成長 (4点)
+            f_score_rev = 4 if rev_growth is not None and rev_growth >= 0.1 else (2 if rev_growth is not None and rev_growth > 0 else 0)
+            # 利益率維持 (4点)
+            f_score_margin = 4 if op_margin is not None and op_margin >= 0.15 else (2 if op_margin is not None and op_margin > 0.05 else 0)
+            # 見通し悪化なし (3点: 予想利益が過去利益を上回る増益予想か)
+            f_score_outlook = 0
+            if pe_trailing and pe_forward and pe_forward > 0 and pe_trailing > pe_forward:
+                f_score_outlook = 3
+            elif pe_trailing and pe_forward and pe_forward > 0:
+                f_score_outlook = 1
+            # キャッシュフロー問題なし (2点+2点=4点)
+            f_score_cf = 2 if op_cf is not None and op_cf > 0 else 0
+            f_score_fcf = 2 if fcf is not None and fcf > 0 else 0
+            
+            score_1 = f_score_rev + f_score_margin + f_score_outlook + f_score_cf + f_score_fcf
+
+            # 以下、既存のテクニカル自動計算 (80点満点)
             body = abs(latest_close - latest_open)
             lower_shadow = min(latest_close, latest_open) - latest_low
             is_vol_spike = latest_vol > df['Vol_MA20'].iloc[-1] * 1.5
@@ -278,23 +302,22 @@ if st.session_state.is_analyzed:
 
             score_9 = 10 if latest_close > df['MA20'].iloc[-1] else (5 if latest_close > df['MA5'].iloc[-1] else 0)
 
-            auto_score = score_3 + score_4 + score_5 + score_6 + score_7 + score_8 + score_9
+            # ファンダ(15点) ＋ テクニカル(80点) ＝ 自動採点(95点満点)
+            auto_score = score_1 + score_3 + score_4 + score_5 + score_6 + score_7 + score_8 + score_9
 
             # ==========================================
-            # 👤 手動入力スコア（30点満点）
+            # 👤 手動入力スコア（残りの15点分）
             # ==========================================
-            st.write("📝 **ファンダメンタル・市場環境（手動入力）**")
-            st.caption("スライダーを動かすとスコアが即座に連動します。")
+            st.write("📝 **市場環境・リスク（手動入力）**")
+            st.caption("スライダーを動かすとスコアが即座に連動します。（※業績の15点は完全自動計算化されました）")
             
-            man_col1, man_col2, man_col3 = st.columns(3)
+            man_col1, man_col2 = st.columns(2)
             with man_col1:
-                score_1 = st.slider("①業績・悪材料 (0～15点)", 0, 15, 7)
-            with man_col2:
                 score_2 = st.slider("②市場環境 (0～10点)", 0, 10, 5)
-            with man_col3:
+            with man_col2:
                 score_10 = st.slider("⑩リスクリワード (0～5点)", 0, 5, 2)
             
-            manual_score = score_1 + score_2 + score_10
+            manual_score = score_2 + score_10
             total_raw_score = auto_score + manual_score
             final_score = int((total_raw_score / 110) * 100)
 
@@ -320,10 +343,13 @@ if st.session_state.is_analyzed:
             # スマホ用に文字サイズを小さく
             st.markdown(f"<div style='text-align: center; color: {color}; font-size: 24px; font-weight: bold;'>総合スコア: {final_score} 点 / 100点</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 14px; margin-top: 10px;'>{judge_text}</div>", unsafe_allow_html=True)
-            st.caption(f"内訳：自動 {auto_score}/80点 ＋ 手動 {manual_score}/30点 （合計 {total_raw_score}/110 を100点満点換算）")
+            st.caption(f"内訳：自動 {auto_score}/95点 ＋ 手動 {manual_score}/15点 （合計 {total_raw_score}/110 を100点満点換算）")
 
             # 💡 スマホ用にコンパクトな判定解説
             with st.expander("詳細な自動採点の内訳と判定基準を見る", expanded=False):
+                st.write(f"**① ファンダメンタルズ判定: {score_1} / 15点**")
+                st.caption("業績の健康状態を自動判定（売上成長、利益率維持、今後の増益見通し、営業・フリーCFがプラスか等を採点）。")
+
                 st.write(f"**③ セリングクライマックス: {score_3} / 12点**")
                 st.caption("パニック売りが終わり、大口の買いが入ったか。\n・取引量が過去20日平均の1.5倍以上\n・下ヒゲが実体の2倍以上\n(両方クリアで12点、片方で6点)")
                 
