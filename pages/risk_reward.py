@@ -93,7 +93,7 @@ if st.session_state.rr_analyzed:
             
             # --- セクション1：ボリンジャーバンドと値幅分析 ---
             st.markdown("---")
-            st.write("### 📏 1. ボリンジャーバンド状態 (スクイーズ判定)")
+            st.write("**📏 1. ボリンジャーバンド状態 (スクイーズ判定)**")
             
             if bw_percentile <= 20:
                 bw_status = "🟢 スクイーズ（収縮）中。次の大きな値動きの準備期間"
@@ -106,7 +106,7 @@ if st.session_state.rr_analyzed:
             st.write(f"- 状態判定: **{bw_status}**")
             
             st.markdown("---")
-            st.write("### 🎯 2. 損切り・利確の目安となる価格ライン")
+            st.write("**🎯 2. 損切り・利確の目安となる価格ライン**")
             st.caption("現在値付近でエントリーする場合、以下のラインを「損切り」や「目標」の参考にします。")
             
             line_data = [
@@ -121,7 +121,7 @@ if st.session_state.rr_analyzed:
 
             # --- セクション2：シミュレーター入力 ---
             st.markdown("---")
-            st.write("### 💻 3. 購入プラン・シミュレーター")
+            st.write("**💻 3. 購入プラン・シミュレーター**")
             
             st.write("**STEP1: 価格設定**")
             c1, c2, c3 = st.columns(3)
@@ -152,7 +152,7 @@ if st.session_state.rr_analyzed:
                 total_investment = max_shares * entry_p
 
                 st.markdown("---")
-                st.write("### 📋 4. シミュレーション結果")
+                st.write("**📋 4. シミュレーション結果**")
                 
                 res1, res2, res3 = st.columns(3)
                 res1.metric("1株あたりの損失幅", f"${loss_width:.2f}")
