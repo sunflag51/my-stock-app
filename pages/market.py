@@ -196,34 +196,41 @@ if st.session_state.market_analyzed:
             if spy_df is not None and len(spy_df) >= 50:
                 spy_ma50 = spy_df['Close'].rolling(50).mean().iloc[-1]
                 spy_above = spy_df['Close'].iloc[-1] > spy_ma50
-                scores["米国市場全体 (SPY)"] = 15 if (spy_above and spy_1m > 0) else (8 if spy_above else 0)
+                s_spy = 15 if (spy_above and spy_1m > 0) else (8 if spy_above else 0)
             else:
-                scores["米国市場全体 (SPY)"] = 10
+                s_spy = 10
+            scores["米国市場全体 (SPY)"] = (s_spy, 15)
 
             # ② ハイテク市場 (10点)
             qqq_1m = m_data.get("ハイテク (NASDAQ100)", {}).get("chg_1m", 0.0)
-            scores["ハイテク市場 (QQQ)"] = 10 if qqq_1m >= spy_1m else (5 if qqq_1m > 0 else 0)
+            s_qqq = 10 if qqq_1m >= spy_1m else (5 if qqq_1m > 0 else 0)
+            scores["ハイテク市場 (QQQ)"] = (s_qqq, 10)
 
             # ③ 所属セクター (15点)
-            scores[f"所属セクター ({sec_tic})"] = 15 if (sec_1m > 0 and sec_1m >= qqq_1m) else (8 if sec_1m > 0 else 0)
+            s_sec = 15 if (sec_1m > 0 and sec_1m >= qqq_1m) else (8 if sec_1m > 0 else 0)
+            scores[f"所属セクター ({sec_tic})"] = (s_sec, 15)
 
             # ④ ブレッドス・VIX (10点)
-            scores["恐怖指数・市場心理 (VIX)"] = 10 if c_vix < 18 else (5 if c_vix < 25 else 0)
+            s_vix = 10 if c_vix < 18 else (5 if c_vix < 25 else 0)
+            scores["恐怖指数・市場心理 (VIX)"] = (s_vix, 10)
 
             # ⑤ 金利・経済指標 (10点)
-            scores["長期金利環境 (^TNX)"] = 10 if c_tnx < 4.0 else (6 if c_tnx < 4.5 else 2)
+            s_tnx = 10 if c_tnx < 4.0 else (6 if c_tnx < 4.5 else 2)
+            scores["長期金利環境 (^TNX)"] = (s_tnx, 10)
 
             # ⑥ 業績・成長性 (15点)
             tgt_info = m_data.get("対象銘柄", {}).get("info", {})
             rev_growth = tgt_info.get("revenueGrowth", 0.0)
             op_margins = tgt_info.get("operatingMargins", 0.0)
-            scores["企業業績・成長性"] = 15 if (rev_growth and rev_growth >= 0.15 and op_margins and op_margins >= 0.25) else 8
+            s_fund = 15 if (rev_growth and rev_growth >= 0.15 and op_margins and op_margins >= 0.25) else 8
+            scores["企業業績・成長性"] = (s_fund, 15)
 
             # ⑦ バリュエーション (10点)
             f_pe = tgt_info.get("forwardPE", None)
             t_pe = tgt_info.get("trailingPE", None)
             pe_val = f_pe if f_pe else (t_pe if t_pe else 30)
-            scores["割高感・PER"] = 10 if pe_val < 25 else (6 if pe_val < 40 else 2)
+            s_per = 10 if pe_val < 25 else (6 if pe_val < 40 else 2)
+            scores["割高感・PER"] = (s_per, 10)
 
             # ⑧ テクニカル・株価位置 (10点)
             tgt_df = m_hist.get("対象銘柄")
@@ -233,19 +240,19 @@ if st.session_state.market_analyzed:
                 cur_close = tgt_df['Close'].iloc[-1]
                 diff_52w = ((cur_close / high_52w) - 1) * 100
                 
-                # 高値に近すぎる場合は減点し、適切な押し目を高得点化
                 if cur_close > tgt_ma20 and diff_52w > -3.0:
-                    scores["株価位置・過熱度"] = 5  # 高値圏で買われすぎ
+                    s_tech = 5  # 高値圏で買われすぎ
                 elif cur_close > tgt_ma20 and -8.0 <= diff_52w <= -3.0:
-                    scores["株価位置・過熱度"] = 10 # 良好な押し目形成
+                    s_tech = 10 # 良好な押し目形成
                 elif cur_close > tgt_ma20:
-                    scores["株価位置・過熱度"] = 8
+                    s_tech = 8
                 else:
-                    scores["株価位置・過熱度"] = 2  # 20日線割れ
+                    s_tech = 2  # 20日線割れ
             else:
-                scores["株価位置・過熱度"] = 5
+                s_tech = 5
+            scores["株価位置・過熱度"] = (s_tech, 10)
 
-            auto_total = sum(scores.values())
+            auto_total = sum([v[0] for v in scores.values()])
 
             # ⑨ 資産配分・自己規律 (手動スライダー 5点)
             st.write("**自己点検スライダー（資産配分・集中リスク）**")
@@ -273,11 +280,11 @@ if st.session_state.market_analyzed:
             st.markdown(f"<div style='text-align: center; font-size: 24px; font-weight: bold; color: {e_color};'>総合エントリー適性スコア: {final_entry_score} 点 / 100点</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 14px; margin-top: 8px;'>{e_label}</div>", unsafe_allow_html=True)
 
-            # 内訳表示
+            # 💡 【修正箇所】内訳表示（何点中の何点か分かるように変更）
             with st.expander("各項目の採点詳細を見る", expanded=True):
-                for k, v in scores.items():
-                    st.write(f"- {k}: **{v}点**")
-                st.write(f"- 資産配分・イベント（手動点検）: **{score_asset}点**")
+                for k, (v, max_v) in scores.items():
+                    st.write(f"- {k}: **{v}点 / {max_v}点**")
+                st.write(f"- 資産配分・イベント（手動点検）: **{score_asset}点 / 5点**")
 
             # ==========================================
             # 4. 初心者向け実践チェック手順まとめ
