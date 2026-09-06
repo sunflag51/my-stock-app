@@ -109,7 +109,7 @@ def fetch_market_trend_data(extra_tickers=None):
         for k, v in extra_tickers.items():
             if k not in tickers:
                 tickers[k] = v
-                names[k] = v # 💡 ここを修正して辞書の値を名前として使う
+                names[k] = v
 
     history = {}
     for label, t in tickers.items():
@@ -164,9 +164,8 @@ if target_ticker_input:
     if is_valid:
         target_profile = build_dynamic_profile(formatted_ticker, info)
         if target_profile:
-            # 💡 取得リストに追加
-            extra_req[target_profile["symbol"]] = f"🎯 {target_profile['name']} ({target_profile['symbol']})"
-            extra_req[target_profile["sec"]] = f"🎯 {target_profile['sec_n']} ({target_profile['sec']})"
+            extra_req[target_profile["symbol"]] = target_profile["symbol"]
+            extra_req[target_profile["sec"]] = target_profile["sec"]
     else:
          st.error(f"銘柄コード '{target_ticker_input}' のデータが取得できませんでした。")
 
@@ -178,10 +177,15 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
     else:
         df_spy = hist["SPY"]
         
+        if target_profile and target_profile["symbol"] in hist:
+            names[target_profile["symbol"]] = f"🎯 {target_profile['name']} ({target_profile['symbol']})"
+            if target_profile["sec"] not in names or names[target_profile["sec"]] == target_profile["sec"]:
+                names[target_profile["sec"]] = target_profile["sec_n"]
+                
         # ==========================================
         # 1. 4大指数と11セクターランキング
         # ==========================================
-        with st.expander("📊 ① 4大指数とセクター相対強度ランキング", expanded=False):
+        with st.expander("📊 ① 4大指数と11セクターの相対強度ランキング", expanded=False):
             idx_data = []
             for idx in ["SPY", "QQQ", "DIA", "IWM"]:
                 if idx in hist:
@@ -197,10 +201,9 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                 status_text = "🟢 【大型グロース優位】" if qqq_rs > 0 and iwm_rs < 0 else ("🟡 【相場拡大】小型株優位" if iwm_rs > 0 else "🟠 【バリュー優位】")
                 st.markdown(f"<div style='font-size: 13px; margin-bottom:5px;'>{status_text}</div>", unsafe_allow_html=True)
 
-            # 💡 ランキングリストに基本の11セクターをセット
+            # 💡 【修正】ランキングに個別銘柄を追加する処理
             sec_list = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
             
-            # 💡 ここで入力された銘柄(symbol)とセクター(sec)をランキングの計算対象に合流させる
             if target_profile:
                 if target_profile["sec"] not in sec_list:
                     sec_list.append(target_profile["sec"])
@@ -208,50 +211,50 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                     sec_list.append(target_profile["symbol"])
 
             sec_data = []
-            # 💡 比較の基準(SPYかTOPIXか)を決定
+            # 日本株入力時はTOPIXを基準にする
             base_df_for_rank = hist.get(target_profile["idx"], df_spy) if target_profile else df_spy
 
             for sec in sec_list:
                 if sec in hist:
-                    # 💡 SPY(またはTOPIX)に対する相対強度を計算
                     rs1m = calc_relative_strength(hist[sec], base_df_for_rank, 21)
                     rs3m = calc_relative_strength(hist[sec], base_df_for_rank, 63)
                     rs6m = calc_relative_strength(hist[sec], base_df_for_rank, 126)
                     
                     score = (1 if rs3m and rs3m>0 else 0) + (1 if rs6m and rs6m>0 else 0) + (1 if rs1m and rs3m and rs1m>(rs3m/3) else 0)
                     
-                    # ランキング用にデータを格納
-                    sec_data.append({"銘柄・セクター": names[sec], "1ヶ月 対市場": rs1m, "3ヶ月 対市場": rs3m, "6ヶ月 対市場": rs6m, "トレンド": score})
+                    sec_data.append({
+                        "セクター/銘柄": names[sec], 
+                        "1ヶ月 対市場": rs1m, 
+                        "3ヶ月 対市場": rs3m, 
+                        "6ヶ月 対市場": rs6m, 
+                        "トレンド": score
+                    })
             
             if sec_data:
-                # 💡 3ヶ月の相対強度で順位付け(ソート)
                 df_sec = pd.DataFrame(sec_data).sort_values(by="3ヶ月 対市場", ascending=False).reset_index(drop=True)
                 
-                # 色付きテーブルを表示するためのHTML変換処理
                 df_sec_disp = pd.DataFrame({
-                    "順位": range(1, len(df_sec) + 1), # 順位列を追加
-                    "銘柄・セクター": df_sec["銘柄・セクター"],
+                    "順位": range(1, len(df_sec) + 1),
+                    "セクター/銘柄": df_sec["セクター/銘柄"],
                     "1ヶ月 対市場": df_sec["1ヶ月 対市場"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
                     "3ヶ月 対市場": df_sec["3ヶ月 対市場"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
                     "6ヶ月 対市場": df_sec["6ヶ月 対市場"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
                     "トレンド状態": df_sec["トレンド"].apply(lambda x: "🔥 本物候補(3点)" if x==3 else ("🟡 進行中(2点)" if x==2 else "⚪ 一時的(0-1点)"))
                 })
                 
-                # プラスなら緑色、マイナスなら赤色に着色する関数
+                # HTMLカラーリング
                 def colorize(val):
                     if isinstance(val, str) and "+" in val: return f"<span style='color:green; font-weight:bold;'>{val}</span>"
                     elif isinstance(val, str) and "-" in val and val != "-": return f"<span style='color:red;'>{val}</span>"
                     return val
 
-                # 3つの列に対して色付けを適用
                 for col in ["1ヶ月 対市場", "3ヶ月 対市場", "6ヶ月 対市場"]:
                     df_sec_disp[col] = df_sec_disp[col].apply(colorize)
 
-                # HTMLテーブルとして描画
                 html_table = df_sec_disp.to_html(index=False, escape=False, classes='table table-sm', border=0)
                 st.markdown(f"<div style='font-size: 13px; line-height:1.5;'>{html_table}</div>", unsafe_allow_html=True)
-                st.markdown("<div style='font-size: 11px; color: gray; margin-top:5px;'>※ 入力した個別銘柄には「🎯」マークが付き、市場全体の11セクターと比較した際の実力順位が分かります。</div>", unsafe_allow_html=True)
-
+                if target_profile:
+                    st.markdown("<div style='font-size: 11px; color: gray; margin-top:5px;'>※ 比較基準は、米国株の場合はSPY、日本株の場合はTOPIXです。</div>", unsafe_allow_html=True)
 
         # ==========================================
         # 2. 四半期グラフ ＆ 💡個別銘柄・セクター比較
@@ -300,45 +303,53 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
             if base_idx not in hist:
                 base_idx = "SPY"
             
-            all_dates = pd.Index([])
+            # 💡 【修正】日付結合のバグを修正し、欠損なくグラフを描画する処理
             lines_to_plot = selected_lines.copy()
             if base_idx not in lines_to_plot:
-                lines_to_plot.append(base_idx) 
+                lines_to_plot.append(base_idx)
                 
+            # まず必要なすべての時系列データをまとめるDataFrameを作成
+            all_df = pd.DataFrame()
             for line in lines_to_plot:
                 if line in hist:
-                    all_dates = all_dates.union(hist[line].index)
-            all_dates = all_dates.sort_values()
+                    # 'Close'列だけを抽出し、列名を銘柄名に変更して結合
+                    temp_df = hist[line][['Close']].rename(columns={'Close': line})
+                    if all_df.empty:
+                        all_df = temp_df
+                    else:
+                        # outer結合で全ての日付（休場日等）をまとめる
+                        all_df = all_df.join(temp_df, how='outer')
             
+            # 休場日などによるNaNを、直前の営業日の価格で埋める（前日コピー）
+            all_df = all_df.ffill().bfill()
+            
+            # 期間の絞り込み
             if selected_year != "過去3年すべて":
                 start_date_str, end_date_str = get_quarter_dates(selected_year, selected_q.split(" ")[0])
                 start_date = pd.to_datetime(start_date_str)
                 end_date = pd.to_datetime(end_date_str)
-                all_dates = all_dates[(all_dates >= start_date) & (all_dates <= end_date)]
-                
-            chart_data = pd.DataFrame(index=all_dates)
+                all_df = all_df[(all_df.index >= start_date) & (all_df.index <= end_date)]
             
-            if not all_dates.empty:
+            if not all_df.empty:
+                chart_data = pd.DataFrame(index=all_df.index)
+                
                 for line in lines_to_plot:
                     if target_profile and line == target_profile["symbol"] and not show_target:
                         continue
+                    
+                    if line in all_df.columns:
+                        series = all_df[line]
+                        first_val = series.iloc[0]
+                        if pd.isna(first_val) or first_val == 0:
+                            normalized_ratio = series * 0 + 1.0 
+                        else:
+                            normalized_ratio = series / first_val
                         
-                    if line in hist:
-                        series = hist[line]['Close'].reindex(all_dates).ffill().bfill()
-                        
-                        if not series.empty:
-                            first_val = series.iloc[0]
-                            if pd.isna(first_val) or first_val == 0:
-                                normalized_ratio = series * 0 + 1.0 
-                            else:
-                                normalized_ratio = series / first_val
+                        col_name = names.get(line, line)
+                        if line == base_idx:
+                            col_name = f"📊 市場平均 ({col_name})"
                             
-                            col_name = names.get(line, line)
-                            if line == base_idx:
-                                col_name = f"📊 市場平均 ({col_name})"
-                                
-                            if col_name not in chart_data.columns:
-                                chart_data[col_name] = normalized_ratio
+                        chart_data[col_name] = normalized_ratio
                 
                 st.line_chart(chart_data, use_container_width=True)
                 
