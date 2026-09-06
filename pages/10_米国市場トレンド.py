@@ -109,7 +109,7 @@ def fetch_market_trend_data(extra_tickers=None):
         for k, v in extra_tickers.items():
             if k not in tickers:
                 tickers[k] = v
-                names[k] = k
+                names[k] = v # 💡 ここを修正して辞書の値を名前として使う
 
     history = {}
     for label, t in tickers.items():
@@ -164,8 +164,9 @@ if target_ticker_input:
     if is_valid:
         target_profile = build_dynamic_profile(formatted_ticker, info)
         if target_profile:
-            extra_req[target_profile["symbol"]] = target_profile["symbol"]
-            extra_req[target_profile["sec"]] = target_profile["sec"]
+            # 💡 取得リストに追加
+            extra_req[target_profile["symbol"]] = f"🎯 {target_profile['name']} ({target_profile['symbol']})"
+            extra_req[target_profile["sec"]] = f"🎯 {target_profile['sec_n']} ({target_profile['sec']})"
     else:
          st.error(f"銘柄コード '{target_ticker_input}' のデータが取得できませんでした。")
 
@@ -177,15 +178,10 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
     else:
         df_spy = hist["SPY"]
         
-        if target_profile and target_profile["symbol"] in hist:
-            names[target_profile["symbol"]] = f"🎯 {target_profile['name']} ({target_profile['symbol']})"
-            if target_profile["sec"] not in names or names[target_profile["sec"]] == target_profile["sec"]:
-                names[target_profile["sec"]] = target_profile["sec_n"]
-                
         # ==========================================
         # 1. 4大指数と11セクターランキング
         # ==========================================
-        with st.expander("📊 ① 4大指数と11セクターの相対強度ランキング", expanded=False):
+        with st.expander("📊 ① 4大指数とセクター相対強度ランキング", expanded=False):
             idx_data = []
             for idx in ["SPY", "QQQ", "DIA", "IWM"]:
                 if idx in hist:
@@ -201,25 +197,43 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                 status_text = "🟢 【大型グロース優位】" if qqq_rs > 0 and iwm_rs < 0 else ("🟡 【相場拡大】小型株優位" if iwm_rs > 0 else "🟠 【バリュー優位】")
                 st.markdown(f"<div style='font-size: 13px; margin-bottom:5px;'>{status_text}</div>", unsafe_allow_html=True)
 
+            # 💡 ランキングリストに基本の11セクターをセット
             sec_list = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
+            
+            # 💡 ここで入力された銘柄(symbol)とセクター(sec)をランキングの計算対象に合流させる
+            if target_profile:
+                if target_profile["sec"] not in sec_list:
+                    sec_list.append(target_profile["sec"])
+                if target_profile["symbol"] not in sec_list:
+                    sec_list.append(target_profile["symbol"])
+
             sec_data = []
+            # 💡 比較の基準(SPYかTOPIXか)を決定
+            base_df_for_rank = hist.get(target_profile["idx"], df_spy) if target_profile else df_spy
+
             for sec in sec_list:
                 if sec in hist:
-                    rs1m = calc_relative_strength(hist[sec], df_spy, 21)
-                    rs3m = calc_relative_strength(hist[sec], df_spy, 63)
-                    rs6m = calc_relative_strength(hist[sec], df_spy, 126)
+                    # 💡 SPY(またはTOPIX)に対する相対強度を計算
+                    rs1m = calc_relative_strength(hist[sec], base_df_for_rank, 21)
+                    rs3m = calc_relative_strength(hist[sec], base_df_for_rank, 63)
+                    rs6m = calc_relative_strength(hist[sec], base_df_for_rank, 126)
+                    
                     score = (1 if rs3m and rs3m>0 else 0) + (1 if rs6m and rs6m>0 else 0) + (1 if rs1m and rs3m and rs1m>(rs3m/3) else 0)
-                    sec_data.append({"セクター": names[sec], "1ヶ月 対SPY": rs1m, "3ヶ月 対SPY": rs3m, "6ヶ月 対SPY": rs6m, "トレンド": score})
+                    
+                    # ランキング用にデータを格納
+                    sec_data.append({"銘柄・セクター": names[sec], "1ヶ月 対市場": rs1m, "3ヶ月 対市場": rs3m, "6ヶ月 対市場": rs6m, "トレンド": score})
             
             if sec_data:
-                df_sec = pd.DataFrame(sec_data).sort_values(by="3ヶ月 対SPY", ascending=False)
+                # 💡 3ヶ月の相対強度で順位付け(ソート)
+                df_sec = pd.DataFrame(sec_data).sort_values(by="3ヶ月 対市場", ascending=False).reset_index(drop=True)
                 
-                # 💡 色付きテーブルを表示するためのHTML変換処理を復活
+                # 色付きテーブルを表示するためのHTML変換処理
                 df_sec_disp = pd.DataFrame({
-                    "セクター": df_sec["セクター"],
-                    "1ヶ月 対SPY": df_sec["1ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
-                    "3ヶ月 対SPY": df_sec["3ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
-                    "6ヶ月 対SPY": df_sec["6ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
+                    "順位": range(1, len(df_sec) + 1), # 順位列を追加
+                    "銘柄・セクター": df_sec["銘柄・セクター"],
+                    "1ヶ月 対市場": df_sec["1ヶ月 対市場"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
+                    "3ヶ月 対市場": df_sec["3ヶ月 対市場"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
+                    "6ヶ月 対市場": df_sec["6ヶ月 対市場"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
                     "トレンド状態": df_sec["トレンド"].apply(lambda x: "🔥 本物候補(3点)" if x==3 else ("🟡 進行中(2点)" if x==2 else "⚪ 一時的(0-1点)"))
                 })
                 
@@ -230,12 +244,14 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                     return val
 
                 # 3つの列に対して色付けを適用
-                for col in ["1ヶ月 対SPY", "3ヶ月 対SPY", "6ヶ月 対SPY"]:
+                for col in ["1ヶ月 対市場", "3ヶ月 対市場", "6ヶ月 対市場"]:
                     df_sec_disp[col] = df_sec_disp[col].apply(colorize)
 
                 # HTMLテーブルとして描画
                 html_table = df_sec_disp.to_html(index=False, escape=False, classes='table table-sm', border=0)
                 st.markdown(f"<div style='font-size: 13px; line-height:1.5;'>{html_table}</div>", unsafe_allow_html=True)
+                st.markdown("<div style='font-size: 11px; color: gray; margin-top:5px;'>※ 入力した個別銘柄には「🎯」マークが付き、市場全体の11セクターと比較した際の実力順位が分かります。</div>", unsafe_allow_html=True)
+
 
         # ==========================================
         # 2. 四半期グラフ ＆ 💡個別銘柄・セクター比較
