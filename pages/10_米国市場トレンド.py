@@ -50,8 +50,8 @@ def fetch_market_trend_data():
     history = {}
     for label, t in tickers.items():
         try:
-            # 6ヶ月分（約126営業日）を取得
-            df = yf.Ticker(t).history(period="1y") 
+            # 💡 グラフ描画のため、過去3年分（約756営業日）をガッツリ取得
+            df = yf.Ticker(t).history(period="3y") 
             if not df.empty:
                 history[label] = df
         except:
@@ -77,7 +77,7 @@ def calc_relative_strength(df_target, df_base, days):
 st.markdown("<div style='font-size: 16px; font-weight: bold;'>🇺🇸 米国市場トレンド・資金ローテーション確認</div>", unsafe_allow_html=True)
 st.caption("市場の主役が「大型か小型か」「どのセクターか」を客観的な価格データから毎月確認します。")
 
-with st.spinner("米国市場のETFデータを集計中..."):
+with st.spinner("米国市場の3年分のデータを集計し、グラフを作成中..."):
     hist, names = fetch_market_trend_data()
     
     if "SPY" not in hist:
@@ -151,14 +151,10 @@ with st.spinner("米国市場のETFデータを集計中..."):
                 rs3m = calc_relative_strength(hist[sec], df_spy, 63)
                 rs6m = calc_relative_strength(hist[sec], df_spy, 126)
                 
-                # 💡 スコアリング（切り替わり4条件のうち3条件を自動計算）
-                # ① 3か月リターンがSPYを上回る (rs3m > 0)
-                # ② 6か月リターンがSPYを上回る (rs6m > 0)
-                # ③ 相対強度が上昇傾向 (1ヶ月の勢いが3ヶ月を上回る等簡易判定)
                 score = 0
                 if rs3m is not None and rs3m > 0: score += 1
                 if rs6m is not None and rs6m > 0: score += 1
-                if rs1m is not None and rs3m is not None and rs1m > (rs3m/3): score += 1 # 簡易的なモメンタム判定
+                if rs1m is not None and rs3m is not None and rs1m > (rs3m/3): score += 1
                 
                 sec_data.append({
                     "セクター": names[sec],
@@ -171,10 +167,8 @@ with st.spinner("米国市場のETFデータを集計中..."):
 
         if sec_data:
             df_sec = pd.DataFrame(sec_data)
-            # 3ヶ月の相対強度(RS)で降順ソート
             df_sec = df_sec.sort_values(by="3ヶ月RS", ascending=False).reset_index(drop=True)
             
-            # 表示用データフレーム作成
             df_sec_disp = pd.DataFrame({
                 "順位": range(1, len(df_sec) + 1),
                 "セクター": df_sec["セクター"] + " (" + df_sec["ティッカー"] + ")",
@@ -184,7 +178,6 @@ with st.spinner("米国市場のETFデータを集計中..."):
                 "トレンド状態": df_sec["トレンド点数"].apply(lambda x: "🔥 本物候補(3点)" if x==3 else ("🟡 進行中(2点)" if x==2 else "⚪ 一時的(0-1点)"))
             })
             
-            # HTMLでテーブルを描画（プラスは青、マイナスは赤にする簡単な装飾を付与）
             def colorize(val):
                 if isinstance(val, str) and "+" in val: return f"<span style='color:green; font-weight:bold;'>{val}</span>"
                 elif isinstance(val, str) and "-" in val and val != "-": return f"<span style='color:red;'>{val}</span>"
@@ -197,11 +190,58 @@ with st.spinner("米国市場のETFデータを集計中..."):
             st.markdown(f"<div style='font-size: 12px;'>{html_table}</div>", unsafe_allow_html=True)
 
         # ==========================================
-        # 3. マクロ指標（VIX・金利）の確認
+        # 3. 過去3年間のセクター推移グラフ（新機能！）
         # ==========================================
         st.markdown("---")
-        st.markdown("<div style='font-size: 14px; font-weight: bold;'>③ マクロ指標との整合性確認</div>", unsafe_allow_html=True)
-        st.caption("セクターの動きが、金利や市場の恐怖感と矛盾していないかを確認します。（例：金利急上昇中は高PERグロースに逆風）")
+        st.markdown("<div style='font-size: 14px; font-weight: bold;'>③ 【視覚化】過去3年間のセクター相対強度グラフ</div>", unsafe_allow_html=True)
+        st.caption("SPY（市場平均）を基準(1.0)とした場合の、各セクターの強さの推移です。上を向いているセクターに資金が集まっています。")
+
+        # ユーザーがグラフで見たいセクターを選べるようにする
+        top_sectors_default = df_sec["ティッカー"].head(3).tolist() # 初期値は上位3セクター
+        selected_sectors = st.multiselect(
+            "グラフに表示するセクターを選択してください（比較しやすさのため3〜5個推奨）:",
+            options=sec_list,
+            default=top_sectors_default,
+            format_func=lambda x: f"{names[x]} ({x})"
+        )
+
+        if selected_sectors:
+            # グラフ用のデータフレームを作成
+            # SPYの終値で割る（相対強度：Ratio）
+            chart_data = pd.DataFrame(index=df_spy.index)
+            
+            # SPY自身は基準値1として描画
+            chart_data["市場平均 (SPY)"] = 1.0
+            
+            for sec in selected_sectors:
+                if sec in hist:
+                    # 日々のセクターETF終値をSPY終値で割る
+                    ratio = hist[sec]['Close'] / df_spy['Close']
+                    # 見やすくするために、最初の日の比率を基準にして正規化（相対的な伸びを見る）
+                    if len(ratio) > 0:
+                        first_ratio = ratio.iloc[0]
+                        normalized_ratio = ratio / first_ratio
+                        chart_data[names[sec]] = normalized_ratio
+            
+            # 欠損値を前の値で埋める
+            chart_data = chart_data.ffill()
+            
+            # Streamlitの標準折れ線グラフで描画
+            st.line_chart(chart_data, use_container_width=True)
+            st.markdown("""
+            <div style='font-size: 11px; color: gray;'>
+            ※ グラフの見方：横ばいの「市場平均 (SPY)」のラインより<b>大きく上に向かって伸びている線</b>が、市場をリードしている強いセクターです。逆に、下に向かっている線は市場全体よりも負けている（資金が逃げている）セクターです。
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.warning("グラフを表示するには、セクターを1つ以上選択してください。")
+
+        # ==========================================
+        # 4. マクロ指標（VIX・金利）の確認
+        # ==========================================
+        st.markdown("---")
+        st.markdown("<div style='font-size: 14px; font-weight: bold;'>④ マクロ指標との整合性確認</div>", unsafe_allow_html=True)
+        st.caption("セクターの動きが、金利や市場の恐怖感と矛盾していないかを確認します。")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -222,7 +262,7 @@ with st.spinner("米国市場のETFデータを集計中..."):
                 st.markdown("<div style='font-size: 13px;'>恐怖指数 (VIX): データなし</div>", unsafe_allow_html=True)
 
         # ==========================================
-        # 4. 運用手順ガイド
+        # 5. 運用手順ガイド
         # ==========================================
         st.markdown("---")
         with st.expander("🧭 毎週15分の確認手順（初心者向け）", expanded=False):
@@ -237,14 +277,13 @@ with st.spinner("米国市場のETFデータを集計中..."):
             ・大型テクノロジー(QQQ)だけの上昇ではないか？<br>
             ・小型株(IWM)や成熟企業(DIA)へ資金が移動（ローテーション）していないか？<br><br>
             
-            <b>③ セクター順位 (11セクター)</b><br>
-            ・1日だけ首位になったセクターは無視します。<br>
-            ・<b>「3ヶ月と6ヶ月の両方でSPYを上回っているか（🔥本物候補）」</b>を確認します。<br>
+            <b>③ セクター順位とグラフ</b><br>
+            ・ランキング表で「🔥本物候補」になっているセクターを確認します。<br>
+            ・<b>上のグラフでそのセクターを選び、本当に線が右肩上がりになっているか視覚で確認</b>します。<br>
             ・関連する複数セクター（例：エネルギーと素材）が一緒に強くなっていれば信頼性が高まります。<br><br>
             
             <b>④ マクロとの整合性</b><br>
             ・金利(10年債利回り)が急上昇していないか？（急上昇はハイテクに逆風）<br>
             ・VIXがパニック水準(25超え)になっていないか？<br>
-            ・CPI(物価)や雇用統計の結果と、セクターの動きが一致しているかニュースで軽く確認します。
             </div>
             """, unsafe_allow_html=True)
