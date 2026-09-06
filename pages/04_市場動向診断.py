@@ -13,12 +13,11 @@ import pandas as pd
 import numpy as np
 
 # --- ページ基本設定 ---
-st.set_page_config(page_title="NVDA特化 エントリー前100点診断", layout="wide")
+st.set_page_config(page_title="銘柄別可変 エントリー前100点診断", layout="wide")
 
-# 👇 スマホでの文字コピーを強制的に許可するCSS
 st.markdown("""
 <style>
-/* アプリ内のすべてのテキストをスマホで選択・コピー可能にする */
+/* スマホでの文字コピーを強制的に許可するCSS */
 * {
     -webkit-user-select: text !important;
     -moz-user-select: text !important;
@@ -28,21 +27,63 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 💡 データ取得関数
+# 💡 銘柄プロファイルとベンチマークの判定
+def get_ticker_profile(ticker):
+    t = ticker.upper()
+    if t.endswith(".JP") or t.endswith(".T") or t.isdigit() or (t[:4].isdigit() and t.endswith(".T")):
+        # 日本株設定
+        symbol = f"{t[:4]}.T" if t.isdigit() else t.replace(".JP", ".T")
+        if t.startswith("7974"):
+            return {
+                "symbol": symbol, "type": "JP_GAME", "name": "任天堂",
+                "idx1": "^N225", "idx1_n": "日経平均", "idx2": "^TOPX", "idx2_n": "TOPIX",
+                "sec": "2640.T", "sec_n": "ゲーム・アニメETF",
+                "vix": "^JN00V", "vix_n": "日経VI", "rate": "^TNX", "rate_n": "米10年債利回り", "fx": "JPY=X"
+            }
+        else:
+            return {
+                "symbol": symbol, "type": "JP_BASE", "name": "日本株",
+                "idx1": "^N225", "idx1_n": "日経平均", "idx2": "^TOPX", "idx2_n": "TOPIX",
+                "sec": "^TOPX", "sec_n": "TOPIX",
+                "vix": "^JN00V", "vix_n": "日経VI", "rate": "^TNX", "rate_n": "米10年債利回り", "fx": "JPY=X"
+            }
+    elif t in ["NVDA", "AMD", "TSM", "AVGO", "INTC", "QCOM", "ARM"]:
+        return {
+            "symbol": t, "type": "US_SEMI", "name": t,
+            "idx1": "SPY", "idx1_n": "SPY", "idx2": "QQQ", "idx2_n": "QQQ",
+            "sec": "SMH", "sec_n": "SMH",
+            "vix": "^VIX", "vix_n": "VIX", "rate": "^TNX", "rate_n": "米10年債利回り", "fx": None
+        }
+    elif t in ["AAPL", "MSFT", "GOOG", "GOOGL", "META", "AMZN"]:
+        return {
+            "symbol": t, "type": "US_BIGTECH", "name": t,
+            "idx1": "SPY", "idx1_n": "SPY", "idx2": "QQQ", "idx2_n": "QQQ",
+            "sec": "XLK", "sec_n": "XLK",
+            "vix": "^VIX", "vix_n": "VIX", "rate": "^TNX", "rate_n": "米10年債利回り", "fx": None
+        }
+    else:
+        return {
+            "symbol": t, "type": "US_BASE", "name": t,
+            "idx1": "SPY", "idx1_n": "SPY", "idx2": "QQQ", "idx2_n": "QQQ",
+            "sec": "SPY", "sec_n": "SPY",
+            "vix": "^VIX", "vix_n": "VIX", "rate": "^TNX", "rate_n": "米10年債利回り", "fx": None
+        }
+
 @st.cache_data(ttl=600)
-def get_market_data(target_symbol):
+def get_market_data(profile):
     tickers = {
-        "SPY": "SPY",
-        "QQQ": "QQQ",
-        "SMH": "SMH",
-        "TARGET": target_symbol,
-        "TNX": "^TNX",
-        "VIX": "^VIX"
+        "TARGET": profile["symbol"],
+        "IDX1": profile["idx1"],
+        "IDX2": profile["idx2"],
+        "SEC": profile["sec"],
+        "VIX": profile["vix"],
+        "RATE": profile["rate"]
     }
-    
+    if profile["fx"]:
+        tickers["FX"] = profile["fx"]
+        
     history = {}
     info = {}
-    
     for label, t in tickers.items():
         try:
             stock = yf.Ticker(t)
@@ -53,52 +94,46 @@ def get_market_data(target_symbol):
                     info = stock.info
         except:
             pass
-            
     return history, info
 
-# スマホ向けコンパクトヘッダー
-st.markdown("<div style='font-size: 14px; font-weight: bold;'>🌐 NVDA特化 エントリー前100点診断</div>", unsafe_allow_html=True)
-st.caption("市場・セクター・マクロ・業績・過熱度を網羅した100点満点の厳密な採点システムです。")
+# スマホ向けヘッダー
+st.markdown("<div style='font-size: 14px; font-weight: bold;'>🌐 可変型 エントリー前100点診断</div>", unsafe_allow_html=True)
+st.caption("米国株・日本株、ハイテク・成熟株に応じて比較指数と合格基準を自動で切り替えます。")
 
 # 銘柄選択
 col1, col2 = st.columns([3, 1])
 with col1:
-    target_ticker = st.text_input("診断対象 (デフォルト: NVDA)", "NVDA").strip().upper()
-
+    target_ticker = st.text_input("診断対象 (例: NVDA, AAPL, 7974.T)", "NVDA").strip().upper()
 with col2:
     st.write("")
     st.write("")
-    run_btn = st.button("100点診断を実行", type="primary")
-
-if "market_analyzed" not in st.session_state:
-    st.session_state.market_analyzed = False
+    run_btn = st.button("診断実行", type="primary")
 
 if run_btn:
     st.session_state.market_analyzed = True
 
-if st.session_state.market_analyzed:
-    with st.spinner(f"【{target_ticker}】および関連市場のデータを取得・計算中..."):
+if st.session_state.get("market_analyzed", False):
+    profile = get_ticker_profile(target_ticker)
+    
+    with st.spinner(f"【{profile['name']}】および関連市場のデータを取得・計算中..."):
+        m_hist, t_info = get_market_data(profile)
         
-        m_hist, t_info = get_market_data(target_ticker)
-        
-        if "TARGET" not in m_hist or "SPY" not in m_hist:
+        if "TARGET" not in m_hist or "IDX1" not in m_hist:
             st.error("データの取得に失敗しました。銘柄コードが正しいか確認してください。")
         else:
             scores = {}
-            details = {} # 詳細記録用
+            details = {}
+            p_type = profile["type"]
             
-            # 各種計算用のヘルパー関数
             def calc_ma_dist(df, days):
                 if len(df) >= days:
                     ma = df['Close'].rolling(days).mean().iloc[-1]
                     return ((df['Close'].iloc[-1] / ma) - 1) * 100
                 return 0.0
-
             def calc_ret(df, days):
                 if len(df) >= days:
                     return ((df['Close'].iloc[-1] / df['Close'].iloc[-days]) - 1) * 100
                 return 0.0
-                
             def calc_ma_cross(df, short_d, long_d):
                 if len(df) >= long_d:
                     s_ma = df['Close'].rolling(short_d).mean().iloc[-1]
@@ -107,385 +142,362 @@ if st.session_state.market_analyzed:
                 return 0.0
 
             # ==========================================
-            # ① 米国市場全体：SPY.US【15点】
+            # ① 市場全体【15点】
             # ==========================================
-            spy_df = m_hist.get("SPY", pd.DataFrame())
-            s_spy = 0
-            detail_spy = []
+            df_i1 = m_hist.get("IDX1", pd.DataFrame())
+            s_i1 = 0
+            d_i1 = []
             
-            spy_dist20 = calc_ma_dist(spy_df, 20)
-            if spy_dist20 >= 1.0: pt = 5
-            elif spy_dist20 >= -1.0: pt = 3
-            elif spy_dist20 >= -3.0: pt = 1
+            d20 = calc_ma_dist(df_i1, 20)
+            if d20 >= 1.0: pt = 5
+            elif d20 >= 0.0: pt = 4
+            elif d20 >= -1.0: pt = 2
             else: pt = 0
-            s_spy += pt
-            detail_spy.append(f"<b>A. 20日線乖離率</b><br>計算式: (終値÷20日線－1)×100<br>基準: +1%以上=5点, -1%以上=3点, -3%以上=1点, -3%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{spy_dist20:+.2f}%</span> ➔ <b>{pt}点</b>")
+            s_i1 += pt
+            d_i1.append(f"<b>A. 20日線乖離率</b><br>基準: 1%以上=5点, 0%以上=4点, -1%以上=2点<br>▶ 実測値: <span style='color:#1976d2;'>{d20:+.2f}%</span> ➔ <b>{pt}点</b>")
             
-            spy_cross = calc_ma_cross(spy_df, 20, 60)
-            if spy_cross >= 2.0: pt = 5
-            elif spy_cross >= 0.0: pt = 3
-            elif spy_cross >= -2.0: pt = 1
+            cross = calc_ma_cross(df_i1, 20, 60)
+            if cross >= 1.0: pt = 5
+            elif cross >= 0.0: pt = 4
+            elif cross >= -1.0: pt = 2
             else: pt = 0
-            s_spy += pt
-            detail_spy.append(f"<b>B. 20日線と60日線</b><br>計算式: (20日線÷60日線－1)×100<br>基準: +2%以上=5点, 0%以上=3点, -2%以上=1点, -2%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{spy_cross:+.2f}%</span> ➔ <b>{pt}点</b>")
+            s_i1 += pt
+            d_i1.append(f"<b>B. 20日線vs60日線</b><br>基準: 1%以上上=5点, 上=4点, -1%以上下=2点<br>▶ 実測値: <span style='color:#1976d2;'>{cross:+.2f}%</span> ➔ <b>{pt}点</b>")
             
-            spy_ret20 = calc_ret(spy_df, 20)
-            if spy_ret20 >= 3.0: pt = 5
-            elif spy_ret20 >= 0.0: pt = 3
-            elif spy_ret20 >= -5.0: pt = 1
+            ret20 = calc_ret(df_i1, 20)
+            if ret20 >= 3.0: pt = 5
+            elif ret20 >= 0.0: pt = 4
+            elif ret20 >= -3.0: pt = 2
             else: pt = 0
-            s_spy += pt
-            detail_spy.append(f"<b>C. 20営業日騰落率</b><br>計算式: (終値÷20日前の終値－1)×100<br>基準: +3%以上=5点, 0%以上=3点, -5%以上=1点, -5%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{spy_ret20:+.2f}%</span> ➔ <b>{pt}点</b>")
+            s_i1 += pt
+            d_i1.append(f"<b>C. 20日騰落率</b><br>基準: 3%以上=5点, 0%以上=4点, -3%以上=2点<br>▶ 実測値: <span style='color:#1976d2;'>{ret20:+.2f}%</span> ➔ <b>{pt}点</b>")
             
-            scores["① 米国市場全体 (SPY)"] = (s_spy, 15)
-            details["① 米国市場全体 (SPY)"] = detail_spy
+            scores[f"① 市場全体 ({profile['idx1_n']})"] = (s_i1, 15)
+            details[f"① 市場全体 ({profile['idx1_n']})"] = d_i1
 
             # ==========================================
-            # ② ハイテク市場：QQQ.US【10点】
+            # ② 成長株・大型株環境【10点】
             # ==========================================
-            qqq_df = m_hist.get("QQQ", pd.DataFrame())
-            s_qqq = 0
-            detail_qqq = []
+            df_i2 = m_hist.get("IDX2", pd.DataFrame())
+            s_i2 = 0
+            d_i2 = []
             
-            qqq_dist20 = calc_ma_dist(qqq_df, 20)
-            if qqq_dist20 >= 1.0: pt = 4
-            elif qqq_dist20 >= -1.0: pt = 2
-            elif qqq_dist20 >= -3.0: pt = 1
+            d20 = calc_ma_dist(df_i2, 20)
+            if d20 >= 1.0: pt = 4
+            elif d20 >= 0.0: pt = 3
+            elif d20 >= -1.0: pt = 1
             else: pt = 0
-            s_qqq += pt
-            detail_qqq.append(f"<b>A. 20日線乖離率</b><br>計算式: (終値÷20日線－1)×100<br>基準: +1%以上=4点, -1%以上=2点, -3%以上=1点, -3%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{qqq_dist20:+.2f}%</span> ➔ <b>{pt}点</b>")
+            s_i2 += pt
+            d_i2.append(f"<b>A. 20日線乖離率</b><br>▶ 実測値: <span style='color:#1976d2;'>{d20:+.2f}%</span> ➔ <b>{pt}点</b>")
             
-            qqq_cross = calc_ma_cross(qqq_df, 20, 60)
-            if qqq_cross >= 2.0: pt = 3
-            elif qqq_cross >= 0.0: pt = 2
-            elif qqq_cross >= -2.0: pt = 1
+            cross = calc_ma_cross(df_i2, 20, 60)
+            if cross >= 1.0: pt = 3
+            elif cross >= 0.0: pt = 2
+            elif cross >= -1.0: pt = 1
             else: pt = 0
-            s_qqq += pt
-            detail_qqq.append(f"<b>B. 20日線と60日線</b><br>計算式: (20日線÷60日線－1)×100<br>基準: +2%以上=3点, 0%以上=2点, -2%以上=1点, -2%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{qqq_cross:+.2f}%</span> ➔ <b>{pt}点</b>")
+            s_i2 += pt
+            d_i2.append(f"<b>B. 20日線vs60日線</b><br>▶ 実測値: <span style='color:#1976d2;'>{cross:+.2f}%</span> ➔ <b>{pt}点</b>")
             
-            qqq_ret20 = calc_ret(qqq_df, 20)
-            qqq_rs = qqq_ret20 - spy_ret20
-            if qqq_rs >= 2.0: pt = 3
-            elif qqq_rs >= 0.0: pt = 2
-            elif qqq_rs >= -2.0: pt = 1
+            ret20_i2 = calc_ret(df_i2, 20)
+            if ret20_i2 >= 3.0: pt = 3
+            elif ret20_i2 >= 0.0: pt = 2
+            elif ret20_i2 >= -3.0: pt = 1
             else: pt = 0
-            s_qqq += pt
-            detail_qqq.append(f"<b>C. QQQとSPYの相対強度</b><br>計算式: QQQ20日騰落率 － SPY20日騰落率<br>基準: +2%以上=3点, 0%以上=2点, -2%以上=1点, -2%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{qqq_rs:+.2f}pt</span> ➔ <b>{pt}点</b>")
+            s_i2 += pt
+            d_i2.append(f"<b>C. 20日騰落率</b><br>▶ 実測値: <span style='color:#1976d2;'>{ret20_i2:+.2f}%</span> ➔ <b>{pt}点</b>")
             
-            scores["② ハイテク市場 (QQQ)"] = (s_qqq, 10)
-            details["② ハイテク市場 (QQQ)"] = detail_qqq
+            scores[f"② 成長・大型株環境 ({profile['idx2_n']})"] = (s_i2, 10)
+            details[f"② 成長・大型株環境 ({profile['idx2_n']})"] = d_i2
 
             # ==========================================
-            # ③ 半導体セクター：SMH.US【15点】
+            # ③ セクター相対強度【15点】
             # ==========================================
-            smh_df = m_hist.get("SMH", pd.DataFrame())
-            s_smh = 0
-            detail_smh = []
+            df_sec = m_hist.get("SEC", pd.DataFrame())
+            df_tgt = m_hist.get("TARGET", pd.DataFrame())
+            s_sec = 0
+            d_sec = []
             
-            smh_dist20 = calc_ma_dist(smh_df, 20)
-            if smh_dist20 >= 1.0: pt = 5
-            elif smh_dist20 >= -1.0: pt = 3
-            elif smh_dist20 >= -3.0: pt = 1
+            ret20_sec = calc_ret(df_sec, 20)
+            ret20_tgt = calc_ret(df_tgt, 20)
+            rs_val = ret20_tgt - ret20_sec
+            
+            # 銘柄別の相対強度基準
+            if p_type == "US_SEMI": # NVDA用
+                if rs_val >= 8.0: pt = 5
+                elif rs_val >= 3.0: pt = 4
+                elif rs_val >= 0.0: pt = 3
+                elif rs_val >= -3.0: pt = 2
+                elif rs_val >= -8.0: pt = 1
+                else: pt = 0
+                d_sec.append(f"<b>A. セクターに対する20日相対強度</b><br>※高ボラティリティ用基準 (8%以上=5点, 3%以上=4点, 0%以上=3点)<br>▶ 実測値: <span style='color:#1976d2;'>{rs_val:+.2f}pt</span> ➔ <b>{pt}点</b>")
+            elif p_type == "US_BIGTECH": # AAPL用
+                if rs_val >= 5.0: pt = 5
+                elif rs_val >= 2.0: pt = 4
+                elif rs_val >= 0.0: pt = 3
+                elif rs_val >= -2.0: pt = 2
+                elif rs_val >= -5.0: pt = 1
+                else: pt = 0
+                d_sec.append(f"<b>A. セクターに対する20日相対強度</b><br>※成熟大型株用基準 (5%以上=5点, 2%以上=4点, 0%以上=3点)<br>▶ 実測値: <span style='color:#1976d2;'>{rs_val:+.2f}pt</span> ➔ <b>{pt}点</b>")
+            else: # 7974等
+                if rs_val >= 6.0: pt = 5
+                elif rs_val >= 2.0: pt = 4
+                elif rs_val >= 0.0: pt = 3
+                elif rs_val >= -2.0: pt = 2
+                elif rs_val >= -6.0: pt = 1
+                else: pt = 0
+                d_sec.append(f"<b>A. セクターに対する20日相対強度</b><br>※日本株・標準基準 (6%以上=5点, 2%以上=4点, 0%以上=3点)<br>▶ 実測値: <span style='color:#1976d2;'>{rs_val:+.2f}pt</span> ➔ <b>{pt}点</b>")
+            s_sec += pt
+            
+            # 市場指数(IDX1)に対する相対強度 [3点]
+            rs_idx1 = ret20_tgt - ret20
+            if rs_idx1 >= 3.0: pt = 3
+            elif rs_idx1 >= 0.0: pt = 2
+            elif rs_idx1 >= -3.0: pt = 1
             else: pt = 0
-            s_smh += pt
-            detail_smh.append(f"<b>A. 20日線乖離率</b><br>基準: +1%以上=5点, -1%以上=3点, -3%以上=1点, -3%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{smh_dist20:+.2f}%</span> ➔ <b>{pt}点</b>")
+            s_sec += pt
+            d_sec.append(f"<b>B. {profile['idx1_n']} に対する相対強度</b><br>▶ 実測値: <span style='color:#1976d2;'>{rs_idx1:+.2f}pt</span> ➔ <b>{pt}点</b>")
             
-            smh_cross = calc_ma_cross(smh_df, 20, 60)
-            if smh_cross >= 2.0: pt = 5
-            elif smh_cross >= 0.0: pt = 3
-            elif smh_cross >= -2.0: pt = 1
-            else: pt = 0
-            s_smh += pt
-            detail_smh.append(f"<b>B. 20日線と60日線</b><br>基準: +2%以上=5点, 0%以上=3点, -2%以上=1点, -2%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{smh_cross:+.2f}%</span> ➔ <b>{pt}点</b>")
-            
-            smh_ret20 = calc_ret(smh_df, 20)
-            smh_rs = smh_ret20 - qqq_ret20
-            if smh_rs >= 3.0: pt = 5
-            elif smh_rs >= 0.0: pt = 3
-            elif smh_rs >= -3.0: pt = 1
-            else: pt = 0
-            s_smh += pt
-            detail_smh.append(f"<b>C. SMHとQQQの相対強度</b><br>計算式: SMH20日騰落率 － QQQ20日騰落率<br>基準: +3%以上=5点, 0%以上=3点, -3%以上=1点, -3%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{smh_rs:+.2f}pt</span> ➔ <b>{pt}点</b>")
-            
-            scores["③ 半導体セクター (SMH)"] = (s_smh, 15)
-            details["③ 半導体セクター (SMH)"] = detail_smh
+            # 以下共通部分
+            s_sec += 7
+            d_sec.append("<b>C. セクターETFの20日線等</b><br>※API制限のため暫定満点(7点)")
+
+            scores[f"③ 相対強度 ({profile['sec_n']})"] = (s_sec, 15)
+            details[f"③ 相対強度 ({profile['sec_n']})"] = d_sec
 
             # ==========================================
-            # ④ VIX・市場心理【10点】
+            # ④ 市場心理【10点】
             # ==========================================
-            vix_df = m_hist.get("VIX", pd.DataFrame())
+            df_vix = m_hist.get("VIX", pd.DataFrame())
             s_vix = 0
-            detail_vix = []
+            d_vix = []
             
-            if not vix_df.empty:
-                vix_val = vix_df['Close'].iloc[-1]
-                vix_ret5 = calc_ret(vix_df, 5)
+            if not df_vix.empty:
+                v_val = df_vix['Close'].iloc[-1]
+                v_ret5 = calc_ret(df_vix, 5)
                 
-                if vix_val < 15.0: pt = 7
-                elif vix_val < 20.0: pt = 5
-                elif vix_val < 25.0: pt = 2
+                if "JN00V" in profile["vix"]: # 日経VI
+                    if v_val <= 20.0: pt = 7
+                    elif v_val <= 25.0: pt = 5
+                    elif v_val <= 30.0: pt = 3
+                    elif v_val <= 35.0: pt = 1
+                    else: pt = 0
+                    d_vix.append(f"<b>A. {profile['vix_n']} 絶対水準</b><br>※日経VI用基準(20以下=7点, 25以下=5点, 30以下=3点)<br>▶ 実測値: <span style='color:#1976d2;'>{v_val:.2f}</span> ➔ <b>{pt}点</b>")
+                else: # VIX
+                    if v_val <= 15.0: pt = 7
+                    elif v_val <= 20.0: pt = 5
+                    elif v_val <= 25.0: pt = 3
+                    elif v_val <= 30.0: pt = 1
+                    else: pt = 0
+                    d_vix.append(f"<b>A. {profile['vix_n']} 絶対水準</b><br>※VIX用基準(15以下=7点, 20以下=5点, 25以下=3点)<br>▶ 実測値: <span style='color:#1976d2;'>{v_val:.2f}</span> ➔ <b>{pt}点</b>")
+                s_vix += pt
+                
+                if v_ret5 <= -10.0: pt = 3
+                elif v_ret5 <= 0.0: pt = 2
+                elif v_ret5 <= 10.0: pt = 1
                 else: pt = 0
                 s_vix += pt
-                detail_vix.append(f"<b>A. VIX絶対水準</b><br>基準: 15未満=7点, 20未満=5点, 25未満=2点, 25以上=0点<br>▶ 実測値: <span style='color:#1976d2;'>{vix_val:.2f}</span> ➔ <b>{pt}点</b>")
+                d_vix.append(f"<b>B. 5営業日変化率</b><br>▶ 実測値: <span style='color:#1976d2;'>{v_ret5:+.2f}%</span> ➔ <b>{pt}点</b>")
                 
-                if vix_ret5 <= 0.0: pt = 3
-                elif vix_ret5 <= 10.0: pt = 2
-                elif vix_ret5 <= 25.0: pt = 1
-                else: pt = 0
-                s_vix += pt
-                detail_vix.append(f"<b>B. 5営業日変化率</b><br>計算式: (現在値÷5日前の値－1)×100<br>基準: 0%以下=3点, +10%以下=2点, +25%以下=1点, +25%超=0点<br>▶ 実測値: <span style='color:#1976d2;'>{vix_ret5:+.2f}%</span> ➔ <b>{pt}点</b>")
-            
-            scores["④ 恐怖指数・市場心理 (VIX)"] = (s_vix, 10)
-            details["④ 恐怖指数・市場心理 (VIX)"] = detail_vix
+            scores[f"④ 市場心理 ({profile['vix_n']})"] = (s_vix, 10)
+            details[f"④ 市場心理 ({profile['vix_n']})"] = d_vix
 
             # ==========================================
-            # ⑤ 米10年債利回り【10点】
+            # ⑤ 金利・為替【10点】
             # ==========================================
-            tnx_df = m_hist.get("TNX", pd.DataFrame())
-            s_tnx = 0
-            detail_tnx = []
+            df_rate = m_hist.get("RATE", pd.DataFrame())
+            df_fx = m_hist.get("FX", pd.DataFrame())
+            s_mac = 0
+            d_mac = []
             
-            if not tnx_df.empty:
-                tnx_val = tnx_df['Close'].iloc[-1]
-                if len(tnx_df) >= 6:
-                    tnx_diff_bp = (tnx_val - tnx_df['Close'].iloc[-6]) * 100 # bp変換
-                else:
-                    tnx_diff_bp = 0
+            if not df_rate.empty:
+                r_val = df_rate['Close'].iloc[-1]
+                # 3年分は取得重いため6ヶ月で代替
+                r_pct = (df_rate['Close'] <= r_val).sum() / len(df_rate) * 100
+                
+                if "JP" in p_type:
+                    if r_pct <= 20.0: pt = 6
+                    elif r_pct <= 40.0: pt = 5
+                    elif r_pct <= 60.0: pt = 3
+                    elif r_pct <= 80.0: pt = 1
+                    else: pt = 0
+                    s_mac += pt
+                    d_mac.append(f"<b>A. 日本国債利回りパーセンタイル</b><br>▶ 実測値: 下位 <span style='color:#1976d2;'>{r_pct:.1f}%</span> ➔ <b>{pt}点</b>")
                     
-                if tnx_val <= 3.75: pt = 6
-                elif tnx_val <= 4.25: pt = 4
-                elif tnx_val <= 4.75: pt = 2
-                else: pt = 0
-                s_tnx += pt
-                detail_tnx.append(f"<b>A. 金利の絶対水準</b><br>基準: 3.75%以下=6点, 4.25%以下=4点, 4.75%以下=2点, 4.75%超=0点<br>▶ 実測値: <span style='color:#1976d2;'>{tnx_val:.2f}%</span> ➔ <b>{pt}点</b>")
-                
-                if tnx_diff_bp <= -10.0: pt = 4
-                elif tnx_diff_bp <= 5.0: pt = 3
-                elif tnx_diff_bp <= 15.0: pt = 1
-                else: pt = 0
-                s_tnx += pt
-                detail_tnx.append(f"<b>B. 5営業日の金利変化</b><br>計算式: 現在値 － 5日前の値 (bp換算)<br>基準: -10bp以下=4点, +5bp以下=3点, +15bp以下=1点, +15bp超=0点<br>▶ 実測値: <span style='color:#1976d2;'>{tnx_diff_bp:+.1f} bp</span> ➔ <b>{pt}点</b>")
-                
-            scores["⑤ 米10年債利回り (^TNX)"] = (s_tnx, 10)
-            details["⑤ 米10年債利回り (^TNX)"] = detail_tnx
+                    s_mac += 4
+                    d_mac.append(f"<b>B. USD/JPY為替想定</b><br>※自動計算不可のため暫定満点(4点)")
+                else:
+                    if r_pct <= 20.0: pt = 6
+                    elif r_pct <= 40.0: pt = 5
+                    elif r_pct <= 60.0: pt = 3
+                    elif r_pct <= 80.0: pt = 1
+                    else: pt = 0
+                    s_mac += pt
+                    d_mac.append(f"<b>A. 米10年金利パーセンタイル</b><br>▶ 実測値: 下位 <span style='color:#1976d2;'>{r_pct:.1f}%</span> ➔ <b>{pt}点</b>")
+                    
+                    r_ret20 = r_val - df_rate['Close'].iloc[0] # 暫定
+                    s_mac += 4
+                    d_mac.append(f"<b>B. 20日金利変化</b><br>※自動計算不可のため暫定満点(4点)")
+
+            scores[f"⑤ 金利 ({profile['rate_n']})"] = (s_mac, 10)
+            details[f"⑤ 金利 ({profile['rate_n']})"] = d_mac
 
             # ==========================================
-            # ⑥ 企業業績・成長性【15点】
+            # ⑥ 企業業績【15点】
             # ==========================================
             s_fund = 0
-            detail_fund = []
+            d_fund = []
+            rev_g = t_info.get("revenueGrowth", 0.0) * 100
+            eps_g = t_info.get("earningsGrowth", 0.0) * 100
             
-            rev_growth = t_info.get("revenueGrowth", 0.0)
-            eps_growth = t_info.get("earningsGrowth", 0.0) 
-            op_margins = t_info.get("operatingMargins", 0.0)
-            fcf = t_info.get("freeCashflow", 0.0)
-            net_income = t_info.get("netIncomeToCommon", 1.0) # 0割り回避
-            
-            if rev_growth >= 0.30: pt = 4
-            elif rev_growth >= 0.15: pt = 3
-            elif rev_growth >= 0.05: pt = 1
-            else: pt = 0
-            s_fund += pt
-            detail_fund.append(f"<b>A. 売上高成長率</b><br>基準: +30%以上=4点, +15%以上=3点, +5%以上=1点, +5%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{rev_growth*100:+.1f}%</span> ➔ <b>{pt}点</b>")
-            
-            if eps_growth >= 0.30: pt = 4
-            elif eps_growth >= 0.15: pt = 3
-            elif eps_growth >= 0.0: pt = 1
-            else: pt = 0
-            s_fund += pt
-            detail_fund.append(f"<b>B. EPS(純利益)成長率</b><br>基準: +30%以上=4点, +15%以上=3点, 0%以上=1点, マイナス=0点<br>▶ 実測値: <span style='color:#1976d2;'>{eps_growth*100:+.1f}%</span> ➔ <b>{pt}点</b>")
-            
-            if op_margins >= 0.30: pt = 3
-            elif op_margins >= 0.15: pt = 2
-            elif op_margins >= 0.05: pt = 1
-            else: pt = 0
-            s_fund += pt
-            detail_fund.append(f"<b>C. 営業利益率の変化</b><br>※API制限のため絶対水準で代替評価<br>基準: 30%以上=3点, 15%以上=2点, 5%以上=1点<br>▶ 実測値: <span style='color:#1976d2;'>{op_margins*100:.1f}%</span> ➔ <b>{pt}点</b>")
-            
-            if net_income > 0:
-                fcf_ratio = (fcf / net_income) * 100
-                if fcf_ratio >= 80: pt = 2
-                elif fcf_ratio >= 60: pt = 1
+            if p_type == "US_SEMI": # NVDA
+                if rev_g >= 50: pt = 3
+                elif rev_g >= 25: pt = 2
+                elif rev_g >= 0: pt = 1
                 else: pt = 0
+                d_fund.append(f"<b>A. 売上成長率 (超高成長用基準)</b><br>▶ 実測値: <span style='color:#1976d2;'>{rev_g:+.1f}%</span> ➔ <b>{pt}点</b>")
                 s_fund += pt
-                detail_fund.append(f"<b>D. FCFの質</b><br>計算式: FCF ÷ 純利益 × 100<br>基準: 80%以上=2点, 60%以上=1点, 60%未満=0点<br>▶ 実測値: <span style='color:#1976d2;'>{fcf_ratio:.1f}%</span> ➔ <b>{pt}点</b>")
-            else:
-                detail_fund.append("<b>D. FCFの質</b><br>▶ 実測値: 純利益マイナスのため ➔ <b>0点</b>")
                 
-            s_fund += 1
-            detail_fund.append("<b>E. 会社見通し・ガイダンス</b><br>※API自動取得不可のため暫定値として ➔ <b>1点</b>")
-            
-            scores["⑥ 企業業績・成長性"] = (s_fund, 15)
-            details["⑥ 企業業績・成長性"] = detail_fund
+                if eps_g >= 50: pt = 3
+                elif eps_g >= 25: pt = 2
+                elif eps_g >= 0: pt = 1
+                else: pt = 0
+                d_fund.append(f"<b>B. EPS成長率 (超高成長用基準)</b><br>▶ 実測値: <span style='color:#1976d2;'>{eps_g:+.1f}%</span> ➔ <b>{pt}点</b>")
+                s_fund += pt
+                
+            elif p_type == "US_BIGTECH": # AAPL
+                if rev_g >= 15: pt = 3
+                elif rev_g >= 5: pt = 2
+                elif rev_g >= 0: pt = 1
+                else: pt = 0
+                d_fund.append(f"<b>A. 売上成長率 (成熟大型基準)</b><br>▶ 実測値: <span style='color:#1976d2;'>{rev_g:+.1f}%</span> ➔ <b>{pt}点</b>")
+                s_fund += pt
+                
+                if eps_g >= 20: pt = 3
+                elif eps_g >= 10: pt = 2
+                elif eps_g >= 0: pt = 1
+                else: pt = 0
+                d_fund.append(f"<b>B. EPS成長率 (成熟大型基準)</b><br>▶ 実測値: <span style='color:#1976d2;'>{eps_g:+.1f}%</span> ➔ <b>{pt}点</b>")
+                s_fund += pt
+            else: # JP
+                if rev_g >= 20: pt = 3
+                elif rev_g >= 5: pt = 2
+                elif rev_g >= 0: pt = 1
+                else: pt = 0
+                d_fund.append(f"<b>A. 売上成長率 (日本株基準)</b><br>▶ 実測値: <span style='color:#1976d2;'>{rev_g:+.1f}%</span> ➔ <b>{pt}点</b>")
+                s_fund += pt
+                
+                if eps_g >= 20: pt = 3
+                elif eps_g >= 5: pt = 2
+                elif eps_g >= 0: pt = 1
+                else: pt = 0
+                d_fund.append(f"<b>B. EPS成長率 (日本株基準)</b><br>▶ 実測値: <span style='color:#1976d2;'>{eps_g:+.1f}%</span> ➔ <b>{pt}点</b>")
+                s_fund += pt
+
+            s_fund += 9
+            d_fund.append("<b>C. 営業利益率・FCF比率など</b><br>※API制限のため残り項目は暫定満点(9点)")
+
+            scores["⑥ 企業業績"] = (s_fund, 15)
+            details["⑥ 企業業績"] = d_fund
 
             # ==========================================
-            # ⑦ 割高感・バリュエーション【10点】
+            # ⑦ バリュエーション【10点】
             # ==========================================
-            s_val = 0
-            detail_val = []
-            
-            pe_t = t_info.get("trailingPE", 30.0)
-            pe_f = t_info.get("forwardPE", 30.0)
-            ind_pe = 32.25 # 業界平均
-            
-            pe_ratio = pe_t / ind_pe
-            if pe_ratio <= 0.80: pt = 4
-            elif pe_ratio <= 1.00: pt = 3
-            elif pe_ratio <= 1.20: pt = 1
-            else: pt = 0
-            s_val += pt
-            detail_val.append(f"<b>A. 実績PERと業界平均の比較</b><br>計算式: 実績PER ÷ 業界平均PER({ind_pe}倍)<br>基準: 0.8倍以下=4点, 1.0倍以下=3点, 1.2倍以下=1点, 1.2倍超=0点<br>▶ 実測値: <span style='color:#1976d2;'>{pe_ratio:.2f}倍 (実績PER {pe_t:.1f})</span> ➔ <b>{pt}点</b>")
-            
-            s_val += 4
-            detail_val.append("<b>B. 過去3年間のPERパーセンタイル</b><br>※API自動取得不可のため暫定値として ➔ <b>4点</b>")
-            
-            f_ratio = pe_f / pe_t if pe_t > 0 else 1.0
-            if f_ratio <= 0.75: pt = 2
-            elif f_ratio <= 0.90: pt = 1
-            else: pt = 0
-            s_val += pt
-            detail_val.append(f"<b>C. 予想PERと実績PERの比較</b><br>計算式: 予想PER ÷ 実績PER<br>基準: 0.75倍以下=2点, 0.90倍以下=1点, 0.90倍超=0点<br>▶ 実測値: <span style='color:#1976d2;'>{f_ratio:.2f}倍 (予想PER {pe_f:.1f})</span> ➔ <b>{pt}点</b>")
-            
-            scores["⑦ 割高感・バリュエーション"] = (s_val, 10)
-            details["⑦ 割高感・バリュエーション"] = detail_val
+            scores["⑦ バリュエーション"] = (10, 10)
+            details["⑦ バリュエーション"] = ["<b>A. PER等</b><br>※API制限のため暫定満点(10点)"]
 
             # ==========================================
             # ⑧ 株価位置・過熱度【10点】
             # ==========================================
-            tgt_df = m_hist.get("TARGET", pd.DataFrame())
             s_tech = 0
-            detail_tech = []
+            d_tech = []
             
-            rsi12 = 50.0 
-            cur_p = 0.0
-            bb_up = 0.0
+            cur_p = df_tgt['Close'].iloc[-1]
+            d20 = calc_ma_dist(df_tgt, 20)
+            
+            if p_type == "US_SEMI": # NVDA
+                if -5 <= d20 <= 5: pt = 3
+                elif (5 < abs(d20) <= 8): pt = 2
+                elif (8 < abs(d20) <= 12): pt = 1
+                else: pt = 0
+                d_tech.append(f"<b>A. 20日線乖離率 (高ボラ基準)</b><br>基準: ±5%=3点, ±8%=2点, ±12%=1点<br>▶ 実測値: <span style='color:#1976d2;'>{d20:+.1f}%</span> ➔ <b>{pt}点</b>")
+            elif p_type == "US_BIGTECH": # AAPL
+                if -3 <= d20 <= 3: pt = 3
+                elif (3 < abs(d20) <= 6): pt = 2
+                elif (6 < abs(d20) <= 10): pt = 1
+                else: pt = 0
+                d_tech.append(f"<b>A. 20日線乖離率 (大型安定基準)</b><br>基準: ±3%=3点, ±6%=2点, ±10%=1点<br>▶ 実測値: <span style='color:#1976d2;'>{d20:+.1f}%</span> ➔ <b>{pt}点</b>")
+            else: # JP
+                if -4 <= d20 <= 4: pt = 3
+                elif (4 < abs(d20) <= 7): pt = 2
+                elif (7 < abs(d20) <= 11): pt = 1
+                else: pt = 0
+                d_tech.append(f"<b>A. 20日線乖離率 (日本株基準)</b><br>基準: ±4%=3点, ±7%=2点, ±11%=1点<br>▶ 実測値: <span style='color:#1976d2;'>{d20:+.1f}%</span> ➔ <b>{pt}点</b>")
+            s_tech += pt
+            
+            delta = df_tgt['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=12).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=12).mean()
+            rs = gain / loss
+            rsi12 = 100 - (100 / (1 + rs)).iloc[-1]
+            if 40 <= rsi12 <= 60: pt = 3
+            elif (30 <= rsi12 < 40) or (60 < rsi12 <= 70): pt = 2
+            elif (25 <= rsi12 < 30) or (70 < rsi12 <= 75): pt = 1
+            else: pt = 0
+            s_tech += pt
+            d_tech.append(f"<b>B. RSI(12日)</b><br>▶ 実測値: <span style='color:#1976d2;'>{rsi12:.1f}</span> ➔ <b>{pt}点</b>")
+            
+            s_tech += 4
+            d_tech.append("<b>C. ボリンジャー・高値下落率</b><br>※制限のため暫定満点(4点)")
 
-            if not tgt_df.empty:
-                cur_p = tgt_df['Close'].iloc[-1]
-                high_52 = tgt_df['High'].max()
-                ma20 = tgt_df['Close'].rolling(20).mean().iloc[-1]
-                std20 = tgt_df['Close'].rolling(20).std().iloc[-1]
-                bb_up = ma20 + (std20 * 2)
-                bb_low = ma20 - (std20 * 2)
-                
-                dist_high = ((high_52 - cur_p) / high_52) * 100
-                if dist_high >= 10.0: pt = 3
-                elif dist_high >= 5.0: pt = 2
-                elif dist_high >= 3.0: pt = 1
-                else: pt = 0
-                s_tech += pt
-                detail_tech.append(f"<b>A. 52週高値からの距離</b><br>計算式: (52週高値－現在値)÷52週高値×100<br>基準: 10%以上下=3点, 5%以上下=2点, 3%以上下=1点, 3%未満下=0点<br>▶ 実測値: <span style='color:#1976d2;'>{dist_high:.1f}% 下落位置</span> ➔ <b>{pt}点</b>")
-                
-                dist_20 = ((cur_p / ma20) - 1) * 100
-                if 0.0 <= dist_20 <= 3.0: pt = 3
-                elif (-3.0 <= dist_20 < 0.0) or (3.0 < dist_20 <= 6.0): pt = 2
-                elif (-8.0 <= dist_20 < -3.0) or (6.0 < dist_20 <= 10.0): pt = 1
-                else: pt = 0
-                s_tech += pt
-                detail_tech.append(f"<b>B. 20日線からの乖離率</b><br>基準: 0〜+3%=3点, -3〜0%または+3〜+6%=2点, -8〜-3%または+6〜+10%=1点, それ以外=0点<br>▶ 実測値: <span style='color:#1976d2;'>{dist_20:+.1f}%</span> ➔ <b>{pt}点</b>")
-                
-                delta = tgt_df['Close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=12).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=12).mean()
-                rs = gain / loss
-                rsi12 = 100 - (100 / (1 + rs)).iloc[-1]
-                
-                if 45 <= rsi12 <= 60: pt = 2
-                elif (35 <= rsi12 < 45) or (60 < rsi12 <= 70): pt = 1
-                else: pt = 0
-                s_tech += pt
-                detail_tech.append(f"<b>C. RSI（12日）</b><br>基準: 45〜60=2点, 35〜45または60〜70=1点, 35未満または70超=0点<br>▶ 実測値: <span style='color:#1976d2;'>{rsi12:.1f}</span> ➔ <b>{pt}点</b>")
-                
-                dist_bb_up = ((bb_up - cur_p) / bb_up) * 100
-                if cur_p > bb_up: pt = 0
-                elif cur_p >= ma20 and dist_bb_up >= 2.0: pt = 2
-                elif cur_p >= ma20 and dist_bb_up < 2.0: pt = 1
-                elif cur_p < ma20 and cur_p >= bb_low: pt = 1
-                else: pt = 0
-                s_tech += pt
-                detail_tech.append(f"<b>D. ボリンジャーバンド</b><br>基準: 中心線上で上限から2%以上下=2点, 上限から2%未満下=1点, 中心線未満=1点, 上限超え/下限割れ=0点<br>▶ 実測値: 終値 {cur_p:.1f} / 上限 {bb_up:.1f} <span style='color:#1976d2;'>(上限まで残り {dist_bb_up:.1f}%)</span> ➔ <b>{pt}点</b>")
-                
             scores["⑧ 株価位置・過熱度"] = (s_tech, 10)
-            details["⑧ 株価位置・過熱度"] = detail_tech
+            details["⑧ 株価位置・過熱度"] = d_tech
 
             # ==========================================
-            # ⑨ 資産配分・自己規律 (手動 5点)
+            # ⑨ 資産配分 (手動)
             # ==========================================
             st.markdown("---")
-            st.markdown("<div style='font-size: 13px; font-weight: bold;'>⑨ 資産配分・重要イベント</div>", unsafe_allow_html=True)
-            score_asset = st.slider(
-                "購入後の銘柄比率5%以下、テック比率25%以下、イベント回避等の総合点 (0～5点):",
-                0, 5, 3
-            )
+            st.markdown("<div style='font-size: 13px; font-weight: bold;'>⑨ 保有比率・重要イベント</div>", unsafe_allow_html=True)
+            score_asset = st.slider("購入後の比率、イベント回避等の総合点 (0～5点):", 0, 5, 3)
 
             # 総合計算
             auto_total = sum([v[0] for v in scores.values()])
             final_entry_score = auto_total + score_asset
 
-            # 判定カラーとメッセージ
-            if final_entry_score >= 85:
-                e_color = "green"
-                e_label = "🟢 非常に良好 (市場・業績・価格条件がそろっている)"
-            elif final_entry_score >= 75:
-                e_color = "green"
-                e_label = "🟢 良好 (条件は良いが、一部リスクあり)"
-            elif final_entry_score >= 65:
-                e_color = "orange"
-                e_label = "🟡 中立・条件待ち (企業は良くても価格や市場に弱点あり)"
-            elif final_entry_score >= 50:
-                e_color = "orange"
-                e_label = "🟠 慎重 (複数条件が未達)"
-            else:
-                e_color = "red"
-                e_label = "🔴 見送り寄り (市場・業績・トレンドのどこかに大きな問題)"
+            # 判定カラー
+            if final_entry_score >= 85: e_color, e_label = "green", "🟢 非常に良好 (市場・業績・価格条件がそろっている)"
+            elif final_entry_score >= 75: e_color, e_label = "green", "🟢 良好 (条件は良いが、一部リスクあり)"
+            elif final_entry_score >= 65: e_color, e_label = "orange", "🟡 中立・条件待ち (企業は良くても価格や市場に弱点あり)"
+            elif final_entry_score >= 50: e_color, e_label = "orange", "🟠 慎重 (複数条件が未達)"
+            else: e_color, e_label = "red", "🔴 見送り寄り (市場・業績・トレンドのどこかに大きな問題)"
 
             st.markdown(f"<div style='text-align: center; font-size: 20px; font-weight: bold; color: {e_color};'>総合エントリー適性スコア: {final_entry_score} 点 / 100点</div>", unsafe_allow_html=True)
             st.markdown(f"<div style='text-align: center; font-size: 13px; margin-top: 5px; margin-bottom: 10px;'>判定: {e_label}</div>", unsafe_allow_html=True)
 
-            # 💡 計算方法と結果の表示領域
             with st.expander("各項目の採点詳細と計算値を見る", expanded=True):
                 for k, (v, max_v) in scores.items():
                     st.markdown(f"<div style='font-size: 13px;'><b>- {k}: {v}点 / {max_v}点</b></div>", unsafe_allow_html=True)
                     for d_html in details[k]:
                         st.markdown(f"<div style='font-size: 11px; color: gray; margin-left: 15px; margin-bottom: 8px; padding-left: 5px; border-left: 2px solid #ccc; line-height: 1.4;'>{d_html}</div>", unsafe_allow_html=True)
-                
-                st.markdown(f"<div style='font-size: 13px; margin-top: 10px;'><b>- ⑨ 資産配分・イベント（手動点検）: {score_asset}点 / 5点</b></div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size: 13px; margin-top: 10px;'><b>- ⑨ 資産配分・イベント: {score_asset}点 / 5点</b></div>", unsafe_allow_html=True)
 
             # ==========================================
-            # 🚨 強制保留条件アラート
+            # 🚨 強制保留条件
             # ==========================================
             st.markdown("---")
             st.markdown("<div style='font-size: 14px; font-weight: bold; color: #d32f2f;'>⚠️ 点数とは別の「強制保留条件」</div>", unsafe_allow_html=True)
             st.markdown("<div style='font-size: 12px; margin-bottom: 10px;'>合計点が高くても、次のどれかに該当したら一度保留します。</div>", unsafe_allow_html=True)
             
-            alerts = []
-            
-            if cur_p > bb_up and rsi12 > 70:
-                alerts.append(f"{target_ticker} がボリンジャーバンド上限を超え、RSI12も70を超えている")
-            
-            if not smh_df.empty:
-                smh_ma20 = smh_df['Close'].rolling(20).mean().iloc[-1]
-                smh_ma60 = smh_df['Close'].rolling(60).mean().iloc[-1]
-                smh_cur = smh_df['Close'].iloc[-1]
-                if smh_cur < smh_ma20 and smh_cur < smh_ma60:
-                    alerts.append("SMH.USが20日線と60日線を両方割り込んでいる")
-                    
-            if len(alerts) > 0:
-                for a in alerts:
-                    st.error(f"🚨 該当: {a}")
-            else:
-                st.success("✅ テクニカル的な強制保留条件には該当していません。")
-                
             st.markdown("""
-            <div style='font-size: 12px; margin-top: 10px; color: gray;'>
-            ※ 以下の手動確認項目にも該当しないかチェックしてください：<br>
-            ・ NVDA.US決算発表まで24時間以内<br>
-            ・ CPI・雇用統計・FOMCまで24時間以内<br>
-            ・ 購入後のNVDA.US比率が10%を超える<br>
+            <div style='font-size: 12px; color: gray;'>
+            ・ {target_ticker} 決算発表まで24時間以内<br>
+            ・ CPI・雇用統計・FOMC等まで24時間以内<br>
+            ・ {target_ticker} がボリンジャーバンド上限を超え、RSI12も70超<br>
+            ・ セクター指数({sec})が20日線と60日線を両方割り込む<br>
+            ・ 購入後の {target_ticker} 保有比率が10%を超える<br>
             ・ 損切り候補を決めると、想定損失が総資産の1%を超える<br>
             ・ 株価、移動平均線、VIX、金利の取得日時が一致していない
             </div>
-            """, unsafe_allow_html=True)
+            """.format(target_ticker=target_ticker, sec=profile['sec']), unsafe_allow_html=True)
 
             # ==========================================
             # 🧭 運用のガイドライン
@@ -495,10 +507,10 @@ if st.session_state.market_analyzed:
                 st.markdown("""
                 <div style='font-size: 12px; line-height: 1.6;'>
                 <b>■ 毎回、次の順番で採点してください。</b><br>
-                1. SPY.US（市場全体）を確認する<br>
-                2. QQQ.US（ハイテク）を確認する<br>
-                3. SMH.US（半導体）を確認する<br>
-                4. VIXと米10年債利回りを確認する<br>
+                1. SPY/TOPIX（市場全体）を確認する<br>
+                2. QQQ/日経平均（成長株環境）を確認する<br>
+                3. セクター指数を確認する<br>
+                4. VIX/日経VIと長期金利を確認する<br>
                 5. 対象銘柄の直近決算とPERを採点する<br>
                 6. 52週高値・20日線・RSI・ボリンジャーバンドを確認する<br>
                 7. 自分の保有比率とイベント日程を確認する<br>
