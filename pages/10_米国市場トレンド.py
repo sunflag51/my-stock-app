@@ -11,6 +11,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import datetime
 
 # --- ページ基本設定 ---
 st.set_page_config(page_title="米国市場トレンド確認", layout="wide")
@@ -28,9 +29,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # 💡 データ取得関数
-@st.cache_data(ttl=3600) # 1時間に1回更新
+@st.cache_data(ttl=3600)
 def fetch_market_trend_data():
-    # 4大指数と11セクター、マクロのリスト
     tickers = {
         "SPY": "SPY", "QQQ": "QQQ", "DIA": "DIA", "IWM": "IWM",
         "XLK": "XLK", "XLC": "XLC", "XLY": "XLY", "XLF": "XLF",
@@ -50,9 +50,11 @@ def fetch_market_trend_data():
     history = {}
     for label, t in tickers.items():
         try:
-            # 💡 グラフ描画のため、過去3年分（約756営業日）をガッツリ取得
+            # グラフ描画のため、過去3年分をガッツリ取得
             df = yf.Ticker(t).history(period="3y") 
             if not df.empty:
+                # タイムゾーン情報を削除して扱いやすくする
+                df.index = df.index.tz_localize(None)
                 history[label] = df
         except:
             pass
@@ -60,18 +62,26 @@ def fetch_market_trend_data():
     return history, names
 
 def calc_return(df, days):
-    """指定営業日前の終値からのリターン（％）を計算"""
     if len(df) > days:
         return ((df['Close'].iloc[-1] / df['Close'].iloc[-days-1]) - 1) * 100
     return None
 
 def calc_relative_strength(df_target, df_base, days):
-    """ベース(SPY)に対する相対強度（ポイント差）を計算"""
     t_ret = calc_return(df_target, days)
     b_ret = calc_return(df_base, days)
     if t_ret is not None and b_ret is not None:
         return t_ret - b_ret
     return None
+
+# --- 四半期（Q）の期間を取得する関数 ---
+def get_quarter_dates(year, quarter):
+    if quarter == "Q1": return f"{year}-01-01", f"{year}-03-31"
+    elif quarter == "Q2": return f"{year}-04-01", f"{year}-06-30"
+    elif quarter == "Q3": return f"{year}-07-01", f"{year}-09-30"
+    elif quarter == "Q4": return f"{year}-10-01", f"{year}-12-31"
+    elif quarter == "H1 (上半期)": return f"{year}-01-01", f"{year}-06-30"
+    elif quarter == "H2 (下半期)": return f"{year}-07-01", f"{year}-12-31"
+    else: return f"{year}-01-01", f"{year}-12-31" # "通年"
 
 # --- 画面描画 ---
 st.markdown("<div style='font-size: 16px; font-weight: bold;'>🇺🇸 米国市場トレンド・資金ローテーション確認</div>", unsafe_allow_html=True)
@@ -84,10 +94,7 @@ with st.spinner("米国市場の3年分のデータを集計し、グラフを�
         st.error("SPYデータの取得に失敗しました。時間をおいて再試行してください。")
     else:
         df_spy = hist["SPY"]
-        spy_1m = calc_return(df_spy, 21) # 約1ヶ月=21営業日
-        spy_3m = calc_return(df_spy, 63) # 約3ヶ月=63営業日
-        spy_6m = calc_return(df_spy, 126) # 約6ヶ月=126営業日
-
+        
         # ==========================================
         # 1. 4大指数による環境認識
         # ==========================================
@@ -107,7 +114,6 @@ with st.spinner("米国市場の3年分のデータを集計し、グラフを�
         
         if idx_data:
             df_idx = pd.DataFrame(idx_data)
-            # SPYとの比較で強弱を判定
             qqq_rs = df_idx[df_idx["指数"] == names["QQQ"]]["SPY比 (相対強度)"].values[0] if "QQQ" in hist else 0
             dia_rs = df_idx[df_idx["指数"] == names["DIA"]]["SPY比 (相対強度)"].values[0] if "DIA" in hist else 0
             iwm_rs = df_idx[df_idx["指数"] == names["IWM"]]["SPY比 (相対強度)"].values[0] if "IWM" in hist else 0
@@ -120,12 +126,12 @@ with st.spinner("米国市場の3年分のデータを集計し、グラフを�
             elif dia_rs > qqq_rs:
                 status_text = "🟠 **【バリュー・ディフェンシブ優位】** 成長株から成熟企業や景気敏感株へ資金が移動している可能性があります。"
             
+            spy_3m = calc_return(df_spy, 63)
             if spy_3m is not None and spy_3m < 0 and qqq_rs < 0 and iwm_rs < 0 and dia_rs < 0:
                 status_text = "🔴 **【全体リスクオフ】** 4指数すべてが弱く、市場全体のリスク回避を警戒する局面です。"
 
             st.markdown(f"<div style='font-size: 13px; margin-bottom:10px;'>{status_text}</div>", unsafe_allow_html=True)
             
-            # テーブル表示整形
             df_idx_disp = df_idx.copy()
             df_idx_disp["3ヶ月リターン"] = df_idx_disp["3ヶ月リターン"].apply(lambda x: f"{x:+.1f}%" if x is not None else "N/A")
             df_idx_disp["SPY比 (相対強度)"] = df_idx_disp["SPY比 (相対強度)"].apply(lambda x: f"{x:+.1f} pt" if x != 0.0 else "-")
@@ -136,17 +142,12 @@ with st.spinner("米国市場の3年分のデータを集計し、グラフを�
         # ==========================================
         st.markdown("---")
         st.markdown("<div style='font-size: 14px; font-weight: bold;'>② 11セクターの相対強度（SPY比）ランキング</div>", unsafe_allow_html=True)
-        st.caption("1日だけの反発ではなく、最低でも「3ヶ月・6ヶ月」でSPYを上回っているかが本物の切り替わりのサインです。")
-
+        
         sec_list = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
         sec_data = []
         
         for sec in sec_list:
             if sec in hist:
-                ret1m = calc_return(hist[sec], 21)
-                ret3m = calc_return(hist[sec], 63)
-                ret6m = calc_return(hist[sec], 126)
-                
                 rs1m = calc_relative_strength(hist[sec], df_spy, 21)
                 rs3m = calc_relative_strength(hist[sec], df_spy, 63)
                 rs6m = calc_relative_strength(hist[sec], df_spy, 126)
@@ -190,14 +191,33 @@ with st.spinner("米国市場の3年分のデータを集計し、グラフを�
             st.markdown(f"<div style='font-size: 12px;'>{html_table}</div>", unsafe_allow_html=True)
 
         # ==========================================
-        # 3. 過去3年間のセクター推移グラフ（新機能！）
+        # 3. 四半期区切りのセクター推移グラフ（Q1-Q4対応）
         # ==========================================
         st.markdown("---")
-        st.markdown("<div style='font-size: 14px; font-weight: bold;'>③ 【視覚化】過去3年間のセクター相対強度グラフ</div>", unsafe_allow_html=True)
-        st.caption("SPY（市場平均）を基準(1.0)とした場合の、各セクターの強さの推移です。上を向いているセクターに資金が集まっています。")
+        st.markdown("<div style='font-size: 14px; font-weight: bold;'>③ 【視覚化】四半期ごとのセクター相対強度グラフ</div>", unsafe_allow_html=True)
+        st.caption("指定した期間内で、SPY（市場平均＝1.0）に対してどのセクターが強く伸びたかを確認します。")
 
-        # ユーザーがグラフで見たいセクターを選べるようにする
-        top_sectors_default = df_sec["ティッカー"].head(3).tolist() # 初期値は上位3セクター
+        # 💡 表示期間の選択UIを追加
+        c1, c2 = st.columns(2)
+        with c1:
+            # 過去3年間の年リストを作成（現在2026年なら 2024, 2025, 2026）
+            current_year = datetime.datetime.now().year
+            year_list = [str(current_year), str(current_year - 1), str(current_year - 2), "過去3年すべて"]
+            selected_year = st.selectbox("表示する年を選択:", year_list, index=0)
+            
+        with c2:
+            quarter_list = ["Q1 (1-3月)", "Q2 (4-6月)", "Q3 (7-9月)", "Q4 (10-12月)", "H1 (上半期)", "H2 (下半期)", "通年"]
+            # 「過去3年すべて」を選んだ時は四半期選択を無効化
+            if selected_year == "過去3年すべて":
+                selected_q = st.selectbox("期間を選択:", ["通年"], disabled=True)
+            else:
+                # 現在の月に合わせてデフォルトの四半期を賢く選ぶ
+                current_month = datetime.datetime.now().month
+                default_q_index = (current_month - 1) // 3
+                selected_q = st.selectbox("四半期（期間）を選択:", quarter_list, index=default_q_index)
+
+        # グラフに表示するセクターの選択
+        top_sectors_default = df_sec["ティッカー"].head(3).tolist()
         selected_sectors = st.multiselect(
             "グラフに表示するセクターを選択してください（比較しやすさのため3〜5個推奨）:",
             options=sec_list,
@@ -206,33 +226,45 @@ with st.spinner("米国市場の3年分のデータを集計し、グラフを�
         )
 
         if selected_sectors:
-            # グラフ用のデータフレームを作成
-            # SPYの終値で割る（相対強度：Ratio）
             chart_data = pd.DataFrame(index=df_spy.index)
-            
-            # SPY自身は基準値1として描画
             chart_data["市場平均 (SPY)"] = 1.0
             
-            for sec in selected_sectors:
-                if sec in hist:
-                    # 日々のセクターETF終値をSPY終値で割る
-                    ratio = hist[sec]['Close'] / df_spy['Close']
-                    # 見やすくするために、最初の日の比率を基準にして正規化（相対的な伸びを見る）
-                    if len(ratio) > 0:
-                        first_ratio = ratio.iloc[0]
-                        normalized_ratio = ratio / first_ratio
-                        chart_data[names[sec]] = normalized_ratio
-            
-            # 欠損値を前の値で埋める
-            chart_data = chart_data.ffill()
-            
-            # Streamlitの標準折れ線グラフで描画
-            st.line_chart(chart_data, use_container_width=True)
-            st.markdown("""
-            <div style='font-size: 11px; color: gray;'>
-            ※ グラフの見方：横ばいの「市場平均 (SPY)」のラインより<b>大きく上に向かって伸びている線</b>が、市場をリードしている強いセクターです。逆に、下に向かっている線は市場全体よりも負けている（資金が逃げている）セクターです。
-            </div>
-            """, unsafe_allow_html=True)
+            # 💡 指定された期間でデータをフィルタリング
+            if selected_year != "過去3年すべて":
+                start_date, end_date = get_quarter_dates(selected_year, selected_q.split(" ")[0])
+                # SPYのデータをフィルタリング
+                mask = (df_spy.index >= start_date) & (df_spy.index <= end_date)
+                df_spy_filtered = df_spy.loc[mask]
+                chart_data = chart_data.loc[mask] # グラフの横軸を期間に合わせる
+            else:
+                df_spy_filtered = df_spy
+                
+            if not df_spy_filtered.empty:
+                for sec in selected_sectors:
+                    if sec in hist:
+                        df_sec_filtered = hist[sec].loc[chart_data.index] if not chart_data.index.empty else hist[sec]
+                        
+                        # インデックス（日付）を揃えて計算
+                        # その期間の初日の終値で正規化し、期間内での相対的な「伸び」を計算
+                        if not df_sec_filtered.empty and not df_spy_filtered.empty:
+                            ratio = df_sec_filtered['Close'] / df_spy_filtered['Close']
+                            # 期間の最初の日の比率を1.0として、そこからどれくらい勝ったか/負けたかを計算
+                            first_valid_ratio = ratio.dropna().iloc[0] if not ratio.dropna().empty else 1.0
+                            normalized_ratio = ratio / first_valid_ratio
+                            chart_data[names[sec]] = normalized_ratio
+                
+                chart_data = chart_data.ffill()
+                
+                # Streamlitの標準折れ線グラフで描画
+                st.line_chart(chart_data, use_container_width=True)
+                st.markdown(f"""
+                <div style='font-size: 11px; color: gray;'>
+                ※ 表示期間: {selected_year}年 {selected_q} <br>
+                ※ グラフの見方: 期間の初日を基準(1.0)としています。横ばいの「市場平均 (SPY)」のラインより<b>大きく上に向かって伸びている線</b>が、その四半期に市場をリードした強いセクターです。
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                st.warning("指定された期間のデータがまだありません。未来の日付や、データ提供期間外を選択している可能性があります。")
         else:
             st.warning("グラフを表示するには、セクターを1つ以上選択してください。")
 
@@ -241,7 +273,6 @@ with st.spinner("米国市場の3年分のデータを集計し、グラフを�
         # ==========================================
         st.markdown("---")
         st.markdown("<div style='font-size: 14px; font-weight: bold;'>④ マクロ指標との整合性確認</div>", unsafe_allow_html=True)
-        st.caption("セクターの動きが、金利や市場の恐怖感と矛盾していないかを確認します。")
 
         c1, c2 = st.columns(2)
         with c1:
@@ -277,10 +308,10 @@ with st.spinner("米国市場の3年分のデータを集計し、グラフを�
             ・大型テクノロジー(QQQ)だけの上昇ではないか？<br>
             ・小型株(IWM)や成熟企業(DIA)へ資金が移動（ローテーション）していないか？<br><br>
             
-            <b>③ セクター順位とグラフ</b><br>
+            <b>③ セクター順位とグラフ（四半期確認）</b><br>
             ・ランキング表で「🔥本物候補」になっているセクターを確認します。<br>
-            ・<b>上のグラフでそのセクターを選び、本当に線が右肩上がりになっているか視覚で確認</b>します。<br>
-            ・関連する複数セクター（例：エネルギーと素材）が一緒に強くなっていれば信頼性が高まります。<br><br>
+            ・<b>上のグラフで「現在の四半期（Q）」を選び、そのセクターが本当に右肩上がりになっているか視覚で確認</b>します。<br>
+            ・前四半期（例えばQ2）から何が切り替わったかを見比べると、資金の移動が分かりやすくなります。<br><br>
             
             <b>④ マクロとの整合性</b><br>
             ・金利(10年債利回り)が急上昇していないか？（急上昇はハイテクに逆風）<br>
