@@ -90,7 +90,7 @@ def fetch_market_trend_data(extra_tickers=None):
         "XLI": "XLI", "XLE": "XLE", "XLB": "XLB", "XLV": "XLV",
         "XLP": "XLP", "XLU": "XLU", "XLRE": "XLRE",
         "VIX": "^VIX", "TNX": "^TNX",
-        "^TOPX": "^TOPX", "1306.T": "1306.T", "2640.T": "2640.T" # 日本株用の一部ETFを標準化
+        "^TOPX": "^TOPX", "1306.T": "1306.T", "2640.T": "2640.T"
     }
     
     names = {
@@ -102,12 +102,11 @@ def fetch_market_trend_data(extra_tickers=None):
         "^TOPX": "TOPIX", "1306.T": "TOPIX ETF", "2640.T": "ゲーム・アニメ"
     }
     
-    # 追加の銘柄や専用セクターがあれば統合
     if extra_tickers:
         for k, v in extra_tickers.items():
             if k not in tickers:
                 tickers[k] = v
-                names[k] = k # 一時的な名前
+                names[k] = k
 
     history = {}
     for label, t in tickers.items():
@@ -146,7 +145,6 @@ def get_quarter_dates(year, quarter):
 st.markdown("<div style='font-size: 16px; font-weight: bold;'>🇺🇸 米国市場トレンド ＆ 🎯 個別銘柄セクター比較</div>", unsafe_allow_html=True)
 st.caption("市場全体の資金移動に加え、特定の銘柄が「自身の属するセクター」に対して強いか弱いかを確認できます。")
 
-# 💡 個別銘柄の入力UIをグラフの上に配置
 col_t1, col_t2 = st.columns([3, 1])
 with col_t1:
     target_ticker_input = st.text_input("比較したい個別銘柄コード (例: NVDA, AAPL, 7974)", "").strip()
@@ -155,7 +153,6 @@ with col_t2:
     st.write("")
     load_btn = st.button("データを取得", type="primary")
 
-# プロファイリング処理
 target_profile = None
 extra_req = {}
 if target_ticker_input:
@@ -164,7 +161,6 @@ if target_ticker_input:
     if is_valid:
         target_profile = build_dynamic_profile(formatted_ticker, info)
         if target_profile:
-            # 取得リストに個別銘柄と、その専用セクターを追加
             extra_req[target_profile["symbol"]] = target_profile["symbol"]
             extra_req[target_profile["sec"]] = target_profile["sec"]
 
@@ -176,14 +172,13 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
     else:
         df_spy = hist["SPY"]
         
-        # もし個別銘柄プロファイルが取得できていれば、名前を登録
         if target_profile:
             names[target_profile["symbol"]] = f"🎯 {target_profile['name']} ({target_profile['symbol']})"
             if target_profile["sec"] not in names or names[target_profile["sec"]] == target_profile["sec"]:
                 names[target_profile["sec"]] = target_profile["sec_n"]
                 
         # ==========================================
-        # 1. 4大指数と11セクターランキング (既存機能)
+        # 1. 4大指数と11セクターランキング
         # ==========================================
         with st.expander("📊 ① 4大指数と11セクターの相対強度ランキング", expanded=False):
             idx_data = []
@@ -221,9 +216,8 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
         # 2. 四半期グラフ ＆ 💡個別銘柄・セクター比較
         # ==========================================
         st.markdown("---")
-        st.markdown("<div style='font-size: 14px; font-weight: bold;'>② 【視覚化】セクターローテーション ＆ 個別銘柄比較グラフ</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size: 14px; font-weight: bold;'>② 【視覚化】純粋パフォーマンス比較グラフ（四半期区切り）</div>", unsafe_allow_html=True)
         
-        # 💡 もし銘柄が入力されていれば、その所属セクターを強調表示
         if target_profile:
             st.success(f"🤖 **自動判定:** {target_profile['name']} の所属セクターは **{target_profile['sec_n']}** です。（市場基準: {target_profile['idx']}）")
 
@@ -240,73 +234,73 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                 default_q_index = (datetime.datetime.now().month - 1) // 3
                 selected_q = st.selectbox("四半期（期間）:", quarter_list, index=default_q_index)
 
-        # 💡 グラフに表示する線の選択
-        # 基本の米国セクターリスト
-        sec_list = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
-        
-        # もし銘柄入力があれば、選択肢に銘柄と専用セクターを追加
+        sec_list_opts = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
         if target_profile:
-            if target_profile["sec"] not in sec_list:
-                sec_list.append(target_profile["sec"])
-            sec_list.append(target_profile["symbol"])
-            
-            # デフォルトで銘柄とその所属セクターを選択状態にする
+            if target_profile["sec"] not in sec_list_opts:
+                sec_list_opts.append(target_profile["sec"])
+            sec_list_opts.append(target_profile["symbol"])
             default_selection = [target_profile["symbol"], target_profile["sec"]]
         else:
-            default_selection = ["XLK", "XLE", "XLRE"] # 銘柄未入力時のデフォルト（相反しやすいセクター例）
+            default_selection = ["XLK", "XLE", "XLRE"]
 
         selected_lines = st.multiselect(
             "グラフに表示する銘柄・セクターを選択（比較しやすさのため3〜4個推奨）:",
-            options=sec_list,
+            options=sec_list_opts,
             default=default_selection,
             format_func=lambda x: names.get(x, x)
         )
 
-        # 💡 銘柄の線を表示するかどうかのトグルスイッチ
         show_target = True
         if target_profile and target_profile["symbol"] in selected_lines:
             show_target = st.toggle(f"🎯 個別銘柄 ({target_profile['symbol']}) の線を表示する", value=True)
 
         if selected_lines:
-            # 日本株が基準の場合はTOPIXを基準1.0にする
             base_idx = target_profile["idx"] if target_profile else "SPY"
-            df_base = hist.get(base_idx, df_spy)
             
-            chart_data = pd.DataFrame(index=df_base.index)
-            chart_data[f"基準 ({names.get(base_idx, base_idx)})"] = 1.0
+            # 💡 カレンダー結合処理（日米の祝日ズレによるグラフのエラー・途切れを防止）
+            all_dates = pd.Index([])
+            lines_to_plot = selected_lines.copy()
+            if base_idx not in lines_to_plot:
+                lines_to_plot.append(base_idx) # 市場平均も線として追加
+                
+            for line in lines_to_plot:
+                if line in hist:
+                    all_dates = all_dates.union(hist[line].index)
+            all_dates = all_dates.sort_values()
             
             # 期間の絞り込み
             if selected_year != "過去3年すべて":
-                start_date, end_date = get_quarter_dates(selected_year, selected_q.split(" ")[0])
-                mask = (df_base.index >= start_date) & (df_base.index <= end_date)
-                df_base_filtered = df_base.loc[mask]
-                chart_data = chart_data.loc[mask]
-            else:
-                df_base_filtered = df_base
+                start_date_str, end_date_str = get_quarter_dates(selected_year, selected_q.split(" ")[0])
+                start_date = pd.to_datetime(start_date_str)
+                end_date = pd.to_datetime(end_date_str)
+                all_dates = all_dates[(all_dates >= start_date) & (all_dates <= end_date)]
                 
-            if not df_base_filtered.empty:
-                for line in selected_lines:
-                    # トグルがOFFなら対象銘柄をスキップ
+            chart_data = pd.DataFrame(index=all_dates)
+            
+            if not all_dates.empty:
+                for line in lines_to_plot:
                     if target_profile and line == target_profile["symbol"] and not show_target:
                         continue
                         
                     if line in hist:
-                        df_line_filtered = hist[line].loc[chart_data.index] if not chart_data.index.empty else hist[line]
+                        # 休場日を前日の株価で埋める（線が途切れないようにする）
+                        series = hist[line]['Close'].reindex(all_dates).ffill().bfill()
                         
-                        if not df_line_filtered.empty and not df_base_filtered.empty:
-                            ratio = df_line_filtered['Close'] / df_base_filtered['Close']
-                            # 期間初日を1.0に正規化
-                            first_valid_ratio = ratio.dropna().iloc[0] if not ratio.dropna().empty else 1.0
-                            normalized_ratio = ratio / first_valid_ratio
-                            chart_data[names.get(line, line)] = normalized_ratio
-                
-                chart_data = chart_data.ffill()
+                        if not series.empty:
+                            # 💡 【重要変更】市場平均で割るのをやめ、各々初日を1.0とした純粋な伸びを計算
+                            normalized_ratio = series / series.iloc[0]
+                            
+                            col_name = names.get(line, line)
+                            if line == base_idx:
+                                col_name = f"📊 市場平均 ({col_name})"
+                                
+                            chart_data[col_name] = normalized_ratio
                 
                 st.line_chart(chart_data, use_container_width=True)
                 st.markdown(f"""
                 <div style='font-size: 11px; color: gray;'>
                 ※ 表示期間: {selected_year}年 {selected_q} <br>
-                ※ グラフの見方: 横ばいの「基準」ラインより<b>上にある線</b>が市場平均に勝っている強いセクター/銘柄です。個別銘柄の線がセクターの線より下にある場合、「業界全体は儲かっているのに、この企業は負けている」というサインになります。
+                ※ グラフの見方: すべての線を期間初日の「1.0（基準）」からスタートさせ、<b>純粋な株価の伸び（パフォーマンス）</b>を比較しています。市場平均の線よりも上にいる銘柄・セクターが、市場に勝っている強い対象です。
                 </div>
                 """, unsafe_allow_html=True)
             else:
@@ -337,13 +331,13 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
             <div style='font-size: 12px; line-height: 1.6;'>
             個別銘柄をグラフに重ねることで、以下の「2つの勝ち負け」が視覚的に分かります。<br><br>
             
-            <b>パターンA：「銘柄」も「セクター」も、基準(1.0)より上にある</b><br>
+            <b>パターンA：「銘柄」も「セクター」も、市場平均より上にある</b><br>
             ➔ 業界全体に追い風が吹いており、その銘柄もしっかり恩恵を受けている一番安全な状態です。<br><br>
             
-            <b>パターンB：「セクター」は基準より上だが、「銘柄」の線は下にある</b><br>
+            <b>パターンB：「セクター」は市場平均より上だが、「銘柄」の線は下にある</b><br>
             ➔ その業界（例：半導体）は儲かっているのに、なぜかその企業（例：INTC）だけ負けている状態です。個別企業に何か問題があるサインです。<br><br>
             
-            <b>パターンC：「セクター」は基準より下だが、「銘柄」の線は上にある</b><br>
+            <b>パターンC：「セクター」は市場平均より下だが、「銘柄」の線は上にある</b><br>
             ➔ 業界全体（例：ゲーム全体）は不調なのに、その企業（例：任天堂）だけが市場平均以上に独り勝ちしている状態です。企業固有の強力な武器（新製品など）があるサインです。
             </div>
             """, unsafe_allow_html=True)
