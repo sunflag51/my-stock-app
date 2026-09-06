@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
+import concurrent.futures  # 並列処理・タイムアウト処理のために追加
 
 # =========================================================
 # 1. Streamlit基本設定
@@ -107,7 +108,6 @@ MANUAL_PROFILES = {
     "7974.T": {"sec": "2640.T", "sec_n": "ゲーム・アニメ関連（2640.T）", "idx": "^TOPX"}
 }
 
-
 # =========================================================
 # 3. ティッカー処理・YFinance補助
 # =========================================================
@@ -126,12 +126,10 @@ def display_symbol(symbol):
     if symbol.endswith(".T"): return symbol
     return f"{symbol}.US"
 
-# 💡 データ構造をフラットにして、キャッシュによるフリーズを防ぐ
 def clean_columns(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
-
 
 # =========================================================
 # 4. 個別銘柄情報の取得
@@ -140,7 +138,9 @@ def clean_columns(df):
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_base_info(symbol):
     if not symbol: return {}, False, None
-    try:
+    
+    # 💡 API通信が無限待機に陥るのを防ぐため、スレッドに切り出してタイムアウトを設定
+    def _fetch():
         stock = yf.Ticker(symbol)
         hist = stock.history(period="5d", auto_adjust=True, actions=False)
         hist = clean_columns(hist)
@@ -150,7 +150,6 @@ def fetch_base_info(symbol):
         safe_info = {}
         try:
             raw_info = stock.info or {}
-            # 文字列として安全に保存し、キャッシュエラーを防ぐ
             safe_info = {
                 "sector": str(raw_info.get("sector", "")),
                 "industry": str(raw_info.get("industry", "")),
@@ -161,8 +160,15 @@ def fetch_base_info(symbol):
             info_warning = f"企業属性の取得に失敗しました: {e}"
         
         return safe_info, True, info_warning
-    except Exception as e:
-        return {}, False, str(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_fetch)
+        try:
+            return future.result(timeout=15)  # 15秒でタイムアウトさせる
+        except concurrent.futures.TimeoutError:
+            return {}, False, "企業情報の取得がタイムアウトしました。通信状況を確認してください。"
+        except Exception as e:
+            return {}, False, str(e)
 
 
 # =========================================================
@@ -230,7 +236,6 @@ def fetch_market_trend_data(extra_ticker_pairs=()):
     tickers = CORE_TICKERS.copy()
     names = BASE_NAMES.copy()
     
-    # extra_ticker_pairs はタプルとして受け取る（キャッシュキーとして安全なため）
     for ticker, display_name in extra_ticker_pairs:
         tickers[ticker] = ticker
         names[ticker] = display_name
@@ -238,14 +243,14 @@ def fetch_market_trend_data(extra_ticker_pairs=()):
     history = {}
     errors = {}
     
-    for key, yahoo_symbol in tickers.items():
+    # 💡 内部関数として1銘柄ごとの取得処理を定義
+    def fetch_single_ticker(key, yahoo_symbol):
         try:
             df = yf.Ticker(yahoo_symbol).history(period="3y", auto_adjust=True, actions=False)
             df = clean_columns(df)
             
             if df.empty:
-                errors[key] = "価格データが空でした。"
-                continue
+                return key, None, "価格データが空でした。"
                 
             if df.index.tz is not None: 
                 df.index = df.index.tz_localize(None)
@@ -253,11 +258,27 @@ def fetch_market_trend_data(extra_ticker_pairs=()):
             df = df.sort_index()
             df = df[~df.index.duplicated(keep="last")]
             
-            # DataFrameをコピーして確実にメモリに持たせる
-            history[key] = df.copy()
-            
+            return key, df.copy(), None
         except Exception as e:
-            errors[key] = str(e)
+            return key, None, str(e)
+
+    # 💡 ThreadPoolExecutorを用いて複数銘柄を並列で取得（ダンマリ停止の最大の原因を排除）
+    # max_workers=10 程度でAPIへの負荷を分散しつつ高速化
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(fetch_single_ticker, k, v): k for k, v in tickers.items()}
+        for future in concurrent.futures.as_completed(futures):
+            key = futures[future]
+            try:
+                # 30秒を上限とし、特定のティッカーで通信がハングするのを防止
+                res_key, df, err = future.result(timeout=30)
+                if err:
+                    errors[res_key] = err
+                elif df is not None:
+                    history[res_key] = df
+            except concurrent.futures.TimeoutError:
+                errors[key] = "取得タイムアウト（通信遅延）"
+            except Exception as e:
+                errors[key] = f"予期せぬエラー: {str(e)}"
 
     return history, names, errors
 
@@ -441,11 +462,10 @@ if target_ticker_input:
 if profile_warning and target_profile:
     st.warning("一部の企業属性が取得できなかったため、代替の自動分類を使用しています。")
 
-# 辞書をリスト（タプル）に変換してからキャッシュ関数に渡す
 extra_ticker_pairs = tuple(sorted(extra_tickers.items()))
 
-# 💡 データ取得中のフリーズを防ぐためメッセージを明示
-with st.spinner("3年分の市場データを取得・集計しています（初回は数十秒かかる場合があります）..."):
+# 💡 並列処理により取得が劇的に高速化・安定化します
+with st.spinner("3年分の市場データを取得・集計しています（並行取得中...）"):
     hist, names, fetch_errors = fetch_market_trend_data(extra_ticker_pairs)
 
 
