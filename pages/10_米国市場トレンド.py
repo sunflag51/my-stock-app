@@ -166,8 +166,6 @@ if target_ticker_input:
         if target_profile:
             extra_req[target_profile["symbol"]] = target_profile["symbol"]
             extra_req[target_profile["sec"]] = target_profile["sec"]
-    else:
-         st.error(f"銘柄コード '{target_ticker_input}' のデータが取得できませんでした。")
 
 with st.spinner("3年分の市場データと銘柄データを集計中..."):
     hist, names = fetch_market_trend_data(extra_req)
@@ -260,7 +258,10 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
             show_target = st.toggle(f"🎯 個別銘柄 ({target_profile['symbol']}) の線を表示する", value=True)
 
         if selected_lines:
+            # 💡 【重要】KeyError回避のため、base_idxがhistに存在するかチェック
             base_idx = target_profile["idx"] if target_profile else "SPY"
+            if base_idx not in hist:
+                base_idx = "SPY" # 万が一指定の指数が取れなかった場合はSPYにフォールバック
             
             all_dates = pd.Index([])
             lines_to_plot = selected_lines.copy()
@@ -276,7 +277,6 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                 start_date_str, end_date_str = get_quarter_dates(selected_year, selected_q.split(" ")[0])
                 start_date = pd.to_datetime(start_date_str)
                 end_date = pd.to_datetime(end_date_str)
-                # フィルター処理
                 all_dates = all_dates[(all_dates >= start_date) & (all_dates <= end_date)]
                 
             chart_data = pd.DataFrame(index=all_dates)
@@ -287,14 +287,11 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                         continue
                         
                     if line in hist:
-                        # 欠損値を前後の値で埋める安全処理
                         series = hist[line]['Close'].reindex(all_dates).ffill().bfill()
                         
                         if not series.empty:
-                            # ゼロ除算を避けるための安全処理
                             first_val = series.iloc[0]
                             if pd.isna(first_val) or first_val == 0:
-                                # 最初がゼロなら1.0として扱うか、NaNを維持する
                                 normalized_ratio = series * 0 + 1.0 
                             else:
                                 normalized_ratio = series / first_val
@@ -303,9 +300,10 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                             if line == base_idx:
                                 col_name = f"📊 市場平均 ({col_name})"
                                 
-                            chart_data[col_name] = normalized_ratio
+                            # 💡 【重要】KeyError回避。同じカラム名が複数作成されないようにチェック
+                            if col_name not in chart_data.columns:
+                                chart_data[col_name] = normalized_ratio
                 
-                # 💡【修正】エラーの原因だったAltairを削除し、最も安全なStreamlit標準の折れ線グラフで描画
                 st.line_chart(chart_data, use_container_width=True)
                 
                 st.markdown(f"""
