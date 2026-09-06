@@ -15,6 +15,19 @@ import numpy as np
 # --- ページ基本設定 ---
 st.set_page_config(page_title="NVDA特化 エントリー前100点診断", layout="wide")
 
+# 👇 スマホでの文字コピーを強制的に許可するCSS
+st.markdown("""
+<style>
+/* アプリ内のすべてのテキストをスマホで選択・コピー可能にする */
+* {
+    -webkit-user-select: text !important;
+    -moz-user-select: text !important;
+    -ms-user-select: text !important;
+    user-select: text !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 # 💡 データ取得関数
 @st.cache_data(ttl=600)
 def get_market_data(target_symbol):
@@ -235,7 +248,7 @@ if st.session_state.market_analyzed:
             if not tnx_df.empty:
                 tnx_val = tnx_df['Close'].iloc[-1]
                 if len(tnx_df) >= 6:
-                    tnx_diff_bp = (tnx_val - tnx_df['Close'].iloc[-6]) * 100
+                    tnx_diff_bp = (tnx_val - tnx_df['Close'].iloc[-6]) * 100 # bp変換
                 else:
                     tnx_diff_bp = 0
                     
@@ -266,7 +279,7 @@ if st.session_state.market_analyzed:
             eps_growth = t_info.get("earningsGrowth", 0.0) 
             op_margins = t_info.get("operatingMargins", 0.0)
             fcf = t_info.get("freeCashflow", 0.0)
-            net_income = t_info.get("netIncomeToCommon", 1.0)
+            net_income = t_info.get("netIncomeToCommon", 1.0) # 0割り回避
             
             if rev_growth >= 0.30: pt = 4
             elif rev_growth >= 0.15: pt = 3
@@ -478,25 +491,23 @@ if st.session_state.market_analyzed:
             # 🧭 運用のガイドライン
             # ==========================================
             st.markdown("---")
-            st.markdown("<div style='font-size: 14px; font-weight: bold;'>🧭 実際の使い方</div>", unsafe_allow_html=True)
-            st.markdown("""
-            <div style='font-size: 12px; line-height: 1.6;'>
-            毎回、次の順番で採点してください。<br>
-            1. SPY.USを確認する<br>
-            2. QQQ.USを確認する<br>
-            3. SMH.USを確認する<br>
-            4. VIXと米10年債利回りを確認する<br>
-            5. NVDA.USの直近決算を採点する<br>
-            6. PERを採点する<br>
-            7. 52週高値・20日線・RSI・ボリンジャーバンドを確認する<br>
-            8. 自分の保有比率とイベント日程を確認する<br>
-            9. <b>合計点と強制保留条件を照合する</b><br><br>
-            
-            重要なのは、70点だから自動的に売買するのではなく、<b>何が減点原因なのかを見ること</b>です。<br>
-            例えば同じ70点でも、<br>
-            ・業績15点、過熱度2点なら「良い会社だが価格待ち」<br>
-            ・過熱度9点、業績7点なら「価格は落ち着いたが業績に不安」<br>
-            ・市場・セクターが低得点なら「個別企業だけでは逆風に勝ちにくい」<br>
-            というように意味が違います。
-            </div>
-            """, unsafe_allow_html=True)
+            with st.expander("🧭 実際の使い方とスコアの読み方", expanded=False):
+                st.markdown("""
+                <div style='font-size: 12px; line-height: 1.6;'>
+                <b>■ 毎回、次の順番で採点してください。</b><br>
+                1. SPY.US（市場全体）を確認する<br>
+                2. QQQ.US（ハイテク）を確認する<br>
+                3. SMH.US（半導体）を確認する<br>
+                4. VIXと米10年債利回りを確認する<br>
+                5. 対象銘柄の直近決算とPERを採点する<br>
+                6. 52週高値・20日線・RSI・ボリンジャーバンドを確認する<br>
+                7. 自分の保有比率とイベント日程を確認する<br>
+                8. <b>合計点と強制保留条件を照合する</b><br><br>
+                
+                <b>■ 重要なのは「何が減点原因なのか」を見ることです。</b><br>
+                例えば同じ70点でも、意味が全く違います。<br>
+                ・業績15点、過熱度2点 ＝「良い会社だが価格待ち（高値圏）」<br>
+                ・過熱度9点、業績7点 ＝「価格は落ち着いたが業績に不安」<br>
+                ・市場・セクターが低得点 ＝「個別企業だけでは逆風に勝ちにくい」
+                </div>
+                """, unsafe_allow_html=True)
