@@ -27,44 +27,48 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 💡 データ取得と自動プロファイリング
-@st.cache_data(ttl=600)
-def fetch_base_info(ticker):
-    stock = yf.Ticker(ticker)
-    info = stock.info
-    return info
+# 💡 ティッカー整形とデータ取得
+def format_ticker(t):
+    t = t.strip().upper()
+    if t.endswith(".JP"):
+        return t.replace(".JP", ".T")
+    elif t.isdigit():
+        return f"{t}.T" # 数字だけなら日本株とみなして .T を付ける
+    return t
 
-def build_dynamic_profile(ticker, info):
-    t = ticker.upper()
-    
+@st.cache_data(ttl=600)
+def fetch_base_info(symbol):
+    stock = yf.Ticker(symbol)
+    info = stock.info
+    # infoが取得できない場合でも、株価データがあればOKとする
+    hist = stock.history(period="1d")
+    is_valid = not hist.empty
+    return info, is_valid
+
+def build_dynamic_profile(symbol, info):
     # 1. 国籍判定
-    is_jp = False
-    if t.endswith(".JP") or t.endswith(".T") or t.isdigit() or (t[:4].isdigit() and t.endswith(".T")):
-        is_jp = True
-        symbol = f"{t[:4]}.T" if t.isdigit() else t.replace(".JP", ".T")
-    else:
-        symbol = t
+    is_jp = symbol.endswith(".T")
         
-    # 2. ボラティリティ（値動きの激しさ）判定 -> ベータ値を使用
-    beta = info.get("beta", 1.0)
+    # 2. ボラティリティ（値動きの激しさ）判定
+    beta = info.get("beta", 1.0) if info else 1.0
     if beta > 1.3:
-        vol_type = "HIGH" # 乖離許容幅が広く、相対強度のハードルも高い
+        vol_type = "HIGH"
     elif beta < 0.8:
-        vol_type = "LOW"  # 乖離許容幅が狭く、相対強度のハードルも低い
+        vol_type = "LOW"
     else:
         vol_type = "MID"
         
-    # 3. 企業フェーズ（グロースか成熟か）判定 -> PERやPBRを使用
-    pe = info.get("trailingPE", 15)
-    pb = info.get("priceToBook", 2)
+    # 3. 企業フェーズ判定
+    pe = info.get("trailingPE", 15) if info else 15
+    pb = info.get("priceToBook", 2) if info else 2
     if pe > 35 or pb > 6:
-        growth_type = "HIGH_GROWTH" # 高い売上・利益成長を要求
+        growth_type = "HIGH_GROWTH"
     else:
         growth_type = "STANDARD"
 
     # 4. セクターETFの自動判定
-    sector = info.get("sector", "")
-    industry = info.get("industry", "")
+    sector = info.get("sector", "") if info else ""
+    industry = info.get("industry", "") if info else ""
     
     if is_jp:
         idx1, idx1_n = "^N225", "日経平均"
@@ -72,7 +76,7 @@ def build_dynamic_profile(ticker, info):
         vix, vix_n = "^JN00V", "日経VI"
         rate, rate_n = "^TNX", "米10年債利回り(グローバル環境)"
         
-        # 日本株のセクター代用 (TOPIX-17等)
+        # 日本株のセクター代用
         if "Bank" in sector or "Financial" in sector: sec_tic, sec_name = "1615.T", "銀行ETF"
         elif "Technology" in sector or "Electronic" in industry: sec_tic, sec_name = "1625.T", "電機・精密ETF"
         elif "Consumer" in sector or "Retail" in industry: sec_tic, sec_name = "1630.T", "小売ETF"
@@ -98,12 +102,14 @@ def build_dynamic_profile(ticker, info):
         elif "Industrials" in sector: sec_tic, sec_name = "XLI", "資本財(XLI)"
         else: sec_tic, sec_name = "SPY", "SPY(セクター代用)"
 
+    short_name = info.get("shortName", symbol) if info else symbol
+
     return {
-        "symbol": symbol, "is_jp": is_jp, "name": info.get("shortName", symbol),
+        "symbol": symbol, "is_jp": is_jp, "name": short_name,
         "vol_type": vol_type, "growth_type": growth_type, "beta": beta,
         "idx1": idx1, "idx1_n": idx1_n, "idx2": idx2, "idx2_n": idx2_n,
         "sec": sec_tic, "sec_n": sec_name,
-        "vix": vix, "vix_n": vix_n, "rate": rate, "rate_n": rate_n, "info": info
+        "vix": vix, "vix_n": vix_n, "rate": rate, "rate_n": rate_n, "info": info if info else {}
     }
 
 @st.cache_data(ttl=600)
@@ -126,7 +132,7 @@ st.caption("どんな銘柄を入れても、システムが企業特性（セ�
 # 銘柄選択
 col1, col2 = st.columns([3, 1])
 with col1:
-    target_ticker = st.text_input("診断対象の銘柄コード (例: NVDA, MSFT, 7203, 9984)", "NVDA").strip().upper()
+    target_ticker = st.text_input("診断対象の銘柄コード (例: NVDA, MSFT, 7203, 9984)", "NVDA").strip()
 with col2:
     st.write("")
     st.write("")
@@ -136,13 +142,17 @@ if run_btn:
     st.session_state.market_analyzed = True
 
 if st.session_state.get("market_analyzed", False):
-    with st.spinner(f"【{target_ticker}】の企業特性を分析・計算中..."):
-        info = fetch_base_info(target_ticker)
+    
+    # 💡 入力された文字を最初に整形する（ここで 7974 -> 7974.T になる）
+    symbol = format_ticker(target_ticker)
+    
+    with st.spinner(f"【{symbol}】の企業特性を分析・計算中..."):
+        info, is_valid = fetch_base_info(symbol)
         
-        if not info or ("regularMarketPrice" not in info and "currentPrice" not in info and "previousClose" not in info):
-            st.error("企業の基本データ取得に失敗しました。ティッカーが正しいか確認してください。")
+        if not is_valid:
+            st.error(f"銘柄「{symbol}」のデータ取得に失敗しました。ティッカーが正しいか確認してください。")
         else:
-            profile = build_dynamic_profile(target_ticker, info)
+            profile = build_dynamic_profile(symbol, info)
             m_hist = get_all_history(profile)
             
             if profile["symbol"] not in m_hist or profile["idx1"] not in m_hist:
@@ -258,7 +268,6 @@ if st.session_state.get("market_analyzed", False):
                 ret20_tgt = calc_ret(df_tgt, 20)
                 rs_val = ret20_tgt - ret20_sec
                 
-                # ボラティリティに応じた動的相対強度判定
                 if profile["vol_type"] == "HIGH":
                     if rs_val >= 6.0: pt = 5
                     elif rs_val >= 3.0: pt = 4
@@ -275,7 +284,7 @@ if st.session_state.get("market_analyzed", False):
                     elif rs_val >= -3.0: pt = 1
                     else: pt = 0
                     d_sec.append(f"<b>A. セクターに対する相対強度 (低ボラ用基準)</b><br>▶ 実測値: <span style='color:#1976d2;'>{rs_val:+.2f}pt</span> ➔ <b>{pt}点</b>")
-                else: # MID
+                else: 
                     if rs_val >= 4.0: pt = 5
                     elif rs_val >= 2.0: pt = 4
                     elif rs_val >= 0.0: pt = 3
@@ -310,13 +319,13 @@ if st.session_state.get("market_analyzed", False):
                     v_val = df_vix['Close'].iloc[-1]
                     v_ret5 = calc_ret(df_vix, 5)
                     
-                    if profile["is_jp"]: # 日経VIは数値が高めに出る
+                    if profile["is_jp"]: 
                         if v_val <= 20.0: pt = 7
                         elif v_val <= 25.0: pt = 5
                         elif v_val <= 30.0: pt = 3
                         elif v_val <= 35.0: pt = 1
                         else: pt = 0
-                    else: # VIX
+                    else: 
                         if v_val <= 15.0: pt = 7
                         elif v_val <= 20.0: pt = 5
                         elif v_val <= 25.0: pt = 3
@@ -368,7 +377,6 @@ if st.session_state.get("market_analyzed", False):
                 rev_g = profile["info"].get("revenueGrowth", 0.0) * 100
                 eps_g = profile["info"].get("earningsGrowth", 0.0) * 100
                 
-                # 成長期待フェーズによる自動分岐
                 if profile["growth_type"] == "HIGH_GROWTH":
                     if rev_g >= 30: pt = 3
                     elif rev_g >= 15: pt = 2
@@ -419,7 +427,6 @@ if st.session_state.get("market_analyzed", False):
                 cur_p = df_tgt['Close'].iloc[-1]
                 d20 = calc_ma_dist(df_tgt, 20)
                 
-                # ボラティリティに応じた乖離幅の自動調整
                 if profile["vol_type"] == "HIGH":
                     if -5 <= d20 <= 5: pt = 3
                     elif (5 < abs(d20) <= 8): pt = 2
@@ -432,7 +439,7 @@ if st.session_state.get("market_analyzed", False):
                     elif (5 < abs(d20) <= 8): pt = 1
                     else: pt = 0
                     d_tech.append(f"<b>A. 20日線乖離率 (低ボラ厳格枠±3%)</b><br>▶ 実測値: <span style='color:#1976d2;'>{d20:+.1f}%</span> ➔ <b>{pt}点</b>")
-                else: # MID
+                else: 
                     if -4 <= d20 <= 4: pt = 3
                     elif (4 < abs(d20) <= 7): pt = 2
                     elif (7 < abs(d20) <= 10): pt = 1
@@ -493,12 +500,12 @@ if st.session_state.get("market_analyzed", False):
                 st.markdown("<div style='font-size: 14px; font-weight: bold; color: #d32f2f;'>⚠️ 点数とは別の「強制保留条件」</div>", unsafe_allow_html=True)
                 st.markdown("<div style='font-size: 12px; margin-bottom: 10px;'>合計点が高くても、次のどれかに該当したら一度保留します。</div>", unsafe_allow_html=True)
                 
-                st.markdown("""
+                st.markdown(f"""
                 <div style='font-size: 12px; color: gray;'>
-                ・ 決算発表まで24時間以内<br>
+                ・ {profile['name']} 決算発表まで24時間以内<br>
                 ・ CPI・雇用統計・FOMC等まで24時間以内<br>
                 ・ 株価がボリンジャーバンド上限を超え、RSI12も70超<br>
-                ・ セクター指数が20日線と60日線を両方割り込む<br>
+                ・ セクター指数({profile['sec_n']})が20日線と60日線を両方割り込む<br>
                 ・ 購入後の保有比率が10%を超える<br>
                 ・ 損切り候補を決めると、想定損失が総資産の1%を超える<br>
                 ・ 株価、移動平均線、VIX、金利の取得日時が一致していない
