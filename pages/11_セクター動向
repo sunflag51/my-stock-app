@@ -38,18 +38,24 @@ st.markdown(
     }
     .styled-table th, .styled-table td {
         padding: 8px 12px;
-        border-bottom: 1px solid #ddd;
+        border-bottom: 1px solid rgba(128, 128, 128, 0.2);
         text-align: left;
     }
     .styled-table th {
-        background-color: #f2f2f2;
-        color: #333;
+        background-color: rgba(128, 128, 128, 0.1);
+        font-weight: bold;
     }
     </style>
     """,
     unsafe_allow_html=True
 )
 
+def get_colored_html(val):
+    if isinstance(val, str) and '+' in val:
+        return f"<span style='color:#009900; font-weight:bold;'>{val}</span>"
+    elif isinstance(val, str) and '-' in val and val != '-':
+        return f"<span style='color:#ff4444; font-weight:bold;'>{val}</span>"
+    return str(val)
 
 # =========================================================
 # 2. 定数
@@ -66,42 +72,32 @@ JP_SECTORS = [
 ]
 
 CORE_TICKERS = {
-    # 米国主要指数
     "SPY": "SPY", "QQQ": "QQQ", "DIA": "DIA", "IWM": "IWM",
-    # 米国11セクター
     "XLK": "XLK", "XLC": "XLC", "XLY": "XLY", "XLF": "XLF",
     "XLI": "XLI", "XLE": "XLE", "XLB": "XLB", "XLV": "XLV",
     "XLP": "XLP", "XLU": "XLU", "XLRE": "XLRE",
-    # 半導体
     "SMH": "SMH",
-    # マクロ
     "VIX": "^VIX", "TNX": "^TNX",
-    # 日本市場
     "^TOPX": "^TOPX", "1306.T": "1306.T", "1615.T": "1615.T",
     "1621.T": "1621.T", "1625.T": "1625.T", "1626.T": "1626.T",
     "1630.T": "1630.T", "2640.T": "2640.T"
 }
 
 BASE_NAMES = {
-    # 米国主要指数
     "SPY": "米国大型株 (SPY.US) ", "QQQ": "大型グロース (QQQ.US) ",
     "DIA": "大型成熟株 (DIA.US) ", "IWM": "米国小型株 (IWM.US) ",
-    # 米国11セクター
     "XLK": "テクノロジー (XLK.US) ", "XLC": "通信サービス (XLC.US) ",
     "XLY": "一般消費財 (XLY.US) ", "XLF": "金融 (XLF.US) ",
     "XLI": "資本財 (XLI.US) ", "XLE": "エネルギー (XLE.US) ",
     "XLB": "素材 (XLB.US) ", "XLV": "ヘルスケア (XLV.US) ",
     "XLP": "生活必需品 (XLP.US) ", "XLU": "公益事業 (XLU.US) ",
     "XLRE": "不動産 (XLRE.US) ", "SMH": "半導体 (SMH.US) ",
-    # マクロ
     "VIX": "恐怖指数（VIX）", "TNX": "米10年債利回り",
-    # 日本市場
     "^TOPX": "TOPIX", "1306.T": "TOPIX連動ETF（1306.T）",
     "1615.T": "銀行関連（1615.T）", "1621.T": "医薬品関連（1621.T）",
     "1625.T": "電機・精密関連（1625.T）", "1626.T": "情報通信・サービス関連（1626.T）",
     "1630.T": "小売関連（1630.T）", "2640.T": "ゲーム・アニメ関連（2640.T）"
 }
-
 
 MANUAL_PROFILES = {
     "NVDA": {"sec": "SMH", "sec_n": "半導体（SMH.US）", "idx": "SPY"},
@@ -130,6 +126,7 @@ def display_symbol(symbol):
     if symbol.endswith(".T"): return symbol
     return f"{symbol}.US"
 
+# 💡 データ構造をフラットにして、キャッシュによるフリーズを防ぐ
 def clean_columns(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -153,6 +150,7 @@ def fetch_base_info(symbol):
         safe_info = {}
         try:
             raw_info = stock.info or {}
+            # 文字列として安全に保存し、キャッシュエラーを防ぐ
             safe_info = {
                 "sector": str(raw_info.get("sector", "")),
                 "industry": str(raw_info.get("industry", "")),
@@ -231,23 +229,33 @@ def build_dynamic_profile(symbol, info):
 def fetch_market_trend_data(extra_ticker_pairs=()):
     tickers = CORE_TICKERS.copy()
     names = BASE_NAMES.copy()
+    
+    # extra_ticker_pairs はタプルとして受け取る（キャッシュキーとして安全なため）
     for ticker, display_name in extra_ticker_pairs:
         tickers[ticker] = ticker
         names[ticker] = display_name
 
     history = {}
     errors = {}
+    
     for key, yahoo_symbol in tickers.items():
         try:
             df = yf.Ticker(yahoo_symbol).history(period="3y", auto_adjust=True, actions=False)
             df = clean_columns(df)
+            
             if df.empty:
                 errors[key] = "価格データが空でした。"
                 continue
-            if df.index.tz is not None: df.index = df.index.tz_localize(None)
+                
+            if df.index.tz is not None: 
+                df.index = df.index.tz_localize(None)
+                
             df = df.sort_index()
             df = df[~df.index.duplicated(keep="last")]
-            history[key] = df
+            
+            # DataFrameをコピーして確実にメモリに持たせる
+            history[key] = df.copy()
+            
         except Exception as e:
             errors[key] = str(e)
 
@@ -370,12 +378,6 @@ def classify_us_market(qqq_rs, dia_rs, iwm_rs):
     if qqq_rs < 0 and dia_rs < 0 and iwm_rs < 0: return "🟠 SPY優位、または方向感が弱い混合状態です。"
     return "⚪ 指数間の方向感が混在しています。"
 
-def get_colored_html(val):
-    if isinstance(val, str) and '+' in val:
-        return f"<span style='color:#009900; font-weight:bold;'>{val}</span>"
-    elif isinstance(val, str) and '-' in val and val != '-':
-        return f"<span style='color:#ff0000; font-weight:bold;'>{val}</span>"
-    return str(val)
 
 # =========================================================
 # 11. 画面タイトル ＆ 入力フォーム
@@ -439,6 +441,7 @@ if target_ticker_input:
 if profile_warning and target_profile:
     st.warning("一部の企業属性が取得できなかったため、代替の自動分類を使用しています。")
 
+# 辞書をリスト（タプル）に変換してからキャッシュ関数に渡す
 extra_ticker_pairs = tuple(sorted(extra_tickers.items()))
 
 # 💡 データ取得中のフリーズを防ぐためメッセージを明示
@@ -681,6 +684,7 @@ if selected_lines:
 else:
     st.warning("表示するセクターまたは銘柄を選択してください。")
 
+
 # =========================================================
 # 20. マクロ指標
 # =========================================================
@@ -713,7 +717,7 @@ if "VIX" in hist:
 
 if macro_rows:
     macro_df = pd.DataFrame(macro_rows)
-    st.dataframe(macro_df, use_container_width=True)
+    st.dataframe(macro_df, hide_index=True, use_container_width=True)
 else:
     st.warning("マクロ指標を取得できませんでした。")
 
@@ -723,4 +727,4 @@ else:
 if fetch_errors:
     with st.expander("⚠️ 取得できなかったデータの詳細", expanded=False):
         error_df = pd.DataFrame([{"対象": names.get(k, display_symbol(k)), "エラー内容": v} for k, v in fetch_errors.items()])
-        st.dataframe(error_df, use_container_width=True)
+        st.dataframe(error_df, hide_index=True, use_container_width=True)
