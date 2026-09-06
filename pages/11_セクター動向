@@ -130,11 +130,11 @@ def display_symbol(symbol):
     if symbol.endswith(".T"): return symbol
     return f"{symbol}.US"
 
-# 💡 YFinanceのバージョンアップによるマルチインデックス対策
 def clean_columns(df):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
     return df
+
 
 # =========================================================
 # 4. 個別銘柄情報の取得
@@ -152,7 +152,6 @@ def fetch_base_info(symbol):
         info_warning = None
         safe_info = {}
         try:
-            # 💡 キャッシュ時のシリアライズエラーを避けるため、必要な項目のみを安全な文字列型で抽出
             raw_info = stock.info or {}
             safe_info = {
                 "sector": str(raw_info.get("sector", "")),
@@ -178,7 +177,6 @@ def build_dynamic_profile(symbol, info):
     is_jp = symbol.endswith(".T")
     sector = info.get("sector", "")
     industry = info.get("industry", "")
-    # shortNameが無ければlongName、それも無ければsymbolを名前として使用
     short_name = info.get("shortName") or info.get("longName") or symbol
 
     if symbol in MANUAL_PROFILES:
@@ -242,7 +240,7 @@ def fetch_market_trend_data(extra_ticker_pairs=()):
     for key, yahoo_symbol in tickers.items():
         try:
             df = yf.Ticker(yahoo_symbol).history(period="3y", auto_adjust=True, actions=False)
-            df = clean_columns(df) # 💡 マルチインデックス対策
+            df = clean_columns(df)
             if df.empty:
                 errors[key] = "価格データが空でした。"
                 continue
@@ -443,7 +441,8 @@ if profile_warning and target_profile:
 
 extra_ticker_pairs = tuple(sorted(extra_tickers.items()))
 
-with st.spinner("3年分の市場データを取得・集計しています..."):
+# 💡 データ取得中のフリーズを防ぐためメッセージを明示
+with st.spinner("3年分の市場データを取得・集計しています（初回は数十秒かかる場合があります）..."):
     hist, names, fetch_errors = fetch_market_trend_data(extra_ticker_pairs)
 
 
@@ -569,7 +568,6 @@ with st.expander(f"📊 ① {section_title}", expanded=True):
                 target_conditions = target_row["判定詳細"]
                 with st.expander("🎯 入力銘柄の4点判定詳細", expanded=False):
                     detail_rows = [{"判定条件": k, "結果": "✅ 充足" if v else "❌ 未充足", "得点": 1 if v else 0} for k, v in target_conditions.items()]
-                    # hide_index=True 互換性のため削除し、デフォルト表示に切り替え
                     st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
     else:
         st.warning("ランキングに必要な価格データを取得できませんでした。")
