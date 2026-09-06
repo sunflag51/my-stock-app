@@ -292,24 +292,8 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                                 
                             chart_data[col_name] = normalized_ratio
                 
-                # 💡【重要修正】Altairを使ってグラフのズームとパンを無効化（指で触っても動かないように固定）
-                import altair as alt
-                
-                # データをAltair用に整形（ロングフォーマット）
-                chart_data_reset = chart_data.reset_index().melt('Date', var_name='銘柄/セクター', value_name='比率')
-                
-                # グラフの作成（interactive() を外すことでタッチ操作を無効化）
-                chart = alt.Chart(chart_data_reset).mark_line().encode(
-                    x=alt.X('Date:T', title='日付'),
-                    y=alt.Y('比率:Q', title='パフォーマンス (初日=1.0)', scale=alt.Scale(zero=False)),
-                    color='銘柄/セクター:N',
-                    tooltip=['Date:T', '銘柄/セクター:N', '比率:Q']
-                ).properties(
-                    height=400
-                )
-                
-                # Streamlitで描画
-                st.altair_chart(chart, use_container_width=True)
+                # 💡 エラーの原因だった複雑な処理を削除し、最もシンプルで安全な標準グラフ描画に戻しました
+                st.line_chart(chart_data, use_container_width=True)
                 
                 st.markdown(f"""
                 <div style='font-size: 11px; color: gray;'>
