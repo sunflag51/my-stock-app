@@ -103,7 +103,6 @@ BASE_NAMES = {
 }
 
 
-# 重要銘柄はYahoo Financeの分類より手動設定を優先する
 MANUAL_PROFILES = {
     "NVDA": {"sec": "SMH", "sec_n": "半導体（SMH.US）", "idx": "SPY"},
     "AAPL": {"sec": "XLK", "sec_n": "テクノロジー（XLK.US）", "idx": "SPY"},
@@ -114,7 +113,7 @@ MANUAL_PROFILES = {
 
 
 # =========================================================
-# 3. ティッカー処理
+# 3. ティッカー処理・YFinance補助
 # =========================================================
 
 def format_ticker(ticker):
@@ -131,6 +130,11 @@ def display_symbol(symbol):
     if symbol.endswith(".T"): return symbol
     return f"{symbol}.US"
 
+# 💡 YFinanceのバージョンアップによるマルチインデックス対策
+def clean_columns(df):
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    return df
 
 # =========================================================
 # 4. 個別銘柄情報の取得
@@ -142,14 +146,24 @@ def fetch_base_info(symbol):
     try:
         stock = yf.Ticker(symbol)
         hist = stock.history(period="5d", auto_adjust=True, actions=False)
+        hist = clean_columns(hist)
         if hist.empty: return {}, False, "価格データが空でした。"
+        
         info_warning = None
+        safe_info = {}
         try:
-            info = stock.info or {}
+            # 💡 キャッシュ時のシリアライズエラーを避けるため、必要な項目のみを安全な文字列型で抽出
+            raw_info = stock.info or {}
+            safe_info = {
+                "sector": str(raw_info.get("sector", "")),
+                "industry": str(raw_info.get("industry", "")),
+                "shortName": str(raw_info.get("shortName", "")),
+                "longName": str(raw_info.get("longName", ""))
+            }
         except Exception as e:
-            info = {}
             info_warning = f"企業属性の取得に失敗しました: {e}"
-        return info, True, info_warning
+        
+        return safe_info, True, info_warning
     except Exception as e:
         return {}, False, str(e)
 
@@ -162,9 +176,10 @@ def build_dynamic_profile(symbol, info):
     if not symbol: return None
     info = info or {}
     is_jp = symbol.endswith(".T")
-    sector = str(info.get("sector", "") or "")
-    industry = str(info.get("industry", "") or "")
-    short_name = str(info.get("shortName") or info.get("longName") or symbol)
+    sector = info.get("sector", "")
+    industry = info.get("industry", "")
+    # shortNameが無ければlongName、それも無ければsymbolを名前として使用
+    short_name = info.get("shortName") or info.get("longName") or symbol
 
     if symbol in MANUAL_PROFILES:
         manual = MANUAL_PROFILES[symbol]
@@ -227,6 +242,7 @@ def fetch_market_trend_data(extra_ticker_pairs=()):
     for key, yahoo_symbol in tickers.items():
         try:
             df = yf.Ticker(yahoo_symbol).history(period="3y", auto_adjust=True, actions=False)
+            df = clean_columns(df) # 💡 マルチインデックス対策
             if df.empty:
                 errors[key] = "価格データが空でした。"
                 continue
@@ -356,7 +372,6 @@ def classify_us_market(qqq_rs, dia_rs, iwm_rs):
     if qqq_rs < 0 and dia_rs < 0 and iwm_rs < 0: return "🟠 SPY優位、または方向感が弱い混合状態です。"
     return "⚪ 指数間の方向感が混在しています。"
 
-# 💡 安全な色付け用HTML変換関数
 def get_colored_html(val):
     if isinstance(val, str) and '+' in val:
         return f"<span style='color:#009900; font-weight:bold;'>{val}</span>"
@@ -501,7 +516,6 @@ with st.expander(f"📊 ① {section_title}", expanded=True):
             index_df["3か月リターン"] = index_df["3か月リターン"].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
             index_df["SPY超過リターン"] = index_df["SPY超過リターン"].apply(lambda x: f"{x:+.2f}pt" if pd.notna(x) else "N/A")
             
-            # 💡 HTML化して描画
             for col in ["3か月リターン", "SPY超過リターン"]:
                 index_df[col] = index_df[col].apply(get_colored_html)
             st.markdown(index_df.to_html(index=False, escape=False, classes="styled-table"), unsafe_allow_html=True)
@@ -536,7 +550,6 @@ with st.expander(f"📊 ① {section_title}", expanded=True):
         display_df["直近3区間の勝ち数"] = display_df["直近3区間の勝ち数"].apply(lambda x: f"{int(x)}/3" if pd.notna(x) else "N/A")
         display_df["4点判定"] = display_df["4点判定"].apply(lambda x: f"{int(x)}/4")
 
-        # 💡 HTML化して描画
         for col in ["1か月超過", "3か月超過", "6か月超過"]:
             display_df[col] = display_df[col].apply(get_colored_html)
         st.markdown(display_df.to_html(index=False, escape=False, classes="styled-table"), unsafe_allow_html=True)
@@ -556,7 +569,8 @@ with st.expander(f"📊 ① {section_title}", expanded=True):
                 target_conditions = target_row["判定詳細"]
                 with st.expander("🎯 入力銘柄の4点判定詳細", expanded=False):
                     detail_rows = [{"判定条件": k, "結果": "✅ 充足" if v else "❌ 未充足", "得点": 1 if v else 0} for k, v in target_conditions.items()]
-                    st.dataframe(pd.DataFrame(detail_rows), hide_index=True, use_container_width=True)
+                    # hide_index=True 互換性のため削除し、デフォルト表示に切り替え
+                    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
     else:
         st.warning("ランキングに必要な価格データを取得できませんでした。")
 
@@ -579,7 +593,6 @@ if target_profile and target_profile["symbol"] in hist and target_profile["sec"]
     for col in ["市場に対する超過リターン", "所属セクターに対する超過リターン"]:
         comparison_df[col] = comparison_df[col].apply(lambda x: f"{x:+.2f}pt" if pd.notna(x) else "N/A")
 
-    # 💡 HTML化して描画
     for col in ["市場に対する超過リターン", "所属セクターに対する超過リターン"]:
         comparison_df[col] = comparison_df[col].apply(get_colored_html)
     st.markdown(comparison_df.to_html(index=False, escape=False, classes="styled-table"), unsafe_allow_html=True)
@@ -702,7 +715,7 @@ if "VIX" in hist:
 
 if macro_rows:
     macro_df = pd.DataFrame(macro_rows)
-    st.dataframe(macro_df, hide_index=True, use_container_width=True)
+    st.dataframe(macro_df, use_container_width=True)
 else:
     st.warning("マクロ指標を取得できませんでした。")
 
@@ -712,4 +725,4 @@ else:
 if fetch_errors:
     with st.expander("⚠️ 取得できなかったデータの詳細", expanded=False):
         error_df = pd.DataFrame([{"対象": names.get(k, display_symbol(k)), "エラー内容": v} for k, v in fetch_errors.items()])
-        st.dataframe(error_df, hide_index=True, use_container_width=True)
+        st.dataframe(error_df, use_container_width=True)
