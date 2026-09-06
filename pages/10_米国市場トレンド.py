@@ -133,10 +133,10 @@ def calc_relative_strength(df_target, df_base, days):
     return None
 
 def get_quarter_dates(year, quarter):
-    if quarter == "Q1": return f"{year}-01-01", f"{year}-03-31"
-    elif quarter == "Q2": return f"{year}-04-01", f"{year}-06-30"
-    elif quarter == "Q3": return f"{year}-07-01", f"{year}-09-30"
-    elif quarter == "Q4": return f"{year}-10-01", f"{year}-12-31"
+    if quarter == "Q1 (1-3月)": return f"{year}-01-01", f"{year}-03-31"
+    elif quarter == "Q2 (4-6月)": return f"{year}-04-01", f"{year}-06-30"
+    elif quarter == "Q3 (7-9月)": return f"{year}-07-01", f"{year}-09-30"
+    elif quarter == "Q4 (10-12月)": return f"{year}-10-01", f"{year}-12-31"
     elif quarter == "H1 (上半期)": return f"{year}-01-01", f"{year}-06-30"
     elif quarter == "H2 (下半期)": return f"{year}-07-01", f"{year}-12-31"
     else: return f"{year}-01-01", f"{year}-12-31"
@@ -213,10 +213,10 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                 st.dataframe(df_sec, hide_index=True)
 
         # ==========================================
-        # 2. 四半期グラフ ＆ 💡個別銘柄・セクター比較
+        # 2. 四半期グラフ ＆ 個別銘柄・セクター比較
         # ==========================================
         st.markdown("---")
-        st.markdown("<div style='font-size: 14px; font-weight: bold;'>② 【視覚化】純粋パフォーマンス比較グラフ（四半期区切り）</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size: 14px; font-weight: bold;'>② 【視覚化】パフォーマンス比較グラフ（四半期区切り）</div>", unsafe_allow_html=True)
         
         if target_profile:
             st.success(f"🤖 **自動判定:** {target_profile['name']} の所属セクターは **{target_profile['sec_n']}** です。（市場基準: {target_profile['idx']}）")
@@ -234,17 +234,18 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                 default_q_index = (datetime.datetime.now().month - 1) // 3
                 selected_q = st.selectbox("四半期（期間）:", quarter_list, index=default_q_index)
 
-        sec_list_opts = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
+        # 💡 グラフ選択肢に4大指数（QQQ, DIA, IWM）も追加
+        sec_list_opts = ["QQQ", "DIA", "IWM", "XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
         if target_profile:
             if target_profile["sec"] not in sec_list_opts:
                 sec_list_opts.append(target_profile["sec"])
             sec_list_opts.append(target_profile["symbol"])
             default_selection = [target_profile["symbol"], target_profile["sec"]]
         else:
-            default_selection = ["XLK", "XLE", "XLRE"]
+            default_selection = ["QQQ", "DIA", "IWM"] # 銘柄未入力時は4大指数をデフォルトに
 
         selected_lines = st.multiselect(
-            "グラフに表示する銘柄・セクターを選択（比較しやすさのため3〜4個推奨）:",
+            "グラフに表示する対象（4大指数・セクター・銘柄）を選択:",
             options=sec_list_opts,
             default=default_selection,
             format_func=lambda x: names.get(x, x)
@@ -257,20 +258,18 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
         if selected_lines:
             base_idx = target_profile["idx"] if target_profile else "SPY"
             
-            # 💡 カレンダー結合処理（日米の祝日ズレによるグラフのエラー・途切れを防止）
             all_dates = pd.Index([])
             lines_to_plot = selected_lines.copy()
             if base_idx not in lines_to_plot:
-                lines_to_plot.append(base_idx) # 市場平均も線として追加
+                lines_to_plot.append(base_idx)
                 
             for line in lines_to_plot:
                 if line in hist:
                     all_dates = all_dates.union(hist[line].index)
             all_dates = all_dates.sort_values()
             
-            # 期間の絞り込み
             if selected_year != "過去3年すべて":
-                start_date_str, end_date_str = get_quarter_dates(selected_year, selected_q.split(" ")[0])
+                start_date_str, end_date_str = get_quarter_dates(selected_year, selected_q)
                 start_date = pd.to_datetime(start_date_str)
                 end_date = pd.to_datetime(end_date_str)
                 all_dates = all_dates[(all_dates >= start_date) & (all_dates <= end_date)]
@@ -283,11 +282,9 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                         continue
                         
                     if line in hist:
-                        # 休場日を前日の株価で埋める（線が途切れないようにする）
                         series = hist[line]['Close'].reindex(all_dates).ffill().bfill()
                         
                         if not series.empty:
-                            # 💡 【重要変更】市場平均で割るのをやめ、各々初日を1.0とした純粋な伸びを計算
                             normalized_ratio = series / series.iloc[0]
                             
                             col_name = names.get(line, line)
