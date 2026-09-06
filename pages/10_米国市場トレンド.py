@@ -166,6 +166,8 @@ if target_ticker_input:
         if target_profile:
             extra_req[target_profile["symbol"]] = target_profile["symbol"]
             extra_req[target_profile["sec"]] = target_profile["sec"]
+    else:
+         st.error(f"銘柄コード '{target_ticker_input}' のデータが取得できませんでした。")
 
 with st.spinner("3年分の市場データと銘柄データを集計中..."):
     hist, names = fetch_market_trend_data(extra_req)
@@ -207,13 +209,33 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                     rs3m = calc_relative_strength(hist[sec], df_spy, 63)
                     rs6m = calc_relative_strength(hist[sec], df_spy, 126)
                     score = (1 if rs3m and rs3m>0 else 0) + (1 if rs6m and rs6m>0 else 0) + (1 if rs1m and rs3m and rs1m>(rs3m/3) else 0)
-                    sec_data.append({"セクター": names[sec], "1ヶ月 対SPY": rs1m, "3ヶ月 対SPY": rs3m, "トレンド": score})
+                    sec_data.append({"セクター": names[sec], "1ヶ月 対SPY": rs1m, "3ヶ月 対SPY": rs3m, "6ヶ月 対SPY": rs6m, "トレンド": score})
             
             if sec_data:
                 df_sec = pd.DataFrame(sec_data).sort_values(by="3ヶ月 対SPY", ascending=False)
-                df_sec["1ヶ月 対SPY"] = df_sec["1ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A")
-                df_sec["3ヶ月 対SPY"] = df_sec["3ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A")
-                st.dataframe(df_sec, hide_index=True)
+                
+                # 💡 色付きテーブルを表示するためのHTML変換処理を復活
+                df_sec_disp = pd.DataFrame({
+                    "セクター": df_sec["セクター"],
+                    "1ヶ月 対SPY": df_sec["1ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
+                    "3ヶ月 対SPY": df_sec["3ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
+                    "6ヶ月 対SPY": df_sec["6ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A"),
+                    "トレンド状態": df_sec["トレンド"].apply(lambda x: "🔥 本物候補(3点)" if x==3 else ("🟡 進行中(2点)" if x==2 else "⚪ 一時的(0-1点)"))
+                })
+                
+                # プラスなら緑色、マイナスなら赤色に着色する関数
+                def colorize(val):
+                    if isinstance(val, str) and "+" in val: return f"<span style='color:green; font-weight:bold;'>{val}</span>"
+                    elif isinstance(val, str) and "-" in val and val != "-": return f"<span style='color:red;'>{val}</span>"
+                    return val
+
+                # 3つの列に対して色付けを適用
+                for col in ["1ヶ月 対SPY", "3ヶ月 対SPY", "6ヶ月 対SPY"]:
+                    df_sec_disp[col] = df_sec_disp[col].apply(colorize)
+
+                # HTMLテーブルとして描画
+                html_table = df_sec_disp.to_html(index=False, escape=False, classes='table table-sm', border=0)
+                st.markdown(f"<div style='font-size: 13px; line-height:1.5;'>{html_table}</div>", unsafe_allow_html=True)
 
         # ==========================================
         # 2. 四半期グラフ ＆ 💡個別銘柄・セクター比較
@@ -258,10 +280,9 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
             show_target = st.toggle(f"🎯 個別銘柄 ({target_profile['symbol']}) の線を表示する", value=True)
 
         if selected_lines:
-            # 💡 【重要】KeyError回避のため、base_idxがhistに存在するかチェック
             base_idx = target_profile["idx"] if target_profile else "SPY"
             if base_idx not in hist:
-                base_idx = "SPY" # 万が一指定の指数が取れなかった場合はSPYにフォールバック
+                base_idx = "SPY"
             
             all_dates = pd.Index([])
             lines_to_plot = selected_lines.copy()
@@ -300,7 +321,6 @@ with st.spinner("3年分の市場データと銘柄データを集計中..."):
                             if line == base_idx:
                                 col_name = f"📊 市場平均 ({col_name})"
                                 
-                            # 💡 【重要】KeyError回避。同じカラム名が複数作成されないようにチェック
                             if col_name not in chart_data.columns:
                                 chart_data[col_name] = normalized_ratio
                 
