@@ -3,7 +3,6 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import datetime
-import concurrent.futures  # 並列処理・タイムアウト処理のために追加
 
 # =========================================================
 # 1. Streamlit基本設定
@@ -23,29 +22,10 @@ st.markdown(
         -ms-user-select: text !important;
         user-select: text !important;
     }
-
-    .small-note {
-        font-size: 11px;
-        color: gray;
-        line-height: 1.6;
-    }
-    
-    /* HTMLテーブルのスタイル調整 */
-    .styled-table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 13px;
-        font-family: sans-serif;
-    }
-    .styled-table th, .styled-table td {
-        padding: 8px 12px;
-        border-bottom: 1px solid rgba(128, 128, 128, 0.2);
-        text-align: left;
-    }
-    .styled-table th {
-        background-color: rgba(128, 128, 128, 0.1);
-        font-weight: bold;
-    }
+    .small-note { font-size: 11px; color: gray; line-height: 1.6; }
+    .styled-table { width: 100%; border-collapse: collapse; font-size: 13px; font-family: sans-serif; }
+    .styled-table th, .styled-table td { padding: 8px 12px; border-bottom: 1px solid rgba(128, 128, 128, 0.2); text-align: left; }
+    .styled-table th { background-color: rgba(128, 128, 128, 0.1); font-weight: bold; }
     </style>
     """,
     unsafe_allow_html=True
@@ -62,42 +42,33 @@ def get_colored_html(val):
 # 2. 定数
 # =========================================================
 
-US_SECTORS = [
-    "XLK", "XLC", "XLY", "XLF", "XLI",
-    "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"
-]
-
-JP_SECTORS = [
-    "1615.T", "1621.T", "1625.T", "1626.T",
-    "1630.T", "2640.T", "1306.T"
-]
+US_SECTORS = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
+JP_SECTORS = ["1615.T", "1621.T", "1625.T", "1626.T", "1630.T", "2640.T", "1306.T"]
 
 CORE_TICKERS = {
     "SPY": "SPY", "QQQ": "QQQ", "DIA": "DIA", "IWM": "IWM",
     "XLK": "XLK", "XLC": "XLC", "XLY": "XLY", "XLF": "XLF",
     "XLI": "XLI", "XLE": "XLE", "XLB": "XLB", "XLV": "XLV",
-    "XLP": "XLP", "XLU": "XLU", "XLRE": "XLRE",
-    "SMH": "SMH",
-    "VIX": "^VIX", "TNX": "^TNX",
-    "^TOPX": "^TOPX", "1306.T": "1306.T", "1615.T": "1615.T",
-    "1621.T": "1621.T", "1625.T": "1625.T", "1626.T": "1626.T",
-    "1630.T": "1630.T", "2640.T": "2640.T"
+    "XLP": "XLP", "XLU": "XLU", "XLRE": "XLRE", "SMH": "SMH",
+    "VIX": "^VIX", "TNX": "^TNX", "^TOPX": "^TOPX", 
+    "1306.T": "1306.T", "1615.T": "1615.T", "1621.T": "1621.T", 
+    "1625.T": "1625.T", "1626.T": "1626.T", "1630.T": "1630.T", "2640.T": "2640.T"
 }
 
 BASE_NAMES = {
-    "SPY": "米国大型株 (SPY.US) ", "QQQ": "大型グロース (QQQ.US) ",
-    "DIA": "大型成熟株 (DIA.US) ", "IWM": "米国小型株 (IWM.US) ",
-    "XLK": "テクノロジー (XLK.US) ", "XLC": "通信サービス (XLC.US) ",
-    "XLY": "一般消費財 (XLY.US) ", "XLF": "金融 (XLF.US) ",
-    "XLI": "資本財 (XLI.US) ", "XLE": "エネルギー (XLE.US) ",
-    "XLB": "素材 (XLB.US) ", "XLV": "ヘルスケア (XLV.US) ",
-    "XLP": "生活必需品 (XLP.US) ", "XLU": "公益事業 (XLU.US) ",
-    "XLRE": "不動産 (XLRE.US) ", "SMH": "半導体 (SMH.US) ",
+    "SPY": "米国大型株 (SPY.US)", "QQQ": "大型グロース (QQQ.US)",
+    "DIA": "大型成熟株 (DIA.US)", "IWM": "米国小型株 (IWM.US)",
+    "XLK": "テクノロジー (XLK.US)", "XLC": "通信サービス (XLC.US)",
+    "XLY": "一般消費財 (XLY.US)", "XLF": "金融 (XLF.US)",
+    "XLI": "資本財 (XLI.US)", "XLE": "エネルギー (XLE.US)",
+    "XLB": "素材 (XLB.US)", "XLV": "ヘルスケア (XLV.US)",
+    "XLP": "生活必需品 (XLP.US)", "XLU": "公益事業 (XLU.US)",
+    "XLRE": "不動産 (XLRE.US)", "SMH": "半導体 (SMH.US)",
     "VIX": "恐怖指数（VIX）", "TNX": "米10年債利回り",
-    "^TOPX": "TOPIX", "1306.T": "TOPIX連動ETF（1306.T）",
-    "1615.T": "銀行関連（1615.T）", "1621.T": "医薬品関連（1621.T）",
-    "1625.T": "電機・精密関連（1625.T）", "1626.T": "情報通信・サービス関連（1626.T）",
-    "1630.T": "小売関連（1630.T）", "2640.T": "ゲーム・アニメ関連（2640.T）"
+    "^TOPX": "TOPIX", "1306.T": "TOPIX連動ETF",
+    "1615.T": "銀行関連", "1621.T": "医薬品関連",
+    "1625.T": "電機・精密関連", "1626.T": "情報通信・サービス関連",
+    "1630.T": "小売関連", "2640.T": "ゲーム・アニメ関連"
 }
 
 MANUAL_PROFILES = {
@@ -105,11 +76,11 @@ MANUAL_PROFILES = {
     "AAPL": {"sec": "XLK", "sec_n": "テクノロジー（XLK.US）", "idx": "SPY"},
     "GOOG": {"sec": "XLC", "sec_n": "通信サービス（XLC.US）", "idx": "SPY"},
     "GOOGL": {"sec": "XLC", "sec_n": "通信サービス（XLC.US）", "idx": "SPY"},
-    "7974.T": {"sec": "2640.T", "sec_n": "ゲーム・アニメ関連（2640.T）", "idx": "^TOPX"}
+    "7974.T": {"sec": "2640.T", "sec_n": "ゲーム・アニメ関連", "idx": "^TOPX"}
 }
 
 # =========================================================
-# 3. ティッカー処理・YFinance補助
+# 3. ティッカー処理
 # =========================================================
 
 def format_ticker(ticker):
@@ -126,109 +97,63 @@ def display_symbol(symbol):
     if symbol.endswith(".T"): return symbol
     return f"{symbol}.US"
 
-def clean_columns(df):
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df
-
 # =========================================================
-# 4. 個別銘柄情報の取得
+# 4. 個別銘柄情報の取得（フリーズ対策済）
 # =========================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_base_info(symbol):
     if not symbol: return {}, False, None
-    
-    # 💡 API通信が無限待機に陥るのを防ぐため、スレッドに切り出してタイムアウトを設定
-    def _fetch():
-        stock = yf.Ticker(symbol)
-        hist = stock.history(period="5d", auto_adjust=True, actions=False)
-        hist = clean_columns(hist)
-        if hist.empty: return {}, False, "価格データが空でした。"
+    try:
+        # 💡 yf.Ticker().info はフリーズの最大原因となるため廃止
+        # 代わりに軽量なyf.downloadで価格データが存在するかだけをチェック
+        df = yf.download(symbol, period="5d", progress=False)
+        if df.empty:
+            return {}, False, "データが見つかりませんでした。"
         
-        info_warning = None
-        safe_info = {}
-        try:
-            raw_info = stock.info or {}
-            safe_info = {
-                "sector": str(raw_info.get("sector", "")),
-                "industry": str(raw_info.get("industry", "")),
-                "shortName": str(raw_info.get("shortName", "")),
-                "longName": str(raw_info.get("longName", ""))
-            }
-        except Exception as e:
-            info_warning = f"企業属性の取得に失敗しました: {e}"
-        
-        return safe_info, True, info_warning
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_fetch)
-        try:
-            return future.result(timeout=15)  # 15秒でタイムアウトさせる
-        except concurrent.futures.TimeoutError:
-            return {}, False, "企業情報の取得がタイムアウトしました。通信状況を確認してください。"
-        except Exception as e:
-            return {}, False, str(e)
+        safe_info = {
+            "sector": "", "industry": "",
+            "shortName": symbol, "longName": symbol
+        }
+        return safe_info, True, "（※フリーズ防止のため、企業セクターの自動取得はオフにしています）"
+    except Exception as e:
+        return {}, False, str(e)
 
 
 # =========================================================
-# 5. 個別銘柄の市場・セクター分類
+# 5. プロファイル作成（手動マッピング＋簡易判定）
 # =========================================================
 
 def build_dynamic_profile(symbol, info):
     if not symbol: return None
-    info = info or {}
     is_jp = symbol.endswith(".T")
-    sector = info.get("sector", "")
-    industry = info.get("industry", "")
-    short_name = info.get("shortName") or info.get("longName") or symbol
+    short_name = info.get("shortName", symbol)
 
     if symbol in MANUAL_PROFILES:
         manual = MANUAL_PROFILES[symbol]
         return {
             "symbol": symbol, "display_symbol": display_symbol(symbol), "name": short_name,
-            "is_jp": is_jp, "market": "日本株" if is_jp else "米国株", "sector_raw": sector,
-            "industry_raw": industry, "sec": manual["sec"], "sec_n": manual["sec_n"], "idx": manual["idx"]
+            "is_jp": is_jp, "market": "日本株" if is_jp else "米国株",
+            "sec": manual["sec"], "sec_n": manual["sec_n"], "idx": manual["idx"]
         }
 
-    sector_lower = sector.lower()
-    industry_lower = industry.lower()
-
+    # デフォルトのフォールバック
     if is_jp:
-        if symbol == "7974.T": sec_tic, sec_name = "2640.T", "ゲーム・アニメ関連（2640.T）"
-        elif "bank" in sector_lower or "financial" in sector_lower: sec_tic, sec_name = "1615.T", "銀行関連（1615.T）"
-        elif "technology" in sector_lower or "electronic" in industry_lower or "semiconductor" in industry_lower: sec_tic, sec_name = "1625.T", "電機・精密関連（1625.T）"
-        elif "communication" in sector_lower or "communication" in industry_lower or "software" in industry_lower: sec_tic, sec_name = "1626.T", "情報通信・サービス関連（1626.T）"
-        elif "healthcare" in sector_lower or "pharmaceutical" in industry_lower or "biotechnology" in industry_lower: sec_tic, sec_name = "1621.T", "医薬品関連（1621.T）"
-        elif "consumer" in sector_lower or "retail" in industry_lower: sec_tic, sec_name = "1630.T", "小売関連（1630.T）"
-        elif "entertainment" in industry_lower or "gaming" in industry_lower: sec_tic, sec_name = "2640.T", "ゲーム・アニメ関連（2640.T）"
-        else: sec_tic, sec_name = "1306.T", "TOPIX連動ETF（1306.T）"
+        sec_tic, sec_name = "1306.T", "TOPIX連動ETF"
         index_ticker = "^TOPX"
     else:
-        if "semiconductor" in industry_lower: sec_tic, sec_name = "SMH", "半導体（SMH.US）"
-        elif "technology" in sector_lower: sec_tic, sec_name = "XLK", "テクノロジー（XLK.US）"
-        elif "healthcare" in sector_lower: sec_tic, sec_name = "XLV", "ヘルスケア（XLV.US）"
-        elif "financial" in sector_lower: sec_tic, sec_name = "XLF", "金融（XLF.US）"
-        elif "consumer cyclical" in sector_lower: sec_tic, sec_name = "XLY", "一般消費財（XLY.US）"
-        elif "consumer defensive" in sector_lower: sec_tic, sec_name = "XLP", "生活必需品（XLP.US）"
-        elif "energy" in sector_lower: sec_tic, sec_name = "XLE", "エネルギー（XLE.US）"
-        elif "communication" in sector_lower: sec_tic, sec_name = "XLC", "通信サービス（XLC.US）"
-        elif "industrial" in sector_lower: sec_tic, sec_name = "XLI", "資本財（XLI.US）"
-        elif "real estate" in sector_lower: sec_tic, sec_name = "XLRE", "不動産（XLRE.US）"
-        elif "utilities" in sector_lower: sec_tic, sec_name = "XLU", "公益事業（XLU.US）"
-        elif "basic materials" in sector_lower or "materials" in sector_lower: sec_tic, sec_name = "XLB", "素材（XLB.US）"
-        else: sec_tic, sec_name = "SPY", "米国大型株市場（SPY.US）"
+        sec_tic, sec_name = "SPY", "米国大型株市場（SPY.US）"
         index_ticker = "SPY"
 
     return {
         "symbol": symbol, "display_symbol": display_symbol(symbol), "name": short_name,
-        "is_jp": is_jp, "market": "日本株" if is_jp else "米国株", "sector_raw": sector,
-        "industry_raw": industry, "sec": sec_tic, "sec_n": sec_name, "idx": index_ticker
+        "is_jp": is_jp, "market": "日本株" if is_jp else "米国株",
+        "sec": sec_tic, "sec_n": sec_name, "idx": index_ticker
     }
 
 
 # =========================================================
-# 6. 市場データ取得
+# 6. 市場データの一括取得（フリーズ対策の要）
 # =========================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -242,43 +167,39 @@ def fetch_market_trend_data(extra_ticker_pairs=()):
 
     history = {}
     errors = {}
-    
-    # 💡 内部関数として1銘柄ごとの取得処理を定義
-    def fetch_single_ticker(key, yahoo_symbol):
-        try:
-            df = yf.Ticker(yahoo_symbol).history(period="3y", auto_adjust=True, actions=False)
-            df = clean_columns(df)
-            
-            if df.empty:
-                return key, None, "価格データが空でした。"
-                
-            if df.index.tz is not None: 
-                df.index = df.index.tz_localize(None)
-                
-            df = df.sort_index()
-            df = df[~df.index.duplicated(keep="last")]
-            
-            return key, df.copy(), None
-        except Exception as e:
-            return key, None, str(e)
+    yahoo_symbols = list(tickers.values())
 
-    # 💡 ThreadPoolExecutorを用いて複数銘柄を並列で取得（ダンマリ停止の最大の原因を排除）
-    # max_workers=10 程度でAPIへの負荷を分散しつつ高速化
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        futures = {executor.submit(fetch_single_ticker, k, v): k for k, v in tickers.items()}
-        for future in concurrent.futures.as_completed(futures):
-            key = futures[future]
-            try:
-                # 30秒を上限とし、特定のティッカーで通信がハングするのを防止
-                res_key, df, err = future.result(timeout=30)
-                if err:
-                    errors[res_key] = err
-                elif df is not None:
-                    history[res_key] = df
-            except concurrent.futures.TimeoutError:
-                errors[key] = "取得タイムアウト（通信遅延）"
-            except Exception as e:
-                errors[key] = f"予期せぬエラー: {str(e)}"
+    try:
+        # 💡 Tickerごとのループ通信を廃止し、yf.downloadで一元化
+        df_bulk = yf.download(yahoo_symbols, period="3y", group_by="ticker", threads=True, progress=False)
+        
+        if df_bulk.empty:
+            return history, names, {"all": "一括データ取得に失敗しました。"}
+            
+        if isinstance(df_bulk.columns, pd.MultiIndex):
+            for key, yahoo_symbol in tickers.items():
+                if yahoo_symbol in df_bulk.columns.get_level_values(0).unique():
+                    df = df_bulk[yahoo_symbol].dropna(how="all").copy()
+                    if not df.empty:
+                        # タイムゾーンの除去
+                        if df.index.tz is not None:
+                            df.index = df.index.tz_localize(None)
+                        # 株式分割/配当調整後の価格をCloseとして使用
+                        if "Adj Close" in df.columns:
+                            df["Close"] = df["Adj Close"]
+                        history[key] = df
+                    else:
+                        errors[key] = "価格データが空です。"
+        else:
+            # 1銘柄のみ取得された場合のフェイルセーフ
+            df = df_bulk.dropna(how="all").copy()
+            if not df.empty:
+                if df.index.tz is not None: df.index = df.index.tz_localize(None)
+                if "Adj Close" in df.columns: df["Close"] = df["Adj Close"]
+                history[list(tickers.keys())[0]] = df
+
+    except Exception as e:
+        errors["bulk"] = f"取得エラー: {str(e)}"
 
     return history, names, errors
 
@@ -351,7 +272,7 @@ def trend_label(score):
 
 
 # =========================================================
-# 8. 期間・マクロ処理
+# 8. マクロ処理ヘルパー
 # =========================================================
 
 def get_period_dates(year, period):
@@ -392,27 +313,19 @@ def classify_tnx_change(change_21d):
 
 def classify_us_market(qqq_rs, dia_rs, iwm_rs):
     values = [qqq_rs, dia_rs, iwm_rs]
-    if any(value is None or pd.isna(value) for value in values): return "⚪ 市場状態を判定するデータが不足しています。"
-    if qqq_rs > 0 and iwm_rs < 0: return "🟢 大型グロース株へ強さが集中しています。"
-    if qqq_rs > 0 and iwm_rs > 0: return "🟢 大型グロース株と小型株の両方に上昇が広がっています。"
-    if dia_rs > 0 and qqq_rs < 0: return "🟡 大型成熟株・バリュー寄りの市場です。"
-    if qqq_rs < 0 and dia_rs < 0 and iwm_rs < 0: return "🟠 SPY優位、または方向感が弱い混合状態です。"
-    return "⚪ 指数間の方向感が混在しています。"
+    if any(value is None or pd.isna(value) for value in values): return "⚪ データ不足"
+    if qqq_rs > 0 and iwm_rs < 0: return "🟢 大型グロース株へ強さが集中"
+    if qqq_rs > 0 and iwm_rs > 0: return "🟢 大型グロース株と小型株両方へ上昇が拡大"
+    if dia_rs > 0 and qqq_rs < 0: return "🟡 大型成熟株・バリュー寄りの市場"
+    if qqq_rs < 0 and dia_rs < 0 and iwm_rs < 0: return "🟠 SPY優位、または方向感が弱い混合状態"
+    return "⚪ 指数間の方向感が混在"
 
 
 # =========================================================
-# 11. 画面タイトル ＆ 入力フォーム
+# UI ＆ メインロジック
 # =========================================================
 
-st.markdown(
-    """
-    <div style="font-size: 18px; font-weight: bold;">
-        🌎 市場トレンド ＆ 🎯 個別銘柄・セクター比較
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
+st.markdown("<div style='font-size: 18px; font-weight: bold;'>🌎 市場トレンド ＆ 🎯 個別銘柄・セクター比較</div>", unsafe_allow_html=True)
 st.caption("市場 → セクター → 個別銘柄の順に、相対的な強さと資金移動を確認するための分析ツールです。")
 
 if "target_input" not in st.session_state:
@@ -421,11 +334,7 @@ if "target_input" not in st.session_state:
 with st.form("ticker_input_form"):
     input_col, button_col = st.columns([3, 1])
     with input_col:
-        new_ticker_input = st.text_input(
-            "比較したい個別銘柄コード",
-            value=st.session_state.target_input,
-            placeholder="例：NVDA、NVDA.US、AAPL、7974、7974.JP"
-        )
+        new_ticker_input = st.text_input("比較したい個別銘柄コード", value=st.session_state.target_input, placeholder="例：NVDA、7974")
     with button_col:
         st.write("")
         st.write("")
@@ -435,15 +344,7 @@ if submitted:
     st.session_state.target_input = new_ticker_input.strip()
 
 target_ticker_input = st.session_state.target_input
-
-
-# =========================================================
-# 13. データ処理とプロファイル作成
-# =========================================================
-
-target_profile = None
-extra_tickers = {}
-profile_warning = None
+target_profile, extra_tickers, profile_warning = None, {}, None
 
 if target_ticker_input:
     formatted_ticker = format_ticker(target_ticker_input)
@@ -456,43 +357,33 @@ if target_ticker_input:
             if target_profile["sec"] not in CORE_TICKERS:
                 extra_tickers[target_profile["sec"]] = target_profile["sec_n"]
     else:
-        st.error(f"銘柄コード「{target_ticker_input}」の価格データを取得できませんでした。")
-        if profile_warning: st.caption(f"詳細: {profile_warning}")
+        st.error(f"銘柄コード「{target_ticker_input}」のデータを取得できません。")
 
-if profile_warning and target_profile:
-    st.warning("一部の企業属性が取得できなかったため、代替の自動分類を使用しています。")
+if profile_warning: st.caption(profile_warning)
 
 extra_ticker_pairs = tuple(sorted(extra_tickers.items()))
 
-# 💡 並列処理により取得が劇的に高速化・安定化します
-with st.spinner("3年分の市場データを取得・集計しています（並行取得中...）"):
+# 💡 yf.download を使った高速な一括通信
+with st.spinner("市場データを一括取得しています（フリーズ対策版）..."):
     hist, names, fetch_errors = fetch_market_trend_data(extra_ticker_pairs)
 
 
 # =========================================================
-# 15. 市場モードの決定
+# 市場モードの決定とランキング表示
 # =========================================================
 
 if target_profile and target_profile["is_jp"]:
-    market_mode = "JP"
-    if "^TOPX" in hist: benchmark_key = "^TOPX"
-    elif "1306.T" in hist:
+    market_mode, benchmark_key = "JP", "^TOPX"
+    if "^TOPX" not in hist and "1306.T" in hist:
         benchmark_key = "1306.T"
-        st.warning("TOPIX指数を取得できなかったため、1306.Tを市場基準の代替として使用します。")
-    else:
-        st.error("日本市場の基準データを取得できませんでした。")
-        st.stop()
-    rank_list = JP_SECTORS.copy()
-    section_title = "日本株・日本関連ETFの相対強度"
-
+    elif "^TOPX" not in hist:
+        st.error("日本市場の基準データを取得できませんでした。"); st.stop()
+    rank_list, section_title = JP_SECTORS.copy(), "日本株・日本関連ETFの相対強度"
 else:
-    market_mode = "US"
-    benchmark_key = "SPY"
-    if benchmark_key not in hist:
-        st.error("米国市場の基準データSPY.USを取得できませんでした。")
-        st.stop()
-    rank_list = US_SECTORS.copy()
-    section_title = "米国11セクターの相対強度"
+    market_mode, benchmark_key = "US", "SPY"
+    if "SPY" not in hist:
+        st.error("米国市場の基準データSPY.USを取得できませんでした。"); st.stop()
+    rank_list, section_title = US_SECTORS.copy(), "米国11セクターの相対強度"
 
 if target_profile:
     if target_profile["sec"] not in rank_list: rank_list.append(target_profile["sec"])
@@ -500,46 +391,25 @@ if target_profile:
 
 benchmark_df = hist[benchmark_key]
 
-
-# =========================================================
-# 16. プロファイル表示 ＆ 17. ランキング表示
-# =========================================================
-
 if target_profile:
-    st.success(
-        f"自動判定：**{target_profile['name']}** （{target_profile['display_symbol']}）は **{target_profile['market']}** と判定しました。"
-        f"比較セクターは **{target_profile['sec_n']}**、市場基準は **{names.get(benchmark_key, benchmark_key)}** です。"
-    )
+    st.success(f"**{target_profile['name']}** （{target_profile['display_symbol']}）を **{target_profile['market']}** として比較します。基準: **{names.get(benchmark_key, benchmark_key)}**")
 
 with st.expander(f"📊 ① {section_title}", expanded=True):
     if market_mode == "US":
-        index_rows = []
-        index_rs = {}
-
+        index_rows, index_rs = [], {}
         for index_key in ["SPY", "QQQ", "DIA", "IWM"]:
             if index_key not in hist: continue
-            return_3m = calc_return(hist[index_key], 63)
-            excess_3m = 0.0 if index_key == "SPY" else calc_excess_return(hist[index_key], benchmark_df, 63)
-            index_rs[index_key] = excess_3m
-            index_rows.append({
-                "指数": names.get(index_key, index_key),
-                "3か月リターン": return_3m,
-                "SPY超過リターン": excess_3m
-            })
+            ret_3m = calc_return(hist[index_key], 63)
+            exc_3m = 0.0 if index_key == "SPY" else calc_excess_return(hist[index_key], benchmark_df, 63)
+            index_rs[index_key] = exc_3m
+            index_rows.append({"指数": names.get(index_key, index_key), "3か月リターン": ret_3m, "SPY超過リターン": exc_3m})
 
         if index_rows:
-            qqq_rs = index_rs.get("QQQ")
-            dia_rs = index_rs.get("DIA")
-            iwm_rs = index_rs.get("IWM")
-
-            st.info(classify_us_market(qqq_rs, dia_rs, iwm_rs))
-
+            st.info(classify_us_market(index_rs.get("QQQ"), index_rs.get("DIA"), index_rs.get("IWM")))
             index_df = pd.DataFrame(index_rows)
             index_df["3か月リターン"] = index_df["3か月リターン"].apply(lambda x: f"{x:+.2f}%" if pd.notna(x) else "N/A")
             index_df["SPY超過リターン"] = index_df["SPY超過リターン"].apply(lambda x: f"{x:+.2f}pt" if pd.notna(x) else "N/A")
-            
-            for col in ["3か月リターン", "SPY超過リターン"]:
-                index_df[col] = index_df[col].apply(get_colored_html)
+            for col in ["3か月リターン", "SPY超過リターン"]: index_df[col] = index_df[col].apply(get_colored_html)
             st.markdown(index_df.to_html(index=False, escape=False, classes="styled-table"), unsafe_allow_html=True)
             st.write("")
 
@@ -549,202 +419,97 @@ with st.expander(f"📊 ① {section_title}", expanded=True):
         rs1m = calc_excess_return(hist[ticker], benchmark_df, 21)
         rs3m = calc_excess_return(hist[ticker], benchmark_df, 63)
         rs6m = calc_excess_return(hist[ticker], benchmark_df, 126)
-        score, conditions, monthly_count = calc_trend_score(hist[ticker], benchmark_df)
-
+        score, conditions, count = calc_trend_score(hist[ticker], benchmark_df)
         ranking_rows.append({
-            "ticker": ticker,
-            "セクター・銘柄": names.get(ticker, display_symbol(ticker)),
+            "ticker": ticker, "セクター・銘柄": names.get(ticker, display_symbol(ticker)),
             "1か月超過": rs1m, "3か月超過": rs3m, "6か月超過": rs6m,
-            "直近3区間の勝ち数": monthly_count, "4点判定": score, "状態": trend_label(score), "判定詳細": conditions
+            "直近3区間の勝ち数": count, "4点判定": score, "状態": trend_label(score), "判定詳細": conditions
         })
 
     if ranking_rows:
         ranking_df = pd.DataFrame(ranking_rows)
-        ranking_df["sort_value"] = pd.to_numeric(ranking_df["3か月超過"], errors="coerce")
-        ranking_df = ranking_df.sort_values(by="sort_value", ascending=False, na_position="last").reset_index(drop=True)
+        ranking_df["sort"] = pd.to_numeric(ranking_df["3か月超過"], errors="coerce")
+        ranking_df = ranking_df.sort_values(by="sort", ascending=False, na_position="last").reset_index(drop=True)
         ranking_df["順位"] = range(1, len(ranking_df) + 1)
-
-        display_df = ranking_df[["順位", "セクター・銘柄", "1か月超過", "3か月超過", "6か月超過", "直近3区間の勝ち数", "4点判定", "状態"]].copy()
-
-        for col in ["1か月超過", "3か月超過", "6か月超過"]:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:+.2f}pt" if pd.notna(x) else "N/A")
-
-        display_df["直近3区間の勝ち数"] = display_df["直近3区間の勝ち数"].apply(lambda x: f"{int(x)}/3" if pd.notna(x) else "N/A")
-        display_df["4点判定"] = display_df["4点判定"].apply(lambda x: f"{int(x)}/4")
+        disp_df = ranking_df[["順位", "セクター・銘柄", "1か月超過", "3か月超過", "6か月超過", "直近3区間の勝ち数", "4点判定", "状態"]].copy()
 
         for col in ["1か月超過", "3か月超過", "6か月超過"]:
-            display_df[col] = display_df[col].apply(get_colored_html)
-        st.markdown(display_df.to_html(index=False, escape=False, classes="styled-table"), unsafe_allow_html=True)
-        st.write("")
-
-        if market_mode == "US":
-            standard_sector_rows = ranking_df[ranking_df["ticker"].isin(US_SECTORS)]
-            positive_sector_count = int((standard_sector_rows["3か月超過"] > 0).sum())
-            total_available = len(standard_sector_rows)
-            breadth_text = "上昇が一部セクターに集中" if positive_sector_count <= 3 else ("セクター間で強弱が混在" if positive_sector_count <= 7 else "上昇が多くのセクターへ拡大")
-            st.caption(f"3か月でSPY.USを上回ったセクター数：{positive_sector_count}/{total_available}。機械的判定：{breadth_text}。")
-
-        if target_profile:
-            target_match = ranking_df[ranking_df["ticker"] == target_profile["symbol"]]
-            if not target_match.empty:
-                target_row = target_match.iloc[0]
-                target_conditions = target_row["判定詳細"]
-                with st.expander("🎯 入力銘柄の4点判定詳細", expanded=False):
-                    detail_rows = [{"判定条件": k, "結果": "✅ 充足" if v else "❌ 未充足", "得点": 1 if v else 0} for k, v in target_conditions.items()]
-                    st.dataframe(pd.DataFrame(detail_rows), use_container_width=True)
+            disp_df[col] = disp_df[col].apply(lambda x: f"{x:+.2f}pt" if pd.notna(x) else "N/A")
+        disp_df["直近3区間の勝ち数"] = disp_df["直近3区間の勝ち数"].apply(lambda x: f"{int(x)}/3" if pd.notna(x) else "N/A")
+        disp_df["4点判定"] = disp_df["4点判定"].apply(lambda x: f"{int(x)}/4")
+        for col in ["1か月超過", "3か月超過", "6か月超過"]: disp_df[col] = disp_df[col].apply(get_colored_html)
+        
+        st.markdown(disp_df.to_html(index=False, escape=False, classes="styled-table"), unsafe_allow_html=True)
     else:
-        st.warning("ランキングに必要な価格データを取得できませんでした。")
-
-
-# =========================================================
-# 18. 個別銘柄と所属セクターの直接比較
-# =========================================================
+        st.warning("表示データがありません。")
 
 if target_profile and target_profile["symbol"] in hist and target_profile["sec"] in hist:
     st.markdown("---")
     st.markdown("### 🎯 個別銘柄と所属セクターの直接比較")
-
-    comparison_rows = []
+    comp_rows = []
     for days, label in [(21, "1か月"), (63, "3か月"), (126, "6か月")]:
-        versus_market = calc_excess_return(hist[target_profile["symbol"]], benchmark_df, days)
-        versus_sector = calc_excess_return(hist[target_profile["symbol"]], hist[target_profile["sec"]], days)
-        comparison_rows.append({"期間": label, "市場に対する超過リターン": versus_market, "所属セクターに対する超過リターン": versus_sector})
-
-    comparison_df = pd.DataFrame(comparison_rows)
-    for col in ["市場に対する超過リターン", "所属セクターに対する超過リターン"]:
-        comparison_df[col] = comparison_df[col].apply(lambda x: f"{x:+.2f}pt" if pd.notna(x) else "N/A")
-
-    for col in ["市場に対する超過リターン", "所属セクターに対する超過リターン"]:
-        comparison_df[col] = comparison_df[col].apply(get_colored_html)
-    st.markdown(comparison_df.to_html(index=False, escape=False, classes="styled-table"), unsafe_allow_html=True)
-    st.write("")
-    st.caption("プラスなら個別銘柄が比較対象を上回り、マイナスなら比較対象を下回っています。")
-
-
-# =========================================================
-# 19. パフォーマンス比較グラフ
-# =========================================================
+        v_market = calc_excess_return(hist[target_profile["symbol"]], benchmark_df, days)
+        v_sector = calc_excess_return(hist[target_profile["symbol"]], hist[target_profile["sec"]], days)
+        comp_rows.append({"期間": label, "市場に対する超過リターン": v_market, "セクターに対する超過リターン": v_sector})
+    comp_df = pd.DataFrame(comp_rows)
+    for col in ["市場に対する超過リターン", "セクターに対する超過リターン"]:
+        comp_df[col] = comp_df[col].apply(lambda x: f"{x:+.2f}pt" if pd.notna(x) else "N/A").apply(get_colored_html)
+    st.markdown(comp_df.to_html(index=False, escape=False, classes="styled-table"), unsafe_allow_html=True)
 
 st.markdown("---")
 st.markdown("### ② 調整後価格の基準化パフォーマンス比較")
+c_year = datetime.datetime.now().year
+p_col1, p_col2 = st.columns(2)
+with p_col1: sel_year = st.selectbox("表示する年", [str(c_year), str(c_year - 1), "過去3年すべて"])
+with p_col2: 
+    q_list = ["Q1（1～3月）", "Q2（4～6月）", "Q3（7～9月）", "Q4（10～12月）", "H1（上半期）", "H2（下半期）", "通年"]
+    sel_period = st.selectbox("表示期間", ["通年"] if sel_year == "過去3年すべて" else q_list, index=(datetime.datetime.now().month - 1) // 3 if sel_year != "過去3年すべて" else 0, disabled=(sel_year == "過去3年すべて"))
 
-current_year = datetime.datetime.now().year
-period_col1, period_col2 = st.columns(2)
-
-with period_col1:
-    year_list = [str(current_year), str(current_year - 1), str(current_year - 2), "過去3年すべて"]
-    selected_year = st.selectbox("表示する年", year_list, index=0)
-
-with period_col2:
-    quarter_list = ["Q1（1～3月）", "Q2（4～6月）", "Q3（7～9月）", "Q4（10～12月）", "H1（上半期）", "H2（下半期）", "通年"]
-    if selected_year == "過去3年すべて":
-        selected_period = st.selectbox("表示期間", ["通年"], disabled=True)
-    else:
-        current_quarter_index = (datetime.datetime.now().month - 1) // 3
-        selected_period = st.selectbox("表示期間", quarter_list, index=current_quarter_index)
-
-chart_options = [ticker for ticker in (JP_SECTORS if market_mode == "JP" else US_SECTORS) if ticker in hist]
-
+chart_opts = [t for t in (JP_SECTORS if market_mode == "JP" else US_SECTORS) if t in hist]
 if target_profile:
-    if target_profile["sec"] in hist and target_profile["sec"] not in chart_options: chart_options.append(target_profile["sec"])
-    if target_profile["symbol"] in hist and target_profile["symbol"] not in chart_options: chart_options.append(target_profile["symbol"])
-    default_selection = [ticker for ticker in [target_profile["symbol"], target_profile["sec"]] if ticker in chart_options]
+    for t in [target_profile["sec"], target_profile["symbol"]]:
+        if t in hist and t not in chart_opts: chart_opts.append(t)
+    def_sel = [t for t in [target_profile["symbol"], target_profile["sec"]] if t in chart_opts]
 else:
-    default_selection = [ticker for ticker in ["XLK", "XLE", "XLRE"] if ticker in chart_options]
+    def_sel = [t for t in ["XLK", "XLE", "XLRE"] if t in chart_opts]
 
-selected_lines = st.multiselect("グラフに表示する銘柄・セクター", options=chart_options, default=default_selection, format_func=lambda x: names.get(x, display_symbol(x)))
+sel_lines = st.multiselect("グラフに表示する銘柄", options=chart_opts, default=def_sel, format_func=lambda x: names.get(x, display_symbol(x)))
 
-show_target = True
-if target_profile and target_profile["symbol"] in selected_lines:
-    show_target = st.checkbox(f"個別銘柄（{target_profile['display_symbol']}）の線を表示する", value=True)
-
-if selected_lines:
-    lines_to_plot = selected_lines.copy()
-    if benchmark_key not in lines_to_plot: lines_to_plot.append(benchmark_key)
-
-    series_list = []
-    for ticker in lines_to_plot:
-        if ticker not in hist: continue
-        series = hist[ticker]["Close"].rename(ticker)
-        series_list.append(series)
+if sel_lines:
+    lines = sel_lines.copy()
+    if benchmark_key not in lines: lines.append(benchmark_key)
+    series_list = [hist[t]["Close"].rename(t) for t in lines if t in hist]
 
     if series_list:
         all_df = pd.concat(series_list, axis=1, join="outer").sort_index().ffill()
-
-        if selected_year != "過去3年すべて":
-            start_date_str, end_date_str = get_period_dates(selected_year, selected_period)
-            start_date = pd.to_datetime(start_date_str)
-            end_date = pd.to_datetime(end_date_str)
-            all_df = all_df[(all_df.index >= start_date) & (all_df.index <= end_date)]
-
-        active_columns = [ticker for ticker in lines_to_plot if ticker in all_df.columns]
-        if active_columns: all_df = all_df.dropna(subset=active_columns)
-
+        if sel_year != "過去3年すべて":
+            s_date, e_date = get_period_dates(sel_year, sel_period)
+            all_df = all_df[(all_df.index >= pd.to_datetime(s_date)) & (all_df.index <= pd.to_datetime(e_date))]
+        
+        all_df = all_df.dropna(subset=[t for t in lines if t in all_df.columns])
+        
         if not all_df.empty:
             chart_data = pd.DataFrame(index=all_df.index)
-            for ticker in lines_to_plot:
-                if ticker not in all_df.columns: continue
-                if target_profile and ticker == target_profile["symbol"] and not show_target: continue
-                series = all_df[ticker].dropna()
-                if series.empty: continue
-                first_value = series.iloc[0]
-                if first_value == 0 or pd.isna(first_value): continue
-                
-                normalized = series / first_value
-                column_name = names.get(ticker, display_symbol(ticker))
-                if ticker == benchmark_key: column_name = f"📊 市場基準：{column_name}"
-                chart_data[column_name] = normalized
-
-            if not chart_data.empty:
-                st.line_chart(chart_data, use_container_width=True)
-            else:
-                st.warning("表示可能なグラフデータがありません。")
+            for t in lines:
+                if t in all_df.columns and not all_df[t].empty and all_df[t].iloc[0] > 0:
+                    c_name = f"📊 市場：{names.get(t, t)}" if t == benchmark_key else names.get(t, display_symbol(t))
+                    chart_data[c_name] = all_df[t] / all_df[t].iloc[0]
+            st.line_chart(chart_data, use_container_width=True)
         else:
-            st.warning("指定期間内に、比較対象すべてに共通する価格データがありません。")
-else:
-    st.warning("表示するセクターまたは銘柄を選択してください。")
-
-
-# =========================================================
-# 20. マクロ指標
-# =========================================================
+            st.warning("指定期間のデータがありません。")
 
 st.markdown("---")
 st.markdown("### ③ マクロ指標との整合性確認")
-
-macro_rows = []
+m_rows = []
 if "TNX" in hist:
-    tnx_current = hist["TNX"]["Close"].dropna().iloc[-1]
-    tnx_5d = calc_change(hist["TNX"], 5, percent=False)
-    tnx_21d = calc_change(hist["TNX"], 21, percent=False)
-    macro_rows.append({
-        "指標": "米10年債利回り", "現在値": f"{tnx_current:.2f}%",
-        "5営業日変化": format_number(tnx_5d, decimals=2, suffix="pt"),
-        "21営業日変化": format_number(tnx_21d, decimals=2, suffix="pt"),
-        "機械的な状態": classify_tnx_change(tnx_21d)
-    })
-
+    t_curr = hist["TNX"]["Close"].dropna().iloc[-1]
+    m_rows.append({"指標": "米10年債利回り", "現在値": f"{t_curr:.2f}%", "21営業日変化": format_number(calc_change(hist["TNX"], 21), suffix="pt"), "状態": classify_tnx_change(calc_change(hist["TNX"], 21))})
 if "VIX" in hist:
-    vix_current = hist["VIX"]["Close"].dropna().iloc[-1]
-    vix_5d = calc_change(hist["VIX"], 5, percent=True)
-    vix_21d = calc_change(hist["VIX"], 21, percent=True)
-    macro_rows.append({
-        "指標": "恐怖指数（VIX）", "現在値": f"{vix_current:.2f}",
-        "5営業日変化": format_number(vix_5d, decimals=2, suffix="%"),
-        "21営業日変化": format_number(vix_21d, decimals=2, suffix="%"),
-        "機械的な状態": classify_vix(vix_current)
-    })
+    v_curr = hist["VIX"]["Close"].dropna().iloc[-1]
+    m_rows.append({"指標": "恐怖指数（VIX）", "現在値": f"{v_curr:.2f}", "21営業日変化": format_number(calc_change(hist["VIX"], 21, True), suffix="%"), "状態": classify_vix(v_curr)})
 
-if macro_rows:
-    macro_df = pd.DataFrame(macro_rows)
-    st.dataframe(macro_df, hide_index=True, use_container_width=True)
-else:
-    st.warning("マクロ指標を取得できませんでした。")
+if m_rows: st.dataframe(pd.DataFrame(m_rows), hide_index=True, use_container_width=True)
 
-# =========================================================
-# エラー表示など
-# =========================================================
 if fetch_errors:
-    with st.expander("⚠️ 取得できなかったデータの詳細", expanded=False):
-        error_df = pd.DataFrame([{"対象": names.get(k, display_symbol(k)), "エラー内容": v} for k, v in fetch_errors.items()])
-        st.dataframe(error_df, hide_index=True, use_container_width=True)
+    with st.expander("⚠️ 一部取得エラーの詳細", expanded=False):
+        st.dataframe(pd.DataFrame([{"対象": names.get(k, k), "エラー": v} for k, v in fetch_errors.items()]), hide_index=True)
