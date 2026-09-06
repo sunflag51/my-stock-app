@@ -14,11 +14,10 @@ import numpy as np
 import datetime
 
 # --- ページ基本設定 ---
-st.set_page_config(page_title="米国市場トレンド確認", layout="wide")
+st.set_page_config(page_title="市場トレンド＆個別銘柄比較", layout="wide")
 
 st.markdown("""
 <style>
-/* スマホでの文字コピーを強制的に許可 */
 * {
     -webkit-user-select: text !important;
     -moz-user-select: text !important;
@@ -28,32 +27,93 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 💡 データ取得関数
+# 💡 データ取得とプロファイリング関数
+def format_ticker(t):
+    t = t.strip().upper()
+    if t.endswith(".JP"): return t.replace(".JP", ".T")
+    elif t.isdigit(): return f"{t}.T"
+    return t
+
 @st.cache_data(ttl=3600)
-def fetch_market_trend_data():
+def fetch_base_info(symbol):
+    if not symbol: return None, False
+    stock = yf.Ticker(symbol)
+    info = stock.info
+    hist = stock.history(period="1d")
+    is_valid = not hist.empty
+    return info, is_valid
+
+def build_dynamic_profile(symbol, info):
+    if not symbol or not info: return None
+    
+    is_jp = symbol.endswith(".T")
+    sector = info.get("sector", "")
+    industry = info.get("industry", "")
+    short_name = info.get("shortName", symbol)
+    
+    if is_jp:
+        if "Bank" in sector or "Financial" in sector: sec_tic, sec_name = "1615.T", "日本の銀行ETF"
+        elif "Technology" in sector or "Electronic" in industry: sec_tic, sec_name = "1625.T", "日本の電機・精密ETF"
+        elif "Consumer" in sector or "Retail" in industry: sec_tic, sec_name = "1630.T", "日本の小売ETF"
+        elif "Communication" in sector: sec_tic, sec_name = "1626.T", "日本の情報通信ETF"
+        elif "Healthcare" in sector: sec_tic, sec_name = "1621.T", "日本の医薬品ETF"
+        elif "Entertainment" in industry or symbol.startswith("7974"): sec_tic, sec_name = "2640.T", "日本のゲーム・アニメETF"
+        else: sec_tic, sec_name = "1306.T", "TOPIX連動ETF"
+        idx = "^TOPX"
+    else:
+        if "Technology" in sector:
+            if "Semiconductor" in industry: sec_tic, sec_name = "SMH", "半導体 (SMH)"
+            else: sec_tic, sec_name = "XLK", "テクノロジー (XLK)"
+        elif "Healthcare" in sector: sec_tic, sec_name = "XLV", "ヘルスケア (XLV)"
+        elif "Financial" in sector: sec_tic, sec_name = "XLF", "金融 (XLF)"
+        elif "Consumer Cyclical" in sector: sec_tic, sec_name = "XLY", "一般消費財 (XLY)"
+        elif "Consumer Defensive" in sector: sec_tic, sec_name = "XLP", "生活必需品 (XLP)"
+        elif "Energy" in sector: sec_tic, sec_name = "XLE", "エネルギー (XLE)"
+        elif "Communication" in sector: sec_tic, sec_name = "XLC", "通信 (XLC)"
+        elif "Industrials" in sector: sec_tic, sec_name = "XLI", "資本財 (XLI)"
+        elif "Real Estate" in sector: sec_tic, sec_name = "XLRE", "不動産 (XLRE)"
+        elif "Utilities" in sector: sec_tic, sec_name = "XLU", "公益事業 (XLU)"
+        elif "Basic Materials" in sector: sec_tic, sec_name = "XLB", "素材 (XLB)"
+        else: sec_tic, sec_name = "SPY", "SPY (セクター代用)"
+        idx = "SPY"
+
+    return {
+        "symbol": symbol, "name": short_name, "is_jp": is_jp,
+        "sec": sec_tic, "sec_n": sec_name, "idx": idx
+    }
+
+@st.cache_data(ttl=3600)
+def fetch_market_trend_data(extra_tickers=None):
     tickers = {
         "SPY": "SPY", "QQQ": "QQQ", "DIA": "DIA", "IWM": "IWM",
         "XLK": "XLK", "XLC": "XLC", "XLY": "XLY", "XLF": "XLF",
         "XLI": "XLI", "XLE": "XLE", "XLB": "XLB", "XLV": "XLV",
         "XLP": "XLP", "XLU": "XLU", "XLRE": "XLRE",
-        "VIX": "^VIX", "TNX": "^TNX"
+        "VIX": "^VIX", "TNX": "^TNX",
+        "^TOPX": "^TOPX", "1306.T": "1306.T", "2640.T": "2640.T" # 日本株用の一部ETFを標準化
     }
     
     names = {
-        "SPY": "米国大型株全体 (SPY)", "QQQ": "大型ハイテク (QQQ)", 
-        "DIA": "大型バリュー・成熟 (DIA)", "IWM": "米国小型株 (IWM)",
+        "SPY": "米国大型株 (SPY)", "QQQ": "大型ハイテク (QQQ)", 
+        "DIA": "バリュー・成熟 (DIA)", "IWM": "米国小型株 (IWM)",
         "XLK": "テクノロジー", "XLC": "通信サービス", "XLY": "一般消費財", "XLF": "金融",
         "XLI": "資本財", "XLE": "エネルギー", "XLB": "素材", "XLV": "ヘルスケア",
-        "XLP": "生活必需品", "XLU": "公益事業", "XLRE": "不動産"
+        "XLP": "生活必需品", "XLU": "公益事業", "XLRE": "不動産",
+        "^TOPX": "TOPIX", "1306.T": "TOPIX ETF", "2640.T": "ゲーム・アニメ"
     }
     
+    # 追加の銘柄や専用セクターがあれば統合
+    if extra_tickers:
+        for k, v in extra_tickers.items():
+            if k not in tickers:
+                tickers[k] = v
+                names[k] = k # 一時的な名前
+
     history = {}
     for label, t in tickers.items():
         try:
-            # グラフ描画のため、過去3年分をガッツリ取得
             df = yf.Ticker(t).history(period="3y") 
             if not df.empty:
-                # タイムゾーン情報を削除して扱いやすくする
                 df.index = df.index.tz_localize(None)
                 history[label] = df
         except:
@@ -73,7 +133,6 @@ def calc_relative_strength(df_target, df_base, days):
         return t_ret - b_ret
     return None
 
-# --- 四半期（Q）の期間を取得する関数 ---
 def get_quarter_dates(year, quarter):
     if quarter == "Q1": return f"{year}-01-01", f"{year}-03-31"
     elif quarter == "Q2": return f"{year}-04-01", f"{year}-06-30"
@@ -81,240 +140,210 @@ def get_quarter_dates(year, quarter):
     elif quarter == "Q4": return f"{year}-10-01", f"{year}-12-31"
     elif quarter == "H1 (上半期)": return f"{year}-01-01", f"{year}-06-30"
     elif quarter == "H2 (下半期)": return f"{year}-07-01", f"{year}-12-31"
-    else: return f"{year}-01-01", f"{year}-12-31" # "通年"
+    else: return f"{year}-01-01", f"{year}-12-31"
 
 # --- 画面描画 ---
-st.markdown("<div style='font-size: 16px; font-weight: bold;'>🇺🇸 米国市場トレンド・資金ローテーション確認</div>", unsafe_allow_html=True)
-st.caption("市場の主役が「大型か小型か」「どのセクターか」を客観的な価格データから毎月確認します。")
+st.markdown("<div style='font-size: 16px; font-weight: bold;'>🇺🇸 米国市場トレンド ＆ 🎯 個別銘柄セクター比較</div>", unsafe_allow_html=True)
+st.caption("市場全体の資金移動に加え、特定の銘柄が「自身の属するセクター」に対して強いか弱いかを確認できます。")
 
-with st.spinner("米国市場の3年分のデータを集計し、グラフを作成中..."):
-    hist, names = fetch_market_trend_data()
+# 💡 個別銘柄の入力UIをグラフの上に配置
+col_t1, col_t2 = st.columns([3, 1])
+with col_t1:
+    target_ticker_input = st.text_input("比較したい個別銘柄コード (例: NVDA, AAPL, 7974)", "").strip()
+with col_t2:
+    st.write("")
+    st.write("")
+    load_btn = st.button("データを取得", type="primary")
+
+# プロファイリング処理
+target_profile = None
+extra_req = {}
+if target_ticker_input:
+    formatted_ticker = format_ticker(target_ticker_input)
+    info, is_valid = fetch_base_info(formatted_ticker)
+    if is_valid:
+        target_profile = build_dynamic_profile(formatted_ticker, info)
+        if target_profile:
+            # 取得リストに個別銘柄と、その専用セクターを追加
+            extra_req[target_profile["symbol"]] = target_profile["symbol"]
+            extra_req[target_profile["sec"]] = target_profile["sec"]
+
+with st.spinner("3年分の市場データと銘柄データを集計中..."):
+    hist, names = fetch_market_trend_data(extra_req)
     
     if "SPY" not in hist:
-        st.error("SPYデータの取得に失敗しました。時間をおいて再試行してください。")
+        st.error("基本データ(SPY)の取得に失敗しました。")
     else:
         df_spy = hist["SPY"]
         
-        # ==========================================
-        # 1. 4大指数による環境認識
-        # ==========================================
-        st.markdown("---")
-        st.markdown("<div style='font-size: 14px; font-weight: bold;'>① 4大指数による環境認識（大型／小型／グロース／バリュー）</div>", unsafe_allow_html=True)
-        
-        idx_data = []
-        for idx in ["SPY", "QQQ", "DIA", "IWM"]:
-            if idx in hist:
-                ret3m = calc_return(hist[idx], 63)
-                rs3m = calc_relative_strength(hist[idx], df_spy, 63) if idx != "SPY" else 0.0
-                idx_data.append({
-                    "指数": names[idx],
-                    "3ヶ月リターン": ret3m,
-                    "SPY比 (相対強度)": rs3m
-                })
-        
-        if idx_data:
-            df_idx = pd.DataFrame(idx_data)
-            qqq_rs = df_idx[df_idx["指数"] == names["QQQ"]]["SPY比 (相対強度)"].values[0] if "QQQ" in hist else 0
-            dia_rs = df_idx[df_idx["指数"] == names["DIA"]]["SPY比 (相対強度)"].values[0] if "DIA" in hist else 0
-            iwm_rs = df_idx[df_idx["指数"] == names["IWM"]]["SPY比 (相対強度)"].values[0] if "IWM" in hist else 0
-            
-            status_text = ""
-            if qqq_rs > 0 and iwm_rs < 0:
-                status_text = "🟢 **【大型グロース一強】** AI・テクノロジーなど一部の大型成長株に資金が集中しています。"
-            elif iwm_rs > 0:
-                status_text = "🟡 **【相場の裾野拡大】** 小型株(IWM)がSPYを上回っており、景気回復の恩恵が市場全体へ広がっています。"
-            elif dia_rs > qqq_rs:
-                status_text = "🟠 **【バリュー・ディフェンシブ優位】** 成長株から成熟企業や景気敏感株へ資金が移動している可能性があります。"
-            
-            spy_3m = calc_return(df_spy, 63)
-            if spy_3m is not None and spy_3m < 0 and qqq_rs < 0 and iwm_rs < 0 and dia_rs < 0:
-                status_text = "🔴 **【全体リスクオフ】** 4指数すべてが弱く、市場全体のリスク回避を警戒する局面です。"
-
-            st.markdown(f"<div style='font-size: 13px; margin-bottom:10px;'>{status_text}</div>", unsafe_allow_html=True)
-            
-            df_idx_disp = df_idx.copy()
-            df_idx_disp["3ヶ月リターン"] = df_idx_disp["3ヶ月リターン"].apply(lambda x: f"{x:+.1f}%" if x is not None else "N/A")
-            df_idx_disp["SPY比 (相対強度)"] = df_idx_disp["SPY比 (相対強度)"].apply(lambda x: f"{x:+.1f} pt" if x != 0.0 else "-")
-            st.table(df_idx_disp)
-
-        # ==========================================
-        # 2. 11セクターの相対強度ランキング
-        # ==========================================
-        st.markdown("---")
-        st.markdown("<div style='font-size: 14px; font-weight: bold;'>② 11セクターの相対強度（SPY比）ランキング</div>", unsafe_allow_html=True)
-        
-        sec_list = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
-        sec_data = []
-        
-        for sec in sec_list:
-            if sec in hist:
-                rs1m = calc_relative_strength(hist[sec], df_spy, 21)
-                rs3m = calc_relative_strength(hist[sec], df_spy, 63)
-                rs6m = calc_relative_strength(hist[sec], df_spy, 126)
+        # もし個別銘柄プロファイルが取得できていれば、名前を登録
+        if target_profile:
+            names[target_profile["symbol"]] = f"🎯 {target_profile['name']} ({target_profile['symbol']})"
+            if target_profile["sec"] not in names or names[target_profile["sec"]] == target_profile["sec"]:
+                names[target_profile["sec"]] = target_profile["sec_n"]
                 
-                score = 0
-                if rs3m is not None and rs3m > 0: score += 1
-                if rs6m is not None and rs6m > 0: score += 1
-                if rs1m is not None and rs3m is not None and rs1m > (rs3m/3): score += 1
+        # ==========================================
+        # 1. 4大指数と11セクターランキング (既存機能)
+        # ==========================================
+        with st.expander("📊 ① 4大指数と11セクターの相対強度ランキング", expanded=False):
+            idx_data = []
+            for idx in ["SPY", "QQQ", "DIA", "IWM"]:
+                if idx in hist:
+                    ret3m = calc_return(hist[idx], 63)
+                    rs3m = calc_relative_strength(hist[idx], df_spy, 63) if idx != "SPY" else 0.0
+                    idx_data.append({"指数": names[idx], "3ヶ月リターン": ret3m, "SPY比": rs3m})
+            
+            if idx_data:
+                df_idx = pd.DataFrame(idx_data)
+                qqq_rs = df_idx[df_idx["指数"] == names["QQQ"]]["SPY比"].values[0] if "QQQ" in hist else 0
+                iwm_rs = df_idx[df_idx["指数"] == names["IWM"]]["SPY比"].values[0] if "IWM" in hist else 0
                 
-                sec_data.append({
-                    "セクター": names[sec],
-                    "ティッカー": sec,
-                    "1ヶ月RS": rs1m,
-                    "3ヶ月RS": rs3m,
-                    "6ヶ月RS": rs6m,
-                    "トレンド点数": score
-                })
+                status_text = "🟢 【大型グロース優位】" if qqq_rs > 0 and iwm_rs < 0 else ("🟡 【相場拡大】小型株優位" if iwm_rs > 0 else "🟠 【バリュー優位】")
+                st.markdown(f"<div style='font-size: 13px; margin-bottom:5px;'>{status_text}</div>", unsafe_allow_html=True)
 
-        if sec_data:
-            df_sec = pd.DataFrame(sec_data)
-            df_sec = df_sec.sort_values(by="3ヶ月RS", ascending=False).reset_index(drop=True)
+            sec_list = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
+            sec_data = []
+            for sec in sec_list:
+                if sec in hist:
+                    rs1m = calc_relative_strength(hist[sec], df_spy, 21)
+                    rs3m = calc_relative_strength(hist[sec], df_spy, 63)
+                    rs6m = calc_relative_strength(hist[sec], df_spy, 126)
+                    score = (1 if rs3m and rs3m>0 else 0) + (1 if rs6m and rs6m>0 else 0) + (1 if rs1m and rs3m and rs1m>(rs3m/3) else 0)
+                    sec_data.append({"セクター": names[sec], "1ヶ月 対SPY": rs1m, "3ヶ月 対SPY": rs3m, "トレンド": score})
             
-            df_sec_disp = pd.DataFrame({
-                "順位": range(1, len(df_sec) + 1),
-                "セクター": df_sec["セクター"] + " (" + df_sec["ティッカー"] + ")",
-                "1ヶ月 対SPY": df_sec["1ヶ月RS"].apply(lambda x: f"{x:+.1f} pt" if x is not None else "N/A"),
-                "3ヶ月 対SPY": df_sec["3ヶ月RS"].apply(lambda x: f"{x:+.1f} pt" if x is not None else "N/A"),
-                "6ヶ月 対SPY": df_sec["6ヶ月RS"].apply(lambda x: f"{x:+.1f} pt" if x is not None else "N/A"),
-                "トレンド状態": df_sec["トレンド点数"].apply(lambda x: "🔥 本物候補(3点)" if x==3 else ("🟡 進行中(2点)" if x==2 else "⚪ 一時的(0-1点)"))
-            })
-            
-            def colorize(val):
-                if isinstance(val, str) and "+" in val: return f"<span style='color:green; font-weight:bold;'>{val}</span>"
-                elif isinstance(val, str) and "-" in val and val != "-": return f"<span style='color:red;'>{val}</span>"
-                return val
-
-            for col in ["1ヶ月 対SPY", "3ヶ月 対SPY", "6ヶ月 対SPY"]:
-                df_sec_disp[col] = df_sec_disp[col].apply(colorize)
-
-            html_table = df_sec_disp.to_html(index=False, escape=False, classes='table table-sm', border=0)
-            st.markdown(f"<div style='font-size: 12px;'>{html_table}</div>", unsafe_allow_html=True)
+            if sec_data:
+                df_sec = pd.DataFrame(sec_data).sort_values(by="3ヶ月 対SPY", ascending=False)
+                df_sec["1ヶ月 対SPY"] = df_sec["1ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A")
+                df_sec["3ヶ月 対SPY"] = df_sec["3ヶ月 対SPY"].apply(lambda x: f"{x:+.1f}pt" if x is not None else "N/A")
+                st.dataframe(df_sec, hide_index=True)
 
         # ==========================================
-        # 3. 四半期区切りのセクター推移グラフ（Q1-Q4対応）
+        # 2. 四半期グラフ ＆ 💡個別銘柄・セクター比較
         # ==========================================
         st.markdown("---")
-        st.markdown("<div style='font-size: 14px; font-weight: bold;'>③ 【視覚化】四半期ごとのセクター相対強度グラフ</div>", unsafe_allow_html=True)
-        st.caption("指定した期間内で、SPY（市場平均＝1.0）に対してどのセクターが強く伸びたかを確認します。")
+        st.markdown("<div style='font-size: 14px; font-weight: bold;'>② 【視覚化】セクターローテーション ＆ 個別銘柄比較グラフ</div>", unsafe_allow_html=True)
+        
+        # 💡 もし銘柄が入力されていれば、その所属セクターを強調表示
+        if target_profile:
+            st.success(f"🤖 **自動判定:** {target_profile['name']} の所属セクターは **{target_profile['sec_n']}** です。（市場基準: {target_profile['idx']}）")
 
-        # 💡 表示期間の選択UIを追加
         c1, c2 = st.columns(2)
         with c1:
-            # 過去3年間の年リストを作成（現在2026年なら 2024, 2025, 2026）
             current_year = datetime.datetime.now().year
             year_list = [str(current_year), str(current_year - 1), str(current_year - 2), "過去3年すべて"]
-            selected_year = st.selectbox("表示する年を選択:", year_list, index=0)
-            
+            selected_year = st.selectbox("表示する年:", year_list, index=0)
         with c2:
             quarter_list = ["Q1 (1-3月)", "Q2 (4-6月)", "Q3 (7-9月)", "Q4 (10-12月)", "H1 (上半期)", "H2 (下半期)", "通年"]
-            # 「過去3年すべて」を選んだ時は四半期選択を無効化
             if selected_year == "過去3年すべて":
-                selected_q = st.selectbox("期間を選択:", ["通年"], disabled=True)
+                selected_q = st.selectbox("期間:", ["通年"], disabled=True)
             else:
-                # 現在の月に合わせてデフォルトの四半期を賢く選ぶ
-                current_month = datetime.datetime.now().month
-                default_q_index = (current_month - 1) // 3
-                selected_q = st.selectbox("四半期（期間）を選択:", quarter_list, index=default_q_index)
+                default_q_index = (datetime.datetime.now().month - 1) // 3
+                selected_q = st.selectbox("四半期（期間）:", quarter_list, index=default_q_index)
 
-        # グラフに表示するセクターの選択
-        top_sectors_default = df_sec["ティッカー"].head(3).tolist()
-        selected_sectors = st.multiselect(
-            "グラフに表示するセクターを選択してください（比較しやすさのため3〜5個推奨）:",
+        # 💡 グラフに表示する線の選択
+        # 基本の米国セクターリスト
+        sec_list = ["XLK", "XLC", "XLY", "XLF", "XLI", "XLE", "XLB", "XLV", "XLP", "XLU", "XLRE"]
+        
+        # もし銘柄入力があれば、選択肢に銘柄と専用セクターを追加
+        if target_profile:
+            if target_profile["sec"] not in sec_list:
+                sec_list.append(target_profile["sec"])
+            sec_list.append(target_profile["symbol"])
+            
+            # デフォルトで銘柄とその所属セクターを選択状態にする
+            default_selection = [target_profile["symbol"], target_profile["sec"]]
+        else:
+            default_selection = ["XLK", "XLE", "XLRE"] # 銘柄未入力時のデフォルト（相反しやすいセクター例）
+
+        selected_lines = st.multiselect(
+            "グラフに表示する銘柄・セクターを選択（比較しやすさのため3〜4個推奨）:",
             options=sec_list,
-            default=top_sectors_default,
-            format_func=lambda x: f"{names[x]} ({x})"
+            default=default_selection,
+            format_func=lambda x: names.get(x, x)
         )
 
-        if selected_sectors:
-            chart_data = pd.DataFrame(index=df_spy.index)
-            chart_data["市場平均 (SPY)"] = 1.0
+        # 💡 銘柄の線を表示するかどうかのトグルスイッチ
+        show_target = True
+        if target_profile and target_profile["symbol"] in selected_lines:
+            show_target = st.toggle(f"🎯 個別銘柄 ({target_profile['symbol']}) の線を表示する", value=True)
+
+        if selected_lines:
+            # 日本株が基準の場合はTOPIXを基準1.0にする
+            base_idx = target_profile["idx"] if target_profile else "SPY"
+            df_base = hist.get(base_idx, df_spy)
             
-            # 💡 指定された期間でデータをフィルタリング
+            chart_data = pd.DataFrame(index=df_base.index)
+            chart_data[f"基準 ({names.get(base_idx, base_idx)})"] = 1.0
+            
+            # 期間の絞り込み
             if selected_year != "過去3年すべて":
                 start_date, end_date = get_quarter_dates(selected_year, selected_q.split(" ")[0])
-                # SPYのデータをフィルタリング
-                mask = (df_spy.index >= start_date) & (df_spy.index <= end_date)
-                df_spy_filtered = df_spy.loc[mask]
-                chart_data = chart_data.loc[mask] # グラフの横軸を期間に合わせる
+                mask = (df_base.index >= start_date) & (df_base.index <= end_date)
+                df_base_filtered = df_base.loc[mask]
+                chart_data = chart_data.loc[mask]
             else:
-                df_spy_filtered = df_spy
+                df_base_filtered = df_base
                 
-            if not df_spy_filtered.empty:
-                for sec in selected_sectors:
-                    if sec in hist:
-                        df_sec_filtered = hist[sec].loc[chart_data.index] if not chart_data.index.empty else hist[sec]
+            if not df_base_filtered.empty:
+                for line in selected_lines:
+                    # トグルがOFFなら対象銘柄をスキップ
+                    if target_profile and line == target_profile["symbol"] and not show_target:
+                        continue
                         
-                        # インデックス（日付）を揃えて計算
-                        # その期間の初日の終値で正規化し、期間内での相対的な「伸び」を計算
-                        if not df_sec_filtered.empty and not df_spy_filtered.empty:
-                            ratio = df_sec_filtered['Close'] / df_spy_filtered['Close']
-                            # 期間の最初の日の比率を1.0として、そこからどれくらい勝ったか/負けたかを計算
+                    if line in hist:
+                        df_line_filtered = hist[line].loc[chart_data.index] if not chart_data.index.empty else hist[line]
+                        
+                        if not df_line_filtered.empty and not df_base_filtered.empty:
+                            ratio = df_line_filtered['Close'] / df_base_filtered['Close']
+                            # 期間初日を1.0に正規化
                             first_valid_ratio = ratio.dropna().iloc[0] if not ratio.dropna().empty else 1.0
                             normalized_ratio = ratio / first_valid_ratio
-                            chart_data[names[sec]] = normalized_ratio
+                            chart_data[names.get(line, line)] = normalized_ratio
                 
                 chart_data = chart_data.ffill()
                 
-                # Streamlitの標準折れ線グラフで描画
                 st.line_chart(chart_data, use_container_width=True)
                 st.markdown(f"""
                 <div style='font-size: 11px; color: gray;'>
                 ※ 表示期間: {selected_year}年 {selected_q} <br>
-                ※ グラフの見方: 期間の初日を基準(1.0)としています。横ばいの「市場平均 (SPY)」のラインより<b>大きく上に向かって伸びている線</b>が、その四半期に市場をリードした強いセクターです。
+                ※ グラフの見方: 横ばいの「基準」ラインより<b>上にある線</b>が市場平均に勝っている強いセクター/銘柄です。個別銘柄の線がセクターの線より下にある場合、「業界全体は儲かっているのに、この企業は負けている」というサインになります。
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                st.warning("指定された期間のデータがまだありません。未来の日付や、データ提供期間外を選択している可能性があります。")
+                st.warning("指定された期間のデータがまだありません。")
         else:
-            st.warning("グラフを表示するには、セクターを1つ以上選択してください。")
+            st.warning("表示するセクターまたは銘柄を選択してください。")
 
         # ==========================================
-        # 4. マクロ指標（VIX・金利）の確認
+        # 3. マクロ指標の確認
         # ==========================================
         st.markdown("---")
-        st.markdown("<div style='font-size: 14px; font-weight: bold;'>④ マクロ指標との整合性確認</div>", unsafe_allow_html=True)
+        st.markdown("<div style='font-size: 14px; font-weight: bold;'>③ マクロ指標との整合性確認</div>", unsafe_allow_html=True)
 
         c1, c2 = st.columns(2)
         with c1:
             if "TNX" in hist:
                 tnx = hist["TNX"]['Close'].iloc[-1]
-                tnx_1m = calc_return(hist["TNX"], 21)
-                st.markdown(f"<div style='font-size: 13px;'><b>米10年債利回り:</b> {tnx:.2f}% (1ヶ月変化: <span style='color:blue;'>{tnx_1m:+.2f}%</span>)</div>", unsafe_allow_html=True)
-            else:
-                st.markdown("<div style='font-size: 13px;'>米10年債利回り: データなし</div>", unsafe_allow_html=True)
+                st.markdown(f"<div style='font-size: 13px;'><b>米10年債利回り:</b> {tnx:.2f}%</div>", unsafe_allow_html=True)
                 
         with c2:
             if "VIX" in hist:
                 vix = hist["VIX"]['Close'].iloc[-1]
                 st.markdown(f"<div style='font-size: 13px;'><b>恐怖指数 (VIX):</b> {vix:.2f}</div>", unsafe_allow_html=True)
-                if vix > 25:
-                    st.markdown("<div style='font-size: 11px; color: red;'>※急上昇中。大きなイベントや売りが発生している可能性があります。</div>", unsafe_allow_html=True)
-            else:
-                st.markdown("<div style='font-size: 13px;'>恐怖指数 (VIX): データなし</div>", unsafe_allow_html=True)
 
-        # ==========================================
-        # 5. 運用手順ガイド
-        # ==========================================
         st.markdown("---")
-        with st.expander("🧭 毎週15分の確認手順（初心者向け）", expanded=False):
+        with st.expander("🧭 グラフの読み解き方（個別銘柄編）", expanded=False):
             st.markdown("""
             <div style='font-size: 12px; line-height: 1.6;'>
-            毎週、次の順番を変えないことが重要です。<br><br>
+            個別銘柄をグラフに重ねることで、以下の「2つの勝ち負け」が視覚的に分かります。<br><br>
             
-            <b>① 市場全体 (SPY)</b><br>
-            ・米国市場全体は上向きか下向きか。<br><br>
+            <b>パターンA：「銘柄」も「セクター」も、基準(1.0)より上にある</b><br>
+            ➔ 業界全体に追い風が吹いており、その銘柄もしっかり恩恵を受けている一番安全な状態です。<br><br>
             
-            <b>② 市場の中身 (QQQ vs DIA vs IWM)</b><br>
-            ・大型テクノロジー(QQQ)だけの上昇ではないか？<br>
-            ・小型株(IWM)や成熟企業(DIA)へ資金が移動（ローテーション）していないか？<br><br>
+            <b>パターンB：「セクター」は基準より上だが、「銘柄」の線は下にある</b><br>
+            ➔ その業界（例：半導体）は儲かっているのに、なぜかその企業（例：INTC）だけ負けている状態です。個別企業に何か問題があるサインです。<br><br>
             
-            <b>③ セクター順位とグラフ（四半期確認）</b><br>
-            ・ランキング表で「🔥本物候補」になっているセクターを確認します。<br>
-            ・<b>上のグラフで「現在の四半期（Q）」を選び、そのセクターが本当に右肩上がりになっているか視覚で確認</b>します。<br>
-            ・前四半期（例えばQ2）から何が切り替わったかを見比べると、資金の移動が分かりやすくなります。<br><br>
-            
-            <b>④ マクロとの整合性</b><br>
-            ・金利(10年債利回り)が急上昇していないか？（急上昇はハイテクに逆風）<br>
-            ・VIXがパニック水準(25超え)になっていないか？<br>
+            <b>パターンC：「セクター」は基準より下だが、「銘柄」の線は上にある</b><br>
+            ➔ 業界全体（例：ゲーム全体）は不調なのに、その企業（例：任天堂）だけが市場平均以上に独り勝ちしている状態です。企業固有の強力な武器（新製品など）があるサインです。
             </div>
             """, unsafe_allow_html=True)
