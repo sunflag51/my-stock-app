@@ -9,7 +9,22 @@ st.set_page_config(page_title="ファンダメンタル分析", layout="wide")
 @st.cache_data(ttl=600)
 def get_fundamental_data(ticker):
     stock = yf.Ticker(ticker)
-    info = stock.info
+    
+    try:
+        info = stock.info
+    except Exception:
+        info = {}
+        
+    # yfinanceの仕様変更で現在値がinfoに入っていない場合の対策としてhistoryから補完
+    try:
+        hist = stock.history(period="1d")
+        if not hist.empty:
+            recent_price = float(hist['Close'].iloc[-1])
+            if 'currentPrice' not in info:
+                info['currentPrice'] = recent_price
+    except Exception:
+        pass
+
     try:
         fin = stock.financials
     except:
@@ -82,8 +97,9 @@ if st.session_state.f_analyzed:
     with st.spinner("財務データを集計中..."):
         info, fin, cf = get_fundamental_data(t_symbol)
         
-        if not info or "regularMarketPrice" not in info and "currentPrice" not in info and "previousClose" not in info:
-            st.error(f"銘柄「{t_symbol}」の財務情報が取得できませんでした。")
+        # 💡エラー判定を「info自体が空かどうか」に緩和
+        if not info:
+            st.error(f"銘柄「{t_symbol}」の財務情報が取得できませんでした。銘柄コード（日本株の場合は末尾に.Tが必要）をご確認ください。")
         else:
             # --- 基本データ抽出 ---
             price = info.get("currentPrice", info.get("regularMarketPrice", info.get("previousClose", 0.0)))
