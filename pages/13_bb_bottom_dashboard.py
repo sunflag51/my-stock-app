@@ -623,7 +623,7 @@ def create_price_chart(
         col=1,
     )
 
-    # BB下限への接触・接近マーカー
+    # BB下限への接触・接近マーカー（💡修正箇所：実際の改行ではなく <br> を使うように修正）
     touch_df = chart_df[
         chart_df["BB_Lower_Touch"].fillna(False)
     ]
@@ -642,10 +642,8 @@ def create_price_chart(
                     line=dict(color="#854d0e", width=1),
                 ),
                 hovertemplate=(
-                    "BB下限接触・接近
-"
-                    "日付: %{x|%Y-%m-%d}
-"
+                    "BB下限接触・接近<br>"
+                    "日付: %{x|%Y-%m-%d}<br>"
                     "安値: %{y:,.2f}"
                     "<extra></extra>"
                 ),
@@ -907,9 +905,7 @@ def display_learning_message(result: dict):
     st.markdown(
         f"""
         <div class="learning-box">
-            <strong>🧠 {title}</strong>
-
-
+            <strong>🧠 {title}</strong><br><br>
             {message}
         </div>
         """,
