@@ -899,12 +899,12 @@ def create_price_chart(
             annotation_text="1:2",
         )
 
-    # ズーム・パン設定の追加
+    # ズーム・パン設定の修正
     figure.update_layout(
         title=f"{display_symbol} 日足チャート",
         height=650,
         xaxis_rangeslider_visible=False,
-        dragmode="pan",
+        dragmode="zoom", # 初期設定をズームに変更
         xaxis=dict(
             fixedrange=False,
         ),
@@ -963,7 +963,7 @@ def create_equity_chart(
         xaxis_title="決済日",
         yaxis_title="累積R",
         height=500,
-        dragmode="pan",
+        dragmode="zoom", # 初期設定をズームに変更
         xaxis=dict(fixedrange=False),
         yaxis=dict(fixedrange=False, autorange=True),
         legend=dict(
@@ -1246,7 +1246,12 @@ with tab1:
             display_symbol,
         ),
         use_container_width=True,
-        config={'displayModeBar': True, 'scrollZoom': True}
+        config={
+            'displayModeBar': True,
+            'scrollZoom': True,
+            'doubleClick': 'reset',
+            'showTips': False
+        }
     )
 
     st.info(
@@ -1499,7 +1504,12 @@ with tab2:
                 target_20=target_20,
             ),
             use_container_width=True,
-            config={'displayModeBar': True, 'scrollZoom': True}
+            config={
+                'displayModeBar': True,
+                'scrollZoom': True,
+                'doubleClick': 'reset',
+                'showTips': False
+            }
         )
 
         plan_data = pd.DataFrame(
@@ -1684,7 +1694,12 @@ with tab3:
                 trades_20,
             ),
             use_container_width=True,
-            config={'displayModeBar': True, 'scrollZoom': True}
+            config={
+                'displayModeBar': True,
+                'scrollZoom': True,
+                'doubleClick': 'reset',
+                'showTips': False
+            }
         )
 
         detail_tab_15, detail_tab_20 = (
