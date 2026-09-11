@@ -774,7 +774,7 @@ def summarize_backtest(
 
 
 # =========================================================
-# チャート
+# チャート（Plotly完全版・スマホ対応強化）
 # =========================================================
 def create_price_chart(
     data: pd.DataFrame,
@@ -785,12 +785,15 @@ def create_price_chart(
     target_20=None,
 ):
     chart_data = data.tail(200)
+    
+    # 休日を詰めるためにX軸を文字列に変換
+    x_axis = chart_data.index.strftime('%Y-%m-%d')
 
     figure = go.Figure()
 
     figure.add_trace(
         go.Candlestick(
-            x=chart_data.index,
+            x=x_axis,
             open=chart_data["Open"],
             high=chart_data["High"],
             low=chart_data["Low"],
@@ -801,7 +804,7 @@ def create_price_chart(
 
     figure.add_trace(
         go.Scatter(
-            x=chart_data.index,
+            x=x_axis,
             y=chart_data["BB_Upper"],
             name="BB上限",
             line=dict(
@@ -813,7 +816,7 @@ def create_price_chart(
 
     figure.add_trace(
         go.Scatter(
-            x=chart_data.index,
+            x=x_axis,
             y=chart_data["BB_Middle"],
             name="BB中央",
             line=dict(
@@ -825,7 +828,7 @@ def create_price_chart(
 
     figure.add_trace(
         go.Scatter(
-            x=chart_data.index,
+            x=x_axis,
             y=chart_data["BB_Lower"],
             name="BB下限",
             line=dict(
@@ -838,7 +841,7 @@ def create_price_chart(
     if chart_data["SMA200"].notna().any():
         figure.add_trace(
             go.Scatter(
-                x=chart_data.index,
+                x=x_axis,
                 y=chart_data["SMA200"],
                 name="SMA200",
                 line=dict(
@@ -853,9 +856,10 @@ def create_price_chart(
     ]
 
     if not signal_data.empty:
+        signal_x = signal_data.index.strftime('%Y-%m-%d')
         figure.add_trace(
             go.Scatter(
-                x=signal_data.index,
+                x=signal_x,
                 y=signal_data["Low"],
                 mode="markers",
                 name="条件成立候補",
@@ -899,18 +903,22 @@ def create_price_chart(
             annotation_text="1:2",
         )
 
-    # ズーム・パン設定の修正
+    # ==============================================
+    # 【最重要】スマホ操作を安定させる設定
+    # ==============================================
     figure.update_layout(
         title=f"{display_symbol} 日足チャート",
         height=650,
-        xaxis_rangeslider_visible=False,
-        dragmode="zoom", # 初期設定をズームに変更
+        xaxis_rangeslider_visible=False, # 下部のスライダーを消して軽くする
+        dragmode="pan", # 初期状態を「移動」にする
+        # 休日を詰めるカテゴリカル軸の設定
         xaxis=dict(
+            type='category', 
+            nticks=10, 
             fixedrange=False,
         ),
         yaxis=dict(
             fixedrange=False,
-            autorange=True,
         ),
         legend=dict(
             orientation="h",
@@ -963,9 +971,9 @@ def create_equity_chart(
         xaxis_title="決済日",
         yaxis_title="累積R",
         height=500,
-        dragmode="zoom", # 初期設定をズームに変更
+        dragmode="pan",
         xaxis=dict(fixedrange=False),
-        yaxis=dict(fixedrange=False, autorange=True),
+        yaxis=dict(fixedrange=False),
         legend=dict(
             orientation="h",
         ),
@@ -1239,7 +1247,7 @@ with tab1:
         use_container_width=True,
     )
 
-    # config引数を追加
+    # config引数でスマホ操作用の設定を追加
     st.plotly_chart(
         create_price_chart(
             usable_data,
@@ -1247,10 +1255,10 @@ with tab1:
         ),
         use_container_width=True,
         config={
-            'displayModeBar': True,
-            'scrollZoom': True,
-            'doubleClick': 'reset',
-            'showTips': False
+            'displayModeBar': True, # ツールバー表示
+            'scrollZoom': True,     # ピンチアウト・ホイールズーム許可
+            'modeBarButtonsToRemove': ['lasso2d', 'select2d'], # エラーの元になる範囲選択を消す
+            'toImageButtonOptions': {'format': 'png'}
         }
     )
 
@@ -1493,7 +1501,7 @@ with tab2:
                 "利益保護ルールが計画どおりか確認します。"
             )
 
-        # config引数を追加
+        # config引数でスマホ操作用の設定を追加
         st.plotly_chart(
             create_price_chart(
                 usable_data,
@@ -1507,8 +1515,8 @@ with tab2:
             config={
                 'displayModeBar': True,
                 'scrollZoom': True,
-                'doubleClick': 'reset',
-                'showTips': False
+                'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
+                'toImageButtonOptions': {'format': 'png'}
             }
         )
 
@@ -1687,19 +1695,13 @@ with tab3:
             use_container_width=True,
         )
 
-        # config引数を追加
         st.plotly_chart(
             create_equity_chart(
                 trades_15,
                 trades_20,
             ),
             use_container_width=True,
-            config={
-                'displayModeBar': True,
-                'scrollZoom': True,
-                'doubleClick': 'reset',
-                'showTips': False
-            }
+            config={'displayModeBar': True, 'scrollZoom': True}
         )
 
         detail_tab_15, detail_tab_20 = (
