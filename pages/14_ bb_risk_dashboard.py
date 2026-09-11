@@ -1,4 +1,5 @@
 import math
+import os
 import re
 from datetime import date
 
@@ -35,13 +36,12 @@ st.caption(
 
 
 # =========================================================
-# 銘柄リスト取得（スプレッドシート等から）
+# 銘柄リスト取得・保存（CSV対応）
 # =========================================================
-@st.cache_data(ttl=300, show_spinner=False) # キャッシュ時間を5分に短縮（更新を反映しやすく）
+CSV_FILE = "tickers.csv"
+
 def load_ticker_list() -> list:
-    """
-    デフォルトの銘柄リストと、スプレッドシートからの読み込みを合成します。
-    """
+    """基本リスト + ローカルCSV + スプレッドシートを結合して読み込む"""
     base_options = [
         "7974.T (任天堂)",
         "7203.T (トヨタ自動車)",
@@ -52,31 +52,45 @@ def load_ticker_list() -> list:
         "COST (コストコ)"
     ]
     
+    # 1. 同じフォルダのCSVから読み込み
+    csv_options = []
+    if os.path.exists(CSV_FILE):
+        try:
+            df_csv = pd.read_csv(CSV_FILE, header=None)
+            csv_options = df_csv[0].dropna().astype(str).tolist()
+        except Exception:
+            pass
+
+    # 2. スプレッドシートから読み込み
     sheet_options = []
-    
-    # ユーザーのスプレッドシートURL
     sheet_link = "https://docs.google.com/spreadsheets/d/1XZwIJaNVQG-q5SMVJQOXsvcsexTU0eVUCbaH7zscMnU/edit?usp=drivesdk"
-    
     if sheet_link.startswith("http"):
         try:
             csv_url = sheet_link.split("/edit")[0] + "/export?format=csv"
             df_meigara = pd.read_csv(csv_url, header=None)
-            
             for _, row in df_meigara.iterrows():
                 name = str(row.iloc[0]).strip()
                 code = str(row.iloc[1]).strip()
-                
                 if name not in ["企業名", "名前", "nan"] and code != "nan" and code != "":
                     sheet_options.append(f"{code} ({name})")
         except Exception:
             pass
             
+    # 重複を排除して結合
     combined_list = []
-    for item in base_options + sheet_options:
+    for item in base_options + csv_options + sheet_options:
         if item not in combined_list:
             combined_list.append(item)
             
     return combined_list
+
+def save_custom_tickers(ticker_list: list):
+    """追加された銘柄をローカルのCSVに保存する"""
+    try:
+        df = pd.DataFrame(ticker_list)
+        df.to_csv(CSV_FILE, index=False, header=False)
+    except Exception as e:
+        st.sidebar.error(f"CSVへの保存に失敗しました: {e}")
 
 
 # =========================================================
@@ -111,14 +125,12 @@ def normalize_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
 
     if isinstance(data.columns, pd.MultiIndex):
         level0 = list(data.columns.get_level_values(0))
-
         if "Close" in level0:
             data.columns = data.columns.get_level_values(0)
         else:
             data.columns = data.columns.get_level_values(-1)
 
     data = data.loc[:, ~data.columns.duplicated()]
-
     required_columns = ["Open", "High", "Low", "Close", "Volume"]
 
     for column in required_columns:
@@ -139,7 +151,6 @@ def normalize_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
         pass
 
     data = data.sort_index()
-
     return data
 
 
@@ -160,7 +171,6 @@ def load_price_data(
         progress=False,
         threads=False,
     )
-
     return normalize_yfinance_columns(raw)
 
 
@@ -470,7 +480,7 @@ def summarize_backtest(trades: pd.DataFrame, reward_r: float) -> dict:
 
 
 # =========================================================
-# 【復活】Plotlyによる累積Rチャート（元プログラム）
+# Plotlyによる累積R推移チャート
 # =========================================================
 def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
     figure = go.Figure()
@@ -512,7 +522,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
 
 
 # =========================================================
-# Lightweight Charts描画 (メインチャート用)
+# Lightweight Charts描画
 # =========================================================
 def render_lightweight_chart_safe(
     data: pd.DataFrame, display_symbol: str, entry=None, stop=None,
@@ -574,38 +584,41 @@ def render_lightweight_chart_safe(
 
 
 # =========================================================
-# サイドバー（銘柄選択機能）
+# サイドバー（銘柄追加・削除とCSV保存機能）
 # =========================================================
 st.sidebar.header("銘柄・指標設定")
 
+# 1. まず現在のリストを読み込む
 base_ticker_list = load_ticker_list()
 
+# Session Stateの初期化
 if "custom_tickers" not in st.session_state:
     st.session_state.custom_tickers = []
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = base_ticker_list[0] if base_ticker_list else "7974.T (任天堂)"
 
-# 選択肢の組み立て
-all_options = base_ticker_list + st.session_state.custom_tickers + ["+ 新しい銘柄を手入力する"]
+# 2. 全ての選択肢を作成
+all_options = base_ticker_list + st.session_state.custom_tickers + ["+ 新しい銘柄を追加する"]
 
-# 現在の選択中の銘柄のインデックスを探す
+# 現在選択中のインデックスを取得
 try:
     default_index = all_options.index(st.session_state.selected_ticker)
 except ValueError:
     default_index = 0
 
+# セレクトボックス
 selected_option = st.sidebar.selectbox("銘柄選択", all_options, index=default_index)
 
 # 選択が変わった場合の保持
-if selected_option != "+ 新しい銘柄を手入力する":
+if selected_option != "+ 新しい銘柄を追加する":
     st.session_state.selected_ticker = selected_option
     input_symbol = selected_option
 
-# 手入力の場合
-if selected_option == "+ 新しい銘柄を手入力する":
+# 3. 追加と削除の処理
+if selected_option == "+ 新しい銘柄を追加する":
     with st.sidebar.form(key='add_ticker_form'):
         new_ticker = st.text_input("銘柄コードを入力 (例: 7203.T, MSFT.US)")
-        st.caption("※手入力した銘柄はアプリを閉じると消えます。ずっと使いたい銘柄はスプレッドシートに追加してください。")
+        st.caption("※追加した銘柄は同じフォルダの tickers.csv に保存されます。\n（クラウド環境では再起動時に消えることがあります）")
         submit_button = st.form_submit_button(label="リストに追加して分析")
         
         if submit_button:
@@ -613,16 +626,21 @@ if selected_option == "+ 新しい銘柄を手入力する":
                 clean_ticker = new_ticker.strip().upper()
                 if clean_ticker not in st.session_state.custom_tickers and clean_ticker not in base_ticker_list:
                     st.session_state.custom_tickers.append(clean_ticker)
+                    # CSVファイルにも保存
+                    save_custom_tickers(st.session_state.custom_tickers)
+                
+                # 手入力した銘柄を選択中に設定してリロード
                 st.session_state.selected_ticker = clean_ticker
                 st.rerun()
             else:
                 st.warning("コードを入力してください")
     st.stop()
 else:
-    # 選択した銘柄を削除するボタン
+    # 削除機能：手入力で追加された銘柄（custom_tickers）のみ削除可能
     if selected_option in st.session_state.custom_tickers:
-        if st.sidebar.button("この手入力銘柄を削除"):
+        if st.sidebar.button("この追加銘柄を削除"):
             st.session_state.custom_tickers.remove(selected_option)
+            save_custom_tickers(st.session_state.custom_tickers) # 削除後もCSVを更新
             st.session_state.selected_ticker = base_ticker_list[0] if base_ticker_list else "7974.T (任天堂)"
             st.rerun()
 
@@ -799,7 +817,6 @@ with tab3:
         )
 
         st.markdown("### 累積Rの推移")
-        # 元のPlotlyでの描画を復活
         st.plotly_chart(
             create_equity_chart(trades_15, trades_20),
             use_container_width=True,
