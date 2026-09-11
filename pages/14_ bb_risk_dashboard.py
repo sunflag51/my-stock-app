@@ -1,12 +1,21 @@
 import math
 import re
 from datetime import date
+import json
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+
+# =========================================================
+# Lightweight Chartsの読み込み
+# =========================================================
+try:
+    from streamlit_lightweight_charts import renderLightweightCharts
+except ImportError:
+    st.error("エラー: 'streamlit-lightweight-charts' がインストールされていません。\n事前に !pip install streamlit-lightweight-charts を実行してください。")
+    st.stop()
 
 
 # =========================================================
@@ -774,212 +783,114 @@ def summarize_backtest(
 
 
 # =========================================================
-# チャート（Plotly完全版・スマホ対応強化）
+# 【完全対応版】Lightweight Charts用のチャート描画関数
 # =========================================================
-def create_price_chart(
+def render_lightweight_chart_safe(
     data: pd.DataFrame,
     display_symbol: str,
     entry=None,
     stop=None,
     target_15=None,
     target_20=None,
+    unique_key="lw_chart",
 ):
-    chart_data = data.tail(200)
+    # NaNや無限大を排除し、JSON変換時のエラーを防ぐ
+    chart_data = data.tail(200).copy()
+    chart_data = chart_data.replace([np.inf, -np.inf], np.nan).fillna(0)
+
+    # Lightweight Chartsが解釈できる文字列日付(YYYY-MM-DD)にする
+    chart_data['time'] = chart_data.index.strftime('%Y-%m-%d')
     
-    # 休日を詰めるためにX軸を文字列に変換
-    x_axis = chart_data.index.strftime('%Y-%m-%d')
+    # データを辞書型（リスト）に変換
+    def to_lw_data(df, val_col):
+        # 0.0のデータは描画しない（インジケーター未計算部分を省く）
+        filtered = df[df[val_col] != 0.0]
+        return [{"time": row['time'], "value": float(row[val_col])} for _, row in filtered.iterrows()]
 
-    figure = go.Figure()
+    candles = [{"time": row['time'], "open": float(row['Open']), "high": float(row['High']), "low": float(row['Low']), "close": float(row['Close'])} for _, row in chart_data.iterrows()]
+    bb_upper = to_lw_data(chart_data, 'BB_Upper')
+    bb_middle = to_lw_data(chart_data, 'BB_Middle')
+    bb_lower = to_lw_data(chart_data, 'BB_Lower')
+    sma200 = to_lw_data(chart_data, 'SMA200')
 
-    figure.add_trace(
-        go.Candlestick(
-            x=x_axis,
-            open=chart_data["Open"],
-            high=chart_data["High"],
-            low=chart_data["Low"],
-            close=chart_data["Close"],
-            name="価格",
-        )
-    )
-
-    figure.add_trace(
-        go.Scatter(
-            x=x_axis,
-            y=chart_data["BB_Upper"],
-            name="BB上限",
-            line=dict(
-                color="rgba(220,70,70,0.75)",
-                width=1,
-            ),
-        )
-    )
-
-    figure.add_trace(
-        go.Scatter(
-            x=x_axis,
-            y=chart_data["BB_Middle"],
-            name="BB中央",
-            line=dict(
-                color="gray",
-                width=1,
-            ),
-        )
-    )
-
-    figure.add_trace(
-        go.Scatter(
-            x=x_axis,
-            y=chart_data["BB_Lower"],
-            name="BB下限",
-            line=dict(
-                color="royalblue",
-                width=2,
-            ),
-        )
-    )
-
-    if chart_data["SMA200"].notna().any():
-        figure.add_trace(
-            go.Scatter(
-                x=x_axis,
-                y=chart_data["SMA200"],
-                name="SMA200",
-                line=dict(
-                    color="orange",
-                    width=2,
-                ),
-            )
-        )
-
-    signal_data = chart_data[
-        chart_data["Entry_Signal"]
-    ]
-
+    # シグナルのマーカー
+    signal_data = chart_data[chart_data["Entry_Signal"] == True]
+    markers = []
     if not signal_data.empty:
-        signal_x = signal_data.index.strftime('%Y-%m-%d')
-        figure.add_trace(
-            go.Scatter(
-                x=signal_x,
-                y=signal_data["Low"],
-                mode="markers",
-                name="条件成立候補",
-                marker=dict(
-                    symbol="triangle-up",
-                    size=12,
-                    color="green",
-                ),
-            )
-        )
+        for _, row in signal_data.iterrows():
+            markers.append({
+                "time": row['time'],
+                "position": 'belowBar',
+                "color": 'green',
+                "shape": 'arrowUp',
+                "text": 'シグナル'
+            })
 
+    # 水平線（エントリー・損切り・利確）
+    price_lines = []
     if entry is not None:
-        figure.add_hline(
-            y=entry,
-            line_color="blue",
-            line_dash="dot",
-            annotation_text="エントリー",
-        )
-
+        price_lines.append({"price": float(entry), "color": '#2962FF', "lineWidth": 2, "lineStyle": 2, "axisLabelVisible": True, "title": 'エントリー'})
     if stop is not None:
-        figure.add_hline(
-            y=stop,
-            line_color="red",
-            line_dash="dash",
-            annotation_text="損切り",
-        )
-
+        price_lines.append({"price": float(stop), "color": '#FF5252', "lineWidth": 2, "lineStyle": 2, "axisLabelVisible": True, "title": '損切り'})
     if target_15 is not None:
-        figure.add_hline(
-            y=target_15,
-            line_color="green",
-            line_dash="dot",
-            annotation_text="1:1.5",
-        )
-
+        price_lines.append({"price": float(target_15), "color": '#4CAF50', "lineWidth": 1, "lineStyle": 2, "axisLabelVisible": True, "title": '1:1.5'})
     if target_20 is not None:
-        figure.add_hline(
-            y=target_20,
-            line_color="darkgreen",
-            line_dash="dash",
-            annotation_text="1:2",
-        )
+        price_lines.append({"price": float(target_20), "color": '#004D40', "lineWidth": 2, "lineStyle": 2, "axisLabelVisible": True, "title": '1:2'})
 
-    # ==============================================
-    # 【最重要】スマホ操作を安定させる設定
-    # ==============================================
-    figure.update_layout(
-        title=f"{display_symbol} 日足チャート",
-        height=650,
-        xaxis_rangeslider_visible=False, # 下部のスライダーを消して軽くする
-        dragmode="pan", # 初期状態を「移動」にする
-        # 休日を詰めるカテゴリカル軸の設定
-        xaxis=dict(
-            type='category', 
-            nticks=10, 
-            fixedrange=False,
-        ),
-        yaxis=dict(
-            fixedrange=False,
-        ),
-        legend=dict(
-            orientation="h",
-        ),
-        margin=dict(
-            l=20,
-            r=20,
-            t=60,
-            b=20,
-        ),
-    )
+    # チャート設定
+    chartOptions = {
+        "layout": {
+            "textColor": 'black',
+            "background": {"type": 'solid', "color": 'white'}
+        },
+        "timeScale": {
+            "timeVisible": True,
+            "secondsVisible": False,
+        },
+        "crosshair": {
+            "mode": 0
+        },
+    }
 
-    return figure
+    # シリーズ設定
+    series_list = []
 
+    # 1. ローソク足
+    candlestick_series = {
+        "type": 'Candlestick',
+        "data": candles,
+        "options": {
+            "upColor": '#26a69a',
+            "downColor": '#ef5350',
+            "borderVisible": False,
+            "wickUpColor": '#26a69a',
+            "wickDownColor": '#ef5350'
+        }
+    }
+    if markers: candlestick_series["markers"] = markers
+    if price_lines: candlestick_series["priceLines"] = price_lines
+    series_list.append(candlestick_series)
 
-def create_equity_chart(
-    trades_15: pd.DataFrame,
-    trades_20: pd.DataFrame,
-):
-    figure = go.Figure()
+    # 2. 各種ライン
+    if bb_upper:
+        series_list.append({"type": 'Line', "data": bb_upper, "options": {"color": 'rgba(220,70,70,0.5)', "lineWidth": 1, "title": 'BB上限'}})
+    if bb_middle:
+        series_list.append({"type": 'Line', "data": bb_middle, "options": {"color": 'rgba(128,128,128,0.5)', "lineWidth": 1, "title": 'BB中央'}})
+    if bb_lower:
+        series_list.append({"type": 'Line', "data": bb_lower, "options": {"color": 'rgba(41,98,255,0.8)', "lineWidth": 2, "title": 'BB下限'}})
+    if sma200:
+        series_list.append({"type": 'Line', "data": sma200, "options": {"color": 'rgba(255,152,0,0.8)', "lineWidth": 2, "title": 'SMA200'}})
 
-    if not trades_15.empty:
-        figure.add_trace(
-            go.Scatter(
-                x=trades_15["決済日"],
-                y=trades_15["結果R"].cumsum(),
-                mode="lines+markers",
-                name="RR 1:1.5",
-            )
-        )
-
-    if not trades_20.empty:
-        figure.add_trace(
-            go.Scatter(
-                x=trades_20["決済日"],
-                y=trades_20["結果R"].cumsum(),
-                mode="lines+markers",
-                name="RR 1:2",
-            )
-        )
-
-    figure.add_hline(
-        y=0,
-        line_color="gray",
-        line_dash="dot",
-    )
-
-    figure.update_layout(
-        title="累積Rの推移",
-        xaxis_title="決済日",
-        yaxis_title="累積R",
-        height=500,
-        dragmode="pan",
-        xaxis=dict(fixedrange=False),
-        yaxis=dict(fixedrange=False),
-        legend=dict(
-            orientation="h",
-        ),
-    )
-
-    return figure
+    # 真っ暗になるエラーを回避するため、データの中身をログとして確認可能にしつつ描画
+    try:
+        renderLightweightCharts([
+            {
+                "chart": chartOptions,
+                "series": series_list
+            }
+        ], key=unique_key)
+    except Exception as e:
+        st.error(f"チャートの描画に失敗しました。データに不正な値が含まれている可能性があります。詳細: {e}")
 
 
 # =========================================================
@@ -1247,19 +1158,13 @@ with tab1:
         use_container_width=True,
     )
 
-    # config引数でスマホ操作用の設定を追加
-    st.plotly_chart(
-        create_price_chart(
-            usable_data,
-            display_symbol,
-        ),
-        use_container_width=True,
-        config={
-            'displayModeBar': True, # ツールバー表示
-            'scrollZoom': True,     # ピンチアウト・ホイールズーム許可
-            'modeBarButtonsToRemove': ['lasso2d', 'select2d'], # エラーの元になる範囲選択を消す
-            'toImageButtonOptions': {'format': 'png'}
-        }
+    # ==========================================
+    # 軽量チャート描画（タブ1）
+    # ==========================================
+    render_lightweight_chart_safe(
+        usable_data,
+        display_symbol,
+        unique_key="tab1_chart"
     )
 
     st.info(
@@ -1501,23 +1406,17 @@ with tab2:
                 "利益保護ルールが計画どおりか確認します。"
             )
 
-        # config引数でスマホ操作用の設定を追加
-        st.plotly_chart(
-            create_price_chart(
-                usable_data,
-                display_symbol,
-                entry=planned_entry,
-                stop=management_stop,
-                target_15=target_15,
-                target_20=target_20,
-            ),
-            use_container_width=True,
-            config={
-                'displayModeBar': True,
-                'scrollZoom': True,
-                'modeBarButtonsToRemove': ['lasso2d', 'select2d'],
-                'toImageButtonOptions': {'format': 'png'}
-            }
+        # ==========================================
+        # 軽量チャート描画（タブ2）
+        # ==========================================
+        render_lightweight_chart_safe(
+            usable_data,
+            display_symbol,
+            entry=planned_entry,
+            stop=management_stop,
+            target_15=target_15,
+            target_20=target_20,
+            unique_key="tab2_chart"
         )
 
         plan_data = pd.DataFrame(
@@ -1693,15 +1592,6 @@ with tab3:
             ),
             hide_index=True,
             use_container_width=True,
-        )
-
-        st.plotly_chart(
-            create_equity_chart(
-                trades_15,
-                trades_20,
-            ),
-            use_container_width=True,
-            config={'displayModeBar': True, 'scrollZoom': True}
         )
 
         detail_tab_15, detail_tab_20 = (
