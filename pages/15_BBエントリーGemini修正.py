@@ -616,22 +616,36 @@ if "custom_tickers" not in st.session_state:
 if "selected_ticker" not in st.session_state:
     st.session_state.selected_ticker = base_ticker_list[0] if base_ticker_list else "7974.T (任天堂)"
 
-# 2. 全ての選択肢を作成
-all_options = base_ticker_list + st.session_state.custom_tickers + ["+ 新しい銘柄を追加する"]
+# 2. 全ての選択肢を作成（スプレッドシートの銘柄も含む）
+all_options = base_ticker_list + st.session_state.custom_tickers
+# 重複を排除しつつ順序を維持
+seen = set()
+unique_options = [x for x in all_options if not (x in seen or seen.add(x))]
+# 最後に「追加」メニューを配置
+final_options = unique_options + ["+ 新しい銘柄を追加する"]
 
-# 現在選択中のインデックスを取得
-try:
-    default_index = all_options.index(st.session_state.selected_ticker)
-except ValueError:
-    default_index = 0
+# 現在選択中の銘柄がリストに存在するか確認し、なければ先頭に戻す
+if st.session_state.selected_ticker not in final_options:
+    st.session_state.selected_ticker = final_options[0]
 
-# セレクトボックス
-selected_option = st.sidebar.selectbox("銘柄選択", all_options, index=default_index)
+default_index = final_options.index(st.session_state.selected_ticker)
 
-# 選択が変わった場合の保持
-if selected_option != "+ 新しい銘柄を追加する":
-    st.session_state.selected_ticker = selected_option
-    input_symbol = selected_option
+# 【修正ポイント】セレクトボックスの変更を即座にSession Stateに反映させる関数を用意
+def on_ticker_change():
+    new_selection = st.session_state.ticker_selector
+    if new_selection != "+ 新しい銘柄を追加する":
+        st.session_state.selected_ticker = new_selection
+
+# セレクトボックス（on_changeコールバックを使用）
+selected_option = st.sidebar.selectbox(
+    "銘柄選択", 
+    final_options, 
+    index=default_index,
+    key="ticker_selector", 
+    on_change=on_ticker_change
+)
+
+input_symbol = st.session_state.selected_ticker
 
 # 3. 追加と削除の処理
 if selected_option == "+ 新しい銘柄を追加する":
@@ -645,10 +659,8 @@ if selected_option == "+ 新しい銘柄を追加する":
                 clean_ticker = new_ticker.strip().upper()
                 if clean_ticker not in st.session_state.custom_tickers and clean_ticker not in base_ticker_list:
                     st.session_state.custom_tickers.append(clean_ticker)
-                    # CSVファイルにも保存
                     save_custom_tickers(st.session_state.custom_tickers)
                 
-                # 手入力した銘柄を選択中に設定してリロード
                 st.session_state.selected_ticker = clean_ticker
                 st.rerun()
             else:
@@ -659,7 +671,7 @@ else:
     if selected_option in st.session_state.custom_tickers:
         if st.sidebar.button("この追加銘柄を削除"):
             st.session_state.custom_tickers.remove(selected_option)
-            save_custom_tickers(st.session_state.custom_tickers) # 削除後もCSVを更新
+            save_custom_tickers(st.session_state.custom_tickers)
             st.session_state.selected_ticker = base_ticker_list[0] if base_ticker_list else "7974.T (任天堂)"
             st.rerun()
 
