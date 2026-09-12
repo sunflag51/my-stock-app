@@ -23,7 +23,7 @@ except ImportError:
 # ページ設定
 # =========================================================
 st.set_page_config(
-    page_title="BB反発確認・R管理・学習バックテスト",
+    page_title="BB反発確認・R管理・学習システム",
     page_icon="🛡️",
     layout="wide",
 )
@@ -36,52 +36,31 @@ st.caption(
 
 
 # =========================================================
-# 銘柄リスト取得（スプレッドシート対応）
+# 銘柄リスト取得（高速・安全設計）
 # =========================================================
 def load_ticker_list() -> list:
-    """基本リスト + スプレッドシートを結合して読み込む"""
-    base_options = [
-        "7974.T (任天堂)",
-        "7203.T (トヨタ自動車)",
+    return [
+        "GOOG (アルファベット)",
+        "AAPL (アップル)",
         "KO (コカ・コーラ)",
         "V (ビザ)",
-        "AAPL (アップル)",
-        "GOOG (アルファベット)",
         "ISRG (インテュイティブ)",
         "COST (コストコ)",
+        "7974.T (任天堂)",
+        "7203.T (トヨタ自動車)",
     ]
-
-    sheet_options = []
-    sheet_link = "https://docs.google.com/spreadsheets/d/1XZwIJaNVQG-q5SMVJQOXsvcsexTU0eVUCbaH7zscMnU/edit?usp=drivesdk"
-
-    if sheet_link.startswith("http"):
-        try:
-            csv_url = sheet_link.split("/edit")[0] + "/export?format=csv"
-            df_meigara = pd.read_csv(csv_url, header=None)
-            for _, row in df_meigara.iterrows():
-                name = str(row.iloc[0]).strip()
-                code = str(row.iloc[1]).strip()
-                if name not in ["企業名", "名前", "nan"] and code != "nan" and code != "":
-                    sheet_options.append(f"{code} ({name})")
-        except Exception:
-            st.sidebar.error("スプレッドシートの読み込みに失敗しました。権限が「リンクを知っている全員」か確認してください。")
-
-    combined_list = []
-    for item in base_options + sheet_options:
-        if item not in combined_list:
-            combined_list.append(item)
-
-    return combined_list
 
 
 # =========================================================
 # 銘柄コード変換
 # =========================================================
 def normalize_symbol(symbol: str):
-    raw_symbol = symbol.split(" ")[0].strip().upper()
+    if not symbol or not isinstance(symbol, str):
+        return "GOOG.US", "GOOG"
 
-    if not raw_symbol:
-        return "", ""
+    raw_symbol = symbol.split(" ")[0].strip().upper()
+    if not raw_symbol or raw_symbol in ["登録なし", "NONE", "NAN"]:
+        return "GOOG.US", "GOOG"
 
     if raw_symbol.endswith(".US"):
         return raw_symbol, raw_symbol[:-3]
@@ -99,7 +78,7 @@ def normalize_symbol(symbol: str):
 
 
 # =========================================================
-# yfinance列の正規化
+# yfinance列の正規化（重複インデックスの排除）
 # =========================================================
 def normalize_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
@@ -134,6 +113,8 @@ def normalize_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
     except (TypeError, AttributeError):
         pass
 
+    # 日付重複の完全排除
+    data = data[~data.index.duplicated(keep="last")]
     data = data.sort_index()
     return data
 
@@ -141,21 +122,34 @@ def normalize_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
 # =========================================================
 # 価格データ取得
 # =========================================================
-@st.cache_data(ttl=900, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_price_data(
     provider_symbol: str,
     period: str,
     interval: str,
 ) -> pd.DataFrame:
-    raw = yf.download(
-        provider_symbol,
-        period=period,
-        interval=interval,
-        auto_adjust=True,
-        progress=False,
-        threads=False,
-    )
-    return normalize_yfinance_columns(raw)
+    try:
+        ticker = yf.Ticker(provider_symbol)
+        raw = ticker.history(period=period, interval=interval, auto_adjust=True)
+        if raw is not None and not raw.empty:
+            normalized = normalize_yfinance_columns(raw)
+            if not normalized.empty:
+                return normalized
+    except Exception:
+        pass
+
+    try:
+        raw = yf.download(
+            provider_symbol,
+            period=period,
+            interval=interval,
+            auto_adjust=True,
+            progress=False,
+            threads=False,
+        )
+        return normalize_yfinance_columns(raw)
+    except Exception:
+        return pd.DataFrame()
 
 
 # =========================================================
@@ -202,20 +196,20 @@ def add_indicators(
     data["BB_Upper"] = data["BB_Middle"] + bb_sigma * standard_deviation
     data["BB_Lower"] = data["BB_Middle"] - bb_sigma * standard_deviation
     
-    # バンド幅（％）と直近5日間のバンド幅変化率（エクスパンション・拡大検知用）
+    # バンド幅（％）と直近5日間のバンド幅変化率
     data["BB_Width_Pct"] = ((data["BB_Upper"] - data["BB_Lower"]) / data["BB_Middle"] * 100)
     data["BB_Width_Change_5"] = data["BB_Width_Pct"].pct_change(5) * 100
 
     # 20日中央線の傾き（直近5日間の変化率％）
     data["BB_Middle_Slope_5"] = data["BB_Middle"].pct_change(5) * 100
 
-    # 下ヒゲ比率（％）の計算
+    # 下ヒゲ比率（％）
     candle_range = (data["High"] - data["Low"]).replace(0, np.nan)
     real_body_bottom = np.minimum(data["Open"], data["Close"])
     lower_shadow = real_body_bottom - data["Low"]
     data["Lower_Shadow_Pct"] = (lower_shadow / candle_range * 100).fillna(0)
 
-    # 移動平均線・オシレーター
+    # 移動平均線（中期SMA・200日線）
     data["Mid_SMA"] = data["Close"].rolling(mid_period).mean()
     data["SMA200"] = data["Close"].rolling(200).mean()
     data["RSI"] = calculate_rsi(data["Close"], 14)
@@ -244,50 +238,33 @@ def build_signals(
 ) -> pd.DataFrame:
     result = data.copy()
 
-    # -----------------------------------------------------
-    # 1. 必須フィルター（足切り条件）
-    # -----------------------------------------------------
-    # ① 200日線以上（大局上昇トレンド維持）
+    # 1. 必須フィルター
     result["Pass_SMA200"] = result["SMA200"].isna() | (result["Close"] >= result["SMA200"])
-
-    # ② バンド急拡大の回避（直近5日で+30%以上の急拡大は強い下落トレンド警戒）
     result["Pass_No_Expansion"] = result["BB_Width_Change_5"].isna() | (result["BB_Width_Change_5"] <= 30.0)
-
-    # ③ BB中央線（20日SMA）が急落していない（5日で-2.5%以上の急降下は除外）
     result["Pass_Middle_Slope"] = result["BB_Middle_Slope_5"].isna() | (result["BB_Middle_Slope_5"] >= -2.5)
 
-    # 必須フィルター総合合否
     result["Mandatory_Filter_Pass"] = (
         result["Pass_SMA200"] & result["Pass_No_Expansion"] & result["Pass_Middle_Slope"]
     )
 
-    # -----------------------------------------------------
     # 2. 下限接近と反発判定
-    # -----------------------------------------------------
     lower_limit = result["BB_Lower"] * (1 + tolerance_pct / 100)
     result["Near_Lower"] = result["Low"] <= lower_limit
 
-    # 下限割れからの回復
     close_to_close_recovery = (result["Close"].shift(1) <= result["BB_Lower"].shift(1)) & (result["Close"] > result["BB_Lower"])
     same_day_recovery = (result["Low"] <= result["BB_Lower"]) & (result["Close"] > result["BB_Lower"])
     exact_recovery = (close_to_close_recovery | same_day_recovery).fillna(False)
     result["Band_Recovery"] = exact_recovery.rolling(window=3, min_periods=1).max().astype(bool)
 
-    # 陽線反転
     result["Bullish_Reversal"] = (
         (result["Close"] > result["Open"])
         & (result["Close"] > result["Close"].shift(1))
     )
 
-    # 下ヒゲピンバー（下ヒゲがローソク足全体の35%以上）
     result["Strong_Lower_Shadow"] = result["Lower_Shadow_Pct"] >= 35.0
-
-    # 反発判定（いずれか該当でOK）
     result["Rebound"] = result["Band_Recovery"] | result["Bullish_Reversal"] | result["Strong_Lower_Shadow"]
 
-    # -----------------------------------------------------
     # 3. 補助条件
-    # -----------------------------------------------------
     result["RSI_Improving"] = (result["RSI"] > result["RSI"].shift(1)) & (result["RSI"] >= 25)
     result["MACD_Improving"] = result["MACD_Hist"] > result["MACD_Hist"].shift(1)
     result["Above_Mid_SMA"] = result["Mid_SMA"].notna() & (result["Close"] >= result["Mid_SMA"])
@@ -295,9 +272,7 @@ def build_signals(
     result["Volume_Expansion"] = (result["Volume_MA20"] > 0) & (result["Volume"] >= result["Volume_MA20"])
     result["Lower_Not_Collapsing"] = result["Lower_Slope_3"] > -3.0
 
-    # -----------------------------------------------------
-    # 4. スコア計算（合計11.0点満点）
-    # -----------------------------------------------------
+    # 4. スコア計算
     result["Score"] = (
         result["Near_Lower"].astype(float) * 2.0
         + result["Rebound"].astype(float) * 2.0
@@ -310,9 +285,7 @@ def build_signals(
         + result["Lower_Not_Collapsing"].astype(float) * 0.5
     )
 
-    # -----------------------------------------------------
     # 5. エントリーシグナル
-    # -----------------------------------------------------
     result["Entry_Signal"] = (
         result["Mandatory_Filter_Pass"]
         & result["Near_Lower"]
@@ -320,30 +293,30 @@ def build_signals(
         & (result["Score"] >= score_threshold)
     )
 
-    # -----------------------------------------------------
-    # 6. 学習用ポップアップ解説文（HTML形式）の生成
-    # -----------------------------------------------------
+    # 6. 学習用解説文生成
     def generate_learning_tip(row):
         warnings = []
         positives = []
 
         if not row["Pass_SMA200"]:
-            warnings.append("・200日線未満：大局下降トレンド。戻り売りに押されやすい局面")
+            warnings.append("・200日線未満：大局下降トレンド（戻り売りに注意）")
         if not row["Pass_No_Expansion"]:
-            warnings.append(f"・バンド急拡大中(+{row['BB_Width_Change_5']:.1f}%)：下落トレンド（バンドウォーク）警戒")
+            w_chg = row["BB_Width_Change_5"]
+            w_str = f"{w_chg:+.1f}%" if pd.notna(w_chg) else "拡大中"
+            warnings.append(f"・バンド急拡大中({w_str} / 基準: +30%以下)：下落トレンド警戒")
         if not row["Pass_Middle_Slope"]:
-            warnings.append("・20日線が急降下中：反発しても20日線で頭を抑えられやすい")
+            warnings.append("・20日線が急降下中：頭を抑えられやすい局面")
 
         if row["Near_Lower"]:
             if row["Strong_Lower_Shadow"]:
-                positives.append(f"・下限タッチ＋長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}%)：安値で買い支えの痕跡")
+                positives.append(f"・下限タッチ＋長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)：安値での買い支え確認")
             elif row["Rebound"]:
                 positives.append("・下限からの反発足を確認")
             else:
-                warnings.append("・下限接近中だが反発未確認（落ちるナイフ状態）")
+                warnings.append(f"・下限接近中だが下ヒゲ不足({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)＆反発未確認")
 
         if row["Entry_Signal"]:
-            positives.append("★【条件成立】必須フィルター合格＋反発確認。1R損切りを設定して検証可")
+            positives.append("★【条件成立】必須条件合格＋反発確認。1R損切りを設定して検証可")
 
         text_parts = []
         if warnings:
@@ -362,15 +335,21 @@ def build_signals(
 # =========================================================
 # 最新判定
 # =========================================================
-def evaluate_latest(data: pd.DataFrame, score_threshold: float, mid_period: int):
+def evaluate_latest(data: pd.DataFrame, score_threshold: float, mid_period: int, is_japan: bool = False):
     latest = data.iloc[-1]
+    unit = "円" if is_japan else "ドル"
+
+    diff_lower = latest["Close"] - latest["BB_Lower"]
+    pct_lower = (latest["Close"] / latest["BB_Lower"] - 1) * 100 if latest["BB_Lower"] > 0 else 0.0
+
+    vol_pct = (latest["Volume"] / latest["Volume_MA20"] * 100) if latest["Volume_MA20"] > 0 else 100
 
     if not bool(latest["Mandatory_Filter_Pass"]):
         status = "必須条件不合格（見送り）"
         message = "200日線未満、またはバンド急拡大中（下落トレンド警戒）のため、見送り推奨の局面です。"
     elif not bool(latest["Near_Lower"]):
         status = "待機"
-        message = "現在の足はBB下限付近ではありません。条件の再成立を待つ状態です。"
+        message = f"現在の足はBB下限付近ではありません（下限まであと {diff_lower:,.2f}{unit} / {pct_lower:+.1f}%）。条件の再成立を待つ状態です。"
     elif not bool(latest["Rebound"]):
         status = "落下中・監視"
         message = "BB下限付近ですが、反発が確認できていません。下落バンドウォークに注意します。"
@@ -381,17 +360,20 @@ def evaluate_latest(data: pd.DataFrame, score_threshold: float, mid_period: int)
         status = "条件成立候補"
         message = "必須フィルター・下限反発・スコア基準をすべて満たしました。1Rの損切り価格を決めて検証します。"
 
+    bb_width_str = f"{latest['BB_Width_Change_5']:+.1f}%" if pd.notna(latest["BB_Width_Change_5"]) else "0.0%"
+    bb_slope_str = f"{latest['BB_Middle_Slope_5']:+.1f}%" if pd.notna(latest["BB_Middle_Slope_5"]) else "0.0%"
+
     conditions = {
-        "【必須】200日線以上（大局上昇）": bool(latest["Pass_SMA200"]),
-        "【必須】バンド急拡大なし（ウォーク回避）": bool(latest["Pass_No_Expansion"]),
-        "【必須】20日線が急降下していない": bool(latest["Pass_Middle_Slope"]),
-        "BB下限付近に到達": bool(latest["Near_Lower"]),
+        "【必須】200日線以上（大局上昇トレンド）": bool(latest["Pass_SMA200"]),
+        f"【必須】バンド急拡大なし（基準: +30%以下 / 実績: {bb_width_str}）": bool(latest["Pass_No_Expansion"]),
+        f"【必須】20日線が急降下していない（基準: -2.5%以上 / 実績: {bb_slope_str}）": bool(latest["Pass_Middle_Slope"]),
+        f"BB下限接近（下限まであと {diff_lower:,.2f}{unit} / {pct_lower:+.1f}%）": bool(latest["Near_Lower"]),
         "反発を確認（陽線・回復・下ヒゲ）": bool(latest["Rebound"]),
-        f"下ヒゲが長い（買い支え: {latest['Lower_Shadow_Pct']:.1f}%）": bool(latest["Strong_Lower_Shadow"]),
-        "RSIが改善": bool(latest["RSI_Improving"]),
-        "MACDが改善": bool(latest["MACD_Improving"]),
+        f"下ヒゲが長い（基準: 35%以上で合格 / 実績: {latest['Lower_Shadow_Pct']:.1f}%）": bool(latest["Strong_Lower_Shadow"]),
+        f"RSIが改善（基準: 25以上＆上昇 / 実績: {latest['RSI']:.1f}）": bool(latest["RSI_Improving"]),
+        "MACDが改善（ヒストグラム好転）": bool(latest["MACD_Improving"]),
         f"{mid_period}日線以上(中期)": bool(latest["Above_Mid_SMA"]),
-        "出来高が20日平均以上": bool(latest["Volume_Expansion"]),
+        f"出来高が20日平均以上（基準: 100%以上 / 実績: {vol_pct:.0f}%）": bool(latest["Volume_Expansion"]),
         "BB下限が急落していない": bool(latest["Lower_Not_Collapsing"]),
     }
 
@@ -472,14 +454,12 @@ def run_backtest(
             bar_high = float(bar["High"])
             bar_low = float(bar["Low"])
 
-            # ギャップダウン損切り（始値で損切り約定）
             if bar_open <= stop_price:
                 exit_price = bar_open * (1 - slippage_bps / 10000)
                 exit_reason = "ギャップ損切り"
                 exit_number = bar_number
                 break
 
-            # ギャップアップ利確（始値で利確約定）
             if bar_open >= target_price:
                 exit_price = bar_open * (1 - slippage_bps / 10000)
                 exit_reason = "ギャップ利確"
@@ -567,491 +547,4 @@ def summarize_backtest(trades: pd.DataFrame, reward_r: float) -> dict:
         "RR設定": f"1:{reward_r:g}", "取引回数": int(len(trades)),
         "勝率": float((results > 0).mean() * 100), "平均R": float(results.mean()),
         "中央値R": float(results.median()), "利益係数": float(profit_factor),
-        "累積R": float(results.sum()), "最大ドローダウンR": float(drawdown.min()),
-    }
-
-
-# =========================================================
-# Plotlyによる累積R推移チャート
-# =========================================================
-def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
-    figure = go.Figure()
-
-    if not trades_15.empty:
-        figure.add_trace(
-            go.Scatter(
-                x=trades_15["決済日"],
-                y=trades_15["結果R"].cumsum(),
-                mode="lines+markers",
-                name="RR 1:1.5",
-            )
-        )
-
-    if not trades_20.empty:
-        figure.add_trace(
-            go.Scatter(
-                x=trades_20["決済日"],
-                y=trades_20["結果R"].cumsum(),
-                mode="lines+markers",
-                name="RR 1:2",
-            )
-        )
-
-    figure.add_hline(y=0, line_color="gray", line_dash="dot")
-
-    figure.update_layout(
-        title="累積Rの推移",
-        xaxis_title="決済日",
-        yaxis_title="累積R",
-        height=500,
-        dragmode="pan",
-        xaxis=dict(fixedrange=False),
-        yaxis=dict(fixedrange=False),
-        legend=dict(orientation="h"),
-    )
-
-    return figure
-
-
-# =========================================================
-# 学習用インタラクティブローソク足チャート（ホバー解説付き）
-# =========================================================
-def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: str):
-    """ローソク足にカーソルを乗せると、その日ごとの必須条件合否や注意点が表示されるPlotlyチャート"""
-    plot_df = chart_data.tail(150).copy()
-
-    custom_data = np.stack(
-        [
-            plot_df["Score"].round(1),
-            np.where(plot_df["Mandatory_Filter_Pass"], "合格 ✅", "不合格 ❌"),
-            plot_df["Lower_Shadow_Pct"].round(1),
-            plot_df["BB_Width_Pct"].round(1),
-            plot_df["Learning_Tip"],
-        ],
-        axis=-1,
-    )
-
-    hover_candlestick = (
-        "<b>%{x|%Y-%m-%d}</b><br>"
-        "始値: %{open:,.2f}  高値: %{high:,.2f}<br>"
-        "安値: %{low:,.2f}  終値: %{close:,.2f}<br>"
-        "------------------------------------<br>"
-        "<b>スコア:</b> %{customdata[0]} / 11 点<br>"
-        "<b>必須フィルター:</b> %{customdata[1]}<br>"
-        "<b>下ヒゲ比率:</b> %{customdata[2]}% ｜ <b>バンド幅:</b> %{customdata[3]}%<br>"
-        "------------------------------------<br>"
-        "%{customdata[4]}<extra></extra>"
-    )
-
-    fig = go.Figure()
-
-    # ローソク足
-    fig.add_trace(
-        go.Candlestick(
-            x=plot_df.index,
-            open=plot_df["Open"],
-            high=plot_df["High"],
-            low=plot_df["Low"],
-            close=plot_df["Close"],
-            name=display_symbol,
-            customdata=custom_data,
-            hovertemplate=hover_candlestick,
-            increasing_line_color="#26a69a",
-            decreasing_line_color="#ef5350",
-        )
-    )
-
-    # ボリンジャーバンド (+2σ, 中央20SMA, -2σ)
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Upper"], line=dict(color="rgba(220,70,70,0.5)", width=1), name="BB上限(+2σ)", hoverinfo="skip"))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Middle"], line=dict(color="rgba(128,128,128,0.7)", width=1.2, dash="dash"), name="BB中央(20SMA)", hoverinfo="skip"))
-    fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Lower"], line=dict(color="rgba(41,98,255,0.8)", width=2), name="BB下限(-2σ)", hoverinfo="skip"))
-
-    # 200日移動平均線
-    if "SMA200" in plot_df.columns and plot_df["SMA200"].notna().any():
-        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["SMA200"], line=dict(color="rgba(255,152,0,0.9)", width=2), name="200日SMA(大局)", hoverinfo="skip"))
-
-    # エントリーシグナル（緑の三角マーカー）
-    signals = plot_df[plot_df["Entry_Signal"] == True]
-    if not signals.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=signals.index,
-                y=signals["Low"] * 0.99,
-                mode="markers",
-                marker=dict(symbol="triangle-up", size=14, color="#00C853"),
-                name="エントリーシグナル",
-                hoverinfo="skip",
-            )
-        )
-
-    fig.update_layout(
-        title=f"📊 【{display_symbol}】学習用インタラクティブチャート（ローソク足にカーソルを乗せると分析解説が出ます）",
-        xaxis_title="日付",
-        yaxis_title="株価",
-        xaxis_rangeslider_visible=False,
-        template="plotly_white",
-        height=560,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-    )
-    return fig
-
-
-# =========================================================
-# Lightweight Charts描画
-# =========================================================
-def render_lightweight_chart_safe(
-    data: pd.DataFrame, display_symbol: str, entry=None, stop=None,
-    target_15=None, target_20=None, unique_key="lw_chart",
-):
-    chart_data = data.tail(200).copy()
-    chart_data = chart_data.replace([np.inf, -np.inf], np.nan).fillna(0)
-    chart_data["time"] = chart_data.index.strftime("%Y-%m-%d")
-
-    def to_lw_data(df, val_col):
-        filtered = df[df[val_col] != 0.0]
-        return [{"time": row["time"], "value": float(row[val_col])} for _, row in filtered.iterrows()]
-
-    candles = [{"time": row["time"], "open": float(row["Open"]), "high": float(row["High"]), "low": float(row["Low"]), "close": float(row["Close"])} for _, row in chart_data.iterrows()]
-    bb_upper = to_lw_data(chart_data, "BB_Upper")
-    bb_middle = to_lw_data(chart_data, "BB_Middle")
-    bb_lower = to_lw_data(chart_data, "BB_Lower")
-    mid_sma = to_lw_data(chart_data, "Mid_SMA")
-    sma200 = to_lw_data(chart_data, "SMA200")
-
-    signal_data = chart_data[chart_data["Entry_Signal"] == True]
-    markers = []
-    if not signal_data.empty:
-        for _, row in signal_data.iterrows():
-            markers.append({
-                "time": row["time"], "position": "belowBar", "color": "green",
-                "shape": "arrowUp", "text": "シグナル",
-            })
-
-    price_lines = []
-    if entry is not None: price_lines.append({"price": float(entry), "color": "#2962FF", "lineWidth": 2, "lineStyle": 2, "axisLabelVisible": True, "title": "エントリー"})
-    if stop is not None: price_lines.append({"price": float(stop), "color": "#FF5252", "lineWidth": 2, "lineStyle": 2, "axisLabelVisible": True, "title": "損切り"})
-    if target_15 is not None: price_lines.append({"price": float(target_15), "color": "#4CAF50", "lineWidth": 1, "lineStyle": 2, "axisLabelVisible": True, "title": "1:1.5"})
-    if target_20 is not None: price_lines.append({"price": float(target_20), "color": "#004D40", "lineWidth": 2, "lineStyle": 2, "axisLabelVisible": True, "title": "1:2"})
-
-    chartOptions = {
-        "layout": {"textColor": "black", "background": {"type": "solid", "color": "white"}},
-        "timeScale": {"timeVisible": True, "secondsVisible": False},
-        "crosshair": {"mode": 0},
-    }
-
-    series_list = []
-    candlestick_series = {
-        "type": "Candlestick", "data": candles,
-        "options": {"upColor": "#26a69a", "downColor": "#ef5350", "borderVisible": False, "wickUpColor": "#26a69a", "wickDownColor": "#ef5350"},
-    }
-    if markers: candlestick_series["markers"] = markers
-    if price_lines: candlestick_series["priceLines"] = price_lines
-    series_list.append(candlestick_series)
-
-    if bb_upper: series_list.append({"type": "Line", "data": bb_upper, "options": {"color": "rgba(220,70,70,0.5)", "lineWidth": 1, "title": "BB上限"}})
-    if bb_middle: series_list.append({"type": "Line", "data": bb_middle, "options": {"color": "rgba(128,128,128,0.5)", "lineWidth": 1, "title": "BB中央"}})
-    if bb_lower: series_list.append({"type": "Line", "data": bb_lower, "options": {"color": "rgba(41,98,255,0.8)", "lineWidth": 2, "title": "BB下限"}})
-    if mid_sma: series_list.append({"type": "Line", "data": mid_sma, "options": {"color": "rgba(156,39,176,0.8)", "lineWidth": 2, "title": "中期SMA"}})
-    if sma200: series_list.append({"type": "Line", "data": sma200, "options": {"color": "rgba(255,152,0,0.8)", "lineWidth": 2, "title": "SMA200"}})
-
-    try:
-        renderLightweightCharts([{"chart": chartOptions, "series": series_list}], key=unique_key)
-    except Exception as e:
-        st.error(f"チャートの描画に失敗しました。詳細: {e}")
-
-
-# =========================================================
-# サイドバー（市場切り替えと銘柄選択）
-# =========================================================
-st.sidebar.header("銘柄・指標設定")
-
-all_options = load_ticker_list()
-
-jp_stocks = []
-us_stocks = []
-
-for ticker in all_options:
-    code_part = ticker.split(" ")[0]
-    if code_part.endswith(".T") or re.fullmatch(r"\d{4}", code_part):
-        jp_stocks.append(ticker)
-    else:
-        us_stocks.append(ticker)
-
-if not jp_stocks: jp_stocks = ["登録なし"]
-if not us_stocks: us_stocks = ["登録なし"]
-
-st.sidebar.subheader("銘柄選択")
-market_choice = st.sidebar.radio("市場を選んでください", ["日本株", "米国株"], horizontal=True)
-
-if market_choice == "日本株":
-    if st.session_state.get("selected_ticker") not in jp_stocks:
-        st.session_state.selected_ticker = jp_stocks[0]
-    default_index = jp_stocks.index(st.session_state.selected_ticker)
-    selected_option = st.sidebar.selectbox("日本株リスト", jp_stocks, index=default_index, key="jp_selector")
-else:
-    if st.session_state.get("selected_ticker") not in us_stocks:
-        st.session_state.selected_ticker = us_stocks[0]
-    default_index = us_stocks.index(st.session_state.selected_ticker)
-    selected_option = st.sidebar.selectbox("米国株リスト", us_stocks, index=default_index, key="us_selector")
-
-st.session_state.selected_ticker = selected_option
-input_symbol = st.session_state.selected_ticker
-display_symbol, provider_symbol = normalize_symbol(input_symbol)
-
-st.sidebar.markdown("---")
-period = st.sidebar.selectbox("データ期間", ["1y", "2y", "5y", "10y"], index=2)
-interval = st.sidebar.selectbox("時間足", ["1d", "1wk"], index=0)
-
-mid_trend_period = st.sidebar.selectbox("中期トレンド判定線（SMA）", options=[20, 25, 50, 75, 100], index=2)
-
-bb_period = st.sidebar.number_input("BB期間", value=20)
-bb_sigma = st.sidebar.number_input("BB標準偏差", value=2.0, step=0.1)
-atr_period = st.sidebar.number_input("ATR期間", value=14)
-swing_lookback = st.sidebar.number_input("直近安値の確認本数", value=10)
-tolerance_pct = st.sidebar.number_input("BB下限接近許容幅（％）", value=1.0, step=0.1)
-score_threshold = st.sidebar.number_input("条件成立点数", value=8.0, step=0.5)
-
-st.sidebar.markdown("---")
-st.sidebar.caption("外部価格データには遅延・欠損・取得制限が発生する可能性があります。")
-
-
-# =========================================================
-# データ取得
-# =========================================================
-if not provider_symbol:
-    st.stop()
-
-try:
-    with st.spinner(f"【{display_symbol}】のデータを取得しています..."):
-        raw_data = load_price_data(provider_symbol, period, interval)
-except Exception as error:
-    st.error("価格データの取得中にエラーが発生しました。")
-    st.stop()
-
-if raw_data.empty:
-    st.error(f"{display_symbol} のデータを取得できませんでした。米国株は「.US」、日本株は「.T」をつけてみてください。")
-    st.stop()
-
-data = add_indicators(raw_data, int(bb_period), float(bb_sigma), int(atr_period), int(swing_lookback), int(mid_trend_period))
-data = build_signals(data, float(tolerance_pct), float(score_threshold))
-usable_data = data.dropna(subset=["BB_Lower", "ATR", "Recent_Low"]).copy()
-
-if len(usable_data) < 3:
-    st.error("計算に必要な価格データが不足しています。データ期間を長くしてください。")
-    st.stop()
-
-latest = usable_data.iloc[-1]
-previous = usable_data.iloc[-2]
-status, status_message, conditions = evaluate_latest(usable_data, float(score_threshold), int(mid_trend_period))
-
-
-# =========================================================
-# 上部表示
-# =========================================================
-st.subheader(display_symbol)
-latest_date = usable_data.index[-1]
-st.caption(f"データ最終日：{latest_date:%Y-%m-%d} （外部データのためリアルタイムとは限りません）")
-
-distance_from_lower = (latest["Close"] / latest["BB_Lower"] - 1) * 100
-metric1, metric2, metric3, metric4, metric5 = st.columns(5)
-metric1.metric("終値", f"{latest['Close']:,.2f}", f"{latest['Close'] - previous['Close']:,.2f}")
-metric2.metric("BB下限", f"{latest['BB_Lower']:,.2f}")
-metric3.metric("下限からの距離", f"{distance_from_lower:.2f}%")
-metric4.metric("RSI", f"{latest['RSI']:.1f}")
-metric5.metric("条件点数", f"{latest['Score']:.1f}/11")
-
-
-# =========================================================
-# タブ表示
-# =========================================================
-tab1, tab2, tab3, tab4 = st.tabs(["① 現在の条件＆学習チャート", "② 計画と保有管理", "③ 過去データ検証", "④ 使い方・注意点"])
-
-with tab1:
-    st.subheader("現在のエントリー条件")
-    if status == "条件成立候補":
-        st.success(f"判定：{status}")
-    elif "不合格" in status or status in ["落下中・監視", "弱い反発"]:
-        st.warning(f"判定：{status}")
-    else:
-        st.info(f"判定：{status}")
-
-    st.write(status_message)
-    st.progress(min(max(float(latest["Score"]) / 11, 0.0), 1.0))
-
-    condition_table = pd.DataFrame([{"確認項目": name, "結果": ("✅ 成立" if result else "❌ 未成立")} for name, result in conditions.items()])
-    st.dataframe(condition_table, hide_index=True, use_container_width=True)
-
-    # 学習用インタラクティブチャートの表示
-    st.markdown("---")
-    st.markdown("### 💡 学習用インタラクティブチャート（ホバー解説付き）")
-    st.caption("ローソク足にカーソルを乗せると、必須条件の合否・下ヒゲ比率・バンド幅・その日の状況に応じた注意点やアドバイスが表示されます。")
-    st.plotly_chart(
-        create_learning_candlestick_chart(usable_data, display_symbol),
-        use_container_width=True,
-    )
-
-    st.markdown("---")
-    st.markdown("### 📈 TradingView風チャート（全体表示）")
-    render_lightweight_chart_safe(usable_data, display_symbol, unique_key="tab1_chart")
-    st.info("「条件成立候補」は買い指示ではありません。設定した数式条件が成立したという表示です。")
-
-with tab2:
-    st.subheader("損切り・利確価格の計画")
-    plan_col1, plan_col2, plan_col3 = st.columns(3)
-    with plan_col1:
-        planned_entry = st.number_input("予定または実際のエントリー価格", value=float(round(latest["Close"], 4)), step=0.1)
-    with plan_col2:
-        stop_method_plan = st.selectbox("損切り計算方法", ["ATR基準", "直近安値基準", "ATRと直近安値の遠い方"], key="plan_stop_method")
-    with plan_col3:
-        atr_multiplier_plan = st.number_input("ATR倍率", value=1.5, step=0.1, key="plan_atr")
-
-    if stop_method_plan == "手動入力":
-        default_manual_stop = max(0.0001, planned_entry - float(latest["ATR"]) * 1.5)
-        stop_price_plan = st.number_input("当初の損切り価格", value=float(round(default_manual_stop, 4)), step=0.1)
-    else:
-        stop_price_plan = calculate_stop_price(planned_entry, latest, stop_method_plan, atr_multiplier_plan)
-        st.write(f"自動計算された損切り価格：**{stop_price_plan:,.4f}**")
-
-    initial_risk = planned_entry - stop_price_plan
-    if initial_risk <= 0:
-        st.error("ロング計画では、損切り価格をエントリー価格より低くしてください。")
-    else:
-        target_15 = planned_entry + initial_risk * 1.5
-        target_20 = planned_entry + initial_risk * 2.0
-        stop_distance_pct = (initial_risk / planned_entry) * 100
-
-        p1, p2, p3, p4 = st.columns(4)
-        p1.metric("1Rの価格差", f"{initial_risk:,.4f}")
-        p2.metric("損切り幅", f"{stop_distance_pct:.2f}%")
-        p3.metric("1:1.5目標", f"{target_15:,.4f}")
-        p4.metric("1:2目標", f"{target_20:,.4f}")
-
-        st.markdown("---")
-        st.subheader("エントリー後の管理")
-        manage1, manage2 = st.columns(2)
-        with manage1:
-            current_price = st.number_input("確認時の価格", value=float(round(latest["Close"], 4)), step=0.1)
-        with manage2:
-            highest_price = st.number_input("エントリー後の最高値", value=float(round(max(planned_entry, latest["High"]), 4)), step=0.1)
-
-        current_r = (current_price - planned_entry) / initial_risk
-        trailing_stop = highest_price - float(latest["ATR"]) * 2.0
-        management_stop = stop_price_plan
-
-        if current_r >= 1.0: management_stop = max(management_stop, planned_entry)
-        if current_r >= 1.5: management_stop = max(management_stop, trailing_stop)
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("現在のR", f"{current_r:.2f}R")
-        m2.metric("参考管理ストップ", f"{management_stop:,.4f}")
-        m3.metric("2Rまでの価格差", f"{target_20 - current_price:,.4f}")
-
-        if current_price <= stop_price_plan:
-            st.error("確認価格が当初の損切り価格以下です。事前に定めたルールを確認する局面です。")
-        elif current_r < 0:
-            st.warning("現在はマイナスRです。含み損を理由に損切り位置を下げると、当初のリスク定義が崩れます。")
-        elif current_r < 1:
-            st.info("現在は0Rから1Rの範囲です。小さな値動きだけで計画を変更しないか確認します。")
-        elif current_r < 1.5:
-            st.success("現在は1R以上です。建値付近へのストップ変更を検討する学習上の確認段階です。")
-        elif current_r < 2:
-            st.success("現在は1.5R以上です。利確またはトレーリング管理の条件を確認します。")
-        else:
-            st.success("現在は2R以上です。利益保護ルールが計画どおりか確認します。")
-
-        render_lightweight_chart_safe(
-            usable_data, display_symbol, entry=planned_entry, stop=management_stop,
-            target_15=target_15, target_20=target_20, unique_key="tab2_chart"
-        )
-
-        plan_data = pd.DataFrame([{
-            "作成日": date.today().isoformat(), "銘柄": display_symbol, "判定": status,
-            "条件点数": latest["Score"], "エントリー": planned_entry, "当初損切り": stop_price_plan,
-            "1R価格差": initial_risk, "1対1.5目標": target_15, "1対2目標": target_20,
-            "現在R": current_r, "管理ストップ": management_stop,
-        }])
-        st.download_button("計画をCSV保存", data=plan_data.to_csv(index=False).encode("utf-8-sig"), file_name=f"{display_symbol}_trade_plan.csv", mime="text/csv")
-        st.caption("この画面は購入数量を推奨しません。価格差を1Rとして、計画と実績を比較するための画面です。")
-
-with tab3:
-    st.subheader("過去データ検証")
-    st.warning("バックテストは過去データ上の機械的な試算です。将来の成果を示すものではありません。")
-
-    bt1, bt2, bt3, bt4 = st.columns(4)
-    with bt1:
-        backtest_stop_method = st.selectbox("検証時の損切り方法", ["ATR基準", "直近安値基準", "ATRと直近安値の遠い方"], index=2, key="backtest_stop")
-    with bt2:
-        backtest_atr_multiplier = st.number_input("検証時のATR倍率", value=1.5, step=0.1, key="backtest_atr")
-    with bt3:
-        maximum_holding_bars = st.number_input("最大保有本数", value=40, step=1)
-    with bt4:
-        slippage_bps = st.number_input("片道スリッページ（bps）", value=5.0, step=1.0)
-    cost_bps = st.number_input("往復ではなく、各売買価格に対するコスト想定（bps）", value=0.0, step=1.0)
-
-    if st.button("1:1.5と1:2を検証する", type="primary"):
-        with st.spinner("バックテストを計算しています..."):
-            trades_15 = run_backtest(usable_data, 1.5, backtest_stop_method, backtest_atr_multiplier, maximum_holding_bars, slippage_bps, cost_bps)
-            trades_20 = run_backtest(usable_data, 2.0, backtest_stop_method, backtest_atr_multiplier, maximum_holding_bars, slippage_bps, cost_bps)
-
-        summary_table = pd.DataFrame([summarize_backtest(trades_15, 1.5), summarize_backtest(trades_20, 2.0)])
-        st.subheader("並列比較")
-        st.dataframe(
-            summary_table.style.format({"勝率": "{:.1f}%", "平均R": "{:.3f}", "中央値R": "{:.3f}", "利益係数": "{:.3f}", "累積R": "{:.3f}", "最大ドローダウンR": "{:.3f}"}, na_rep="-"),
-            hide_index=True, use_container_width=True
-        )
-
-        st.markdown("### 累積Rの推移")
-        st.plotly_chart(
-            create_equity_chart(trades_15, trades_20),
-            use_container_width=True,
-            config={"displayModeBar": True, "scrollZoom": True}
-        )
-
-        detail_tab_15, detail_tab_20 = st.tabs(["RR 1:1.5 売買履歴", "RR 1:2 売買履歴"])
-        with detail_tab_15:
-            if trades_15.empty:
-                st.info("条件に該当する取引がありません。")
-            else:
-                st.dataframe(trades_15.style.format({"エントリー": "{:,.4f}", "損切り": "{:,.4f}", "利確目標": "{:,.4f}", "決済価格": "{:,.4f}", "結果R": "{:.3f}", "シグナル点数": "{:.1f}"}), hide_index=True, use_container_width=True)
-                st.download_button("1:1.5の履歴をCSV保存", data=trades_15.to_csv(index=False).encode("utf-8-sig"), file_name=f"{display_symbol}_RR_1_5.csv", mime="text/csv")
-        with detail_tab_20:
-            if trades_20.empty:
-                st.info("条件に該当する取引がありません。")
-            else:
-                st.dataframe(trades_20.style.format({"エントリー": "{:,.4f}", "損切り": "{:,.4f}", "利確目標": "{:,.4f}", "決済価格": "{:,.4f}", "結果R": "{:.3f}", "シグナル点数": "{:.1f}"}), hide_index=True, use_container_width=True)
-                st.download_button("1:2の履歴をCSV保存", data=trades_20.to_csv(index=False).encode("utf-8-sig"), file_name=f"{display_symbol}_RR_2_0.csv", mime="text/csv")
-
-        st.info("この比較は、どちらが優れているかを決めるものではありません。取引回数、平均R、最大ドローダウン、ギャップ損切りの発生などを同じ条件で観察するためのものです。")
-    else:
-        st.info("設定を確認し、上の検証ボタンを押してください。")
-
-with tab4:
-    st.subheader("このプログラムの判断順序と学習ポイント")
-    st.markdown("""
-### 1．【必須】大局トレンドと危険回避（ゲートキーパー）
-- **200日移動平均線以上**: 長期上昇トレンドの銘柄に絞ります（200日線未満は反発しても戻り売りに押されやすいため見送り）。
-- **バンド急拡大の回避**: バンドが急拡大（エクスパンション）している最中の下落は、下限に沿って落ち続ける「バンドウォーク」の可能性が高いためエントリーを禁止します。
-- **20日線の傾き**: 20日SMAが急降下している時は、反発してもすぐに頭を抑えられるため警戒します。
-
-### 2．下限への接近と反発確認（足型トリガー）
-- **下限接近**: BB下限（-2σ）付近への到達。
-- **反発足・下ヒゲの確認**: 単なる前日比プラスだけでなく、「下ヒゲが長い（レンジの35%以上）」ピンバーや「下限割れからの陽線回復」を確認し、安値で買い支えが入ったことを確かめます。
-
-### 3．補助条件のスコアリング
-RSIの改善、MACDの改善、中期移動平均線、出来高の増加、BB下限の傾きを総合評価（11点満点）します。
-
-### 4．1R（リスク）と目標の定義
-- `1R = エントリー価格 − 当初損切り価格`
-- 1:1.5目標 = エントリー価格 ＋ 1R × 1.5
-- 1:2.0目標 = エントリー価格 ＋ 1R × 2.0
-
-### 5．バックテストの現実的仕様
-- 終値確定後にシグナル判定 → 翌日の始値でエントリー
-- ギャップダウンは始値で損切り（不利な約定を反映）
-- ギャップアップは始値で利確（有利な約定を反映）
-- 同一足で損切りと利確の両方に触れた場合は「損切り」を優先
-    """)
-    st.error("重要：含み損を理由に当初の損切り位置を下げることは禁止です。ルールを一貫して守り、期待値を検証することが運用の本質です。")
-
-st.markdown("---")
-st.caption("本アプリは一般的な投資知識の学習と過去データ検証を目的としています。個別の売買判断を示すものではありません。")
+        "累積R": float(results.sum()), "最大
