@@ -36,9 +36,11 @@ st.caption(
 
 
 # =========================================================
-# 銘柄リスト取得・保存（CSV対応）
+# 銘柄リスト取得・保存（CSV・スプレッドシート対応）
 # =========================================================
-CSV_FILE = "tickers.csv"
+# pagesフォルダ内で実行しても、同じフォルダにCSVが保存・読み込みされるようパスを固定
+CURRENT_DIR = os.path.dirname(__file__)
+CSV_FILE = os.path.join(CURRENT_DIR, "tickers.csv")
 
 def load_ticker_list() -> list:
     """基本リスト + ローカルCSV + スプレッドシートを結合して読み込む"""
@@ -61,20 +63,24 @@ def load_ticker_list() -> list:
         except Exception:
             pass
 
-    # 2. スプレッドシートから読み込み
+    # 2. 指定されたスプレッドシートから読み込み
     sheet_options = []
+    # 【ご提示いただいたURLを設定】
     sheet_link = "https://docs.google.com/spreadsheets/d/1XZwIJaNVQG-q5SMVJQOXsvcsexTU0eVUCbaH7zscMnU/edit?usp=drivesdk"
+    
     if sheet_link.startswith("http"):
         try:
+            # スプレッドシートをCSV形式でダウンロードするためのURL変換
             csv_url = sheet_link.split("/edit")[0] + "/export?format=csv"
             df_meigara = pd.read_csv(csv_url, header=None)
             for _, row in df_meigara.iterrows():
                 name = str(row.iloc[0]).strip()
                 code = str(row.iloc[1]).strip()
+                # 見出しや空行を除外
                 if name not in ["企業名", "名前", "nan"] and code != "nan" and code != "":
                     sheet_options.append(f"{code} ({name})")
-        except Exception:
-            pass
+        except Exception as e:
+            st.sidebar.error(f"スプレッドシートの読み込みに失敗しました。権限が「リンクを知っている全員」になっているか確認してください。")
             
     # 重複を排除して結合
     combined_list = []
