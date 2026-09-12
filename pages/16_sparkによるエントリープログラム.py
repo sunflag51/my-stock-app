@@ -183,7 +183,7 @@ def add_indicators(
     standard_deviation = data["Close"].rolling(bb_period).std(ddof=0)
     data["BB_Upper"] = data["BB_Middle"] + bb_sigma * standard_deviation
     data["BB_Lower"] = data["BB_Middle"] - bb_sigma * standard_deviation
-    
+
     # バンド幅（％）と直近5日間の変化率
     data["BB_Width_Pct"] = ((data["BB_Upper"] - data["BB_Lower"]) / data["BB_Middle"] * 100)
     data["BB_Width_Change_5"] = data["BB_Width_Pct"].pct_change(5) * 100
@@ -223,24 +223,19 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
 
     # 1. 必須フィルター①：大局200日線以上
     result["Pass_SMA200"] = result["SMA200"].isna() | (result["Close"] >= result["SMA200"])
-    
+
     # 2. 下限接近判定
     lower_limit = result["BB_Lower"] * (1 + tolerance_pct / 100)
     result["Near_Lower"] = result["Low"] <= lower_limit
 
-    # 3. 【最重要改善】当日の足そのものの反発判定（rolling持ち越しを廃止）
-    # 当日下限に触れたが、終値では下限以上まで回復した足
+    # 3. 当日の足そのものの反発判定
     result["Today_Recovery"] = (result["Low"] <= result["BB_Lower"]) & (result["Close"] >= result["BB_Lower"])
-    # 当日の陽線反転（始値および前日終値より高い）
     result["Today_Bullish"] = (result["Close"] > result["Open"]) & (result["Close"] > result["Close"].shift(1))
-    # 当日の強い下ヒゲ（安値からの強い買い支え）
     result["Strong_Lower_Shadow"] = result["Lower_Shadow_Pct"] >= 35.0
 
-    # 反発判定：当日の足が「下限回復」または「反転陽線」または「下ヒゲ35%以上」
     result["Rebound"] = result["Today_Recovery"] | result["Today_Bullish"] | result["Strong_Lower_Shadow"]
 
-    # 4. 【最重要改善】下落バンドウォーク禁止フィルター
-    # 終値がBB下限を下回り、かつ陰線（始値以下）で引けている足は、下落バンドウォーク突入足として完全排除！
+    # 4. 下落バンドウォーク禁止フィルター
     result["Is_Bandwalk_Drop"] = (result["Close"] < result["BB_Lower"]) & (result["Close"] <= result["Open"])
 
     # バンド急拡大の評価（40%以下、または強い反発足があれば許容）
@@ -250,7 +245,7 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     # 20日線の傾き（急降下の抑制）
     result["Pass_Middle_Slope"] = result["BB_Middle_Slope_5"].isna() | (result["BB_Middle_Slope_5"] >= -3.5)
 
-    # 必須足切り条件：200日線以上 ＋ (急拡大なし or 強い反発) ＋ 【バンドウォーク急落中でないこと】
+    # 必須足切り条件
     result["Mandatory_Filter_Pass"] = result["Pass_SMA200"] & result["Pass_No_Expansion"] & (~result["Is_Bandwalk_Drop"])
 
     # 5. 補助条件スコアリング
@@ -278,7 +273,7 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
         result["Mandatory_Filter_Pass"]
         & result["Near_Lower"]
         & result["Rebound"]
-        & (~result["Is_Bandwalk_Drop"])  # バンドウォーク足は完全ブロック
+        & (~result["Is_Bandwalk_Drop"])
         & (result["Score"] >= score_threshold)
     )
 
@@ -812,6 +807,8 @@ status, status_message, conditions = evaluate_target_bar(
 # =========================================================
 tab1, tab2, tab3, tab4 = st.tabs(["① 条件判定・チャート・カルテ", "② 計画と保有管理", "③ 過去データ検証", "④ 使い方・注意点"])
 
+with tab1:["① 条件判定・チャート・カルテ", "② 計画と保有管理", "③ 過去データ検証", "④ 使い方・注意点"])
+
 with tab1:
     st.subheader(f"📊 {display_symbol} 条件判定・学習カルテ")
 
@@ -889,4 +886,37 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.caption("マウスのホイールで拡大縮小、ドラッグで時間軸の移動が可能です。")
-        render_lightweight_chart_safe(usable_data, display_symbol, unique_key=f"
+        render_lightweight_chart_safe(
+            usable_data, display_symbol, unique_key=f"lw_chart_{display_symbol}"
+        )
+
+with tab2:
+    st.subheader("🛡️ エントリー計画と1R保有・リスク管理シミュレーター")
+    st.caption("事前の損切り価格と1R（許容損失額）に基づき、購入株数と目標利確価格を算出します。")
+
+    col_plan1, col_plan2 = st.columns([1, 1])
+
+    with col_plan1:
+        st.markdown("##### 1. 資金・エントリー設定")
+        account_funds = st.number_input(
+            "運用資金総額",
+            value=1000000.0 if is_japan_stock else 10000.0,
+            step=10000.0 if is_japan_stock else 500.0,
+        )
+        risk_pct = st.number_input(
+            "1トレードあたりの許容リスク（％）",
+            value=1.0,
+            step=0.1,
+            help="資金に対する最大損失許容率です（一般的には1%〜2%程度）。",
+        )
+        max_loss_budget = account_funds * (risk_pct / 100.0)
+        st.info(f"💡 1回のトレードで許容できる最大損失額（1R）: **{max_loss_budget:,.0f} {currency_unit}**")
+
+        current_entry_price = st.number_input(
+            "想定エントリー株価",
+            value=float(target_bar["Close"]),
+            step=1.0 if is_japan_stock else 0.1,
+        )
+
+        stop_method_choice = st.selectbox(
+            "損切り価格の決定方式",
