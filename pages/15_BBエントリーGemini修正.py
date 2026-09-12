@@ -36,14 +36,10 @@ st.caption(
 
 
 # =========================================================
-# 銘柄リスト取得・保存（CSV・スプレッドシート対応）
+# 銘柄リスト取得（スプレッドシート対応）
 # =========================================================
-# pagesフォルダ内で実行しても、同じフォルダにCSVが保存・読み込みされるようパスを固定
-CURRENT_DIR = os.path.dirname(__file__)
-CSV_FILE = os.path.join(CURRENT_DIR, "tickers.csv")
-
 def load_ticker_list() -> list:
-    """基本リスト + ローカルCSV + スプレッドシートを結合して読み込む"""
+    """基本リスト + スプレッドシートを結合して読み込む"""
     base_options = [
         "7974.T (任天堂)",
         "7203.T (トヨタ自動車)",
@@ -54,18 +50,8 @@ def load_ticker_list() -> list:
         "COST (コストコ)"
     ]
     
-    # 1. 同じフォルダのCSVから読み込み
-    csv_options = []
-    if os.path.exists(CSV_FILE):
-        try:
-            df_csv = pd.read_csv(CSV_FILE, header=None)
-            csv_options = df_csv[0].dropna().astype(str).tolist()
-        except Exception:
-            pass
-
-    # 2. 指定されたスプレッドシートから読み込み
     sheet_options = []
-    # 【ご提示いただいたURLを設定】
+    # 設定いただいたGoogleスプレッドシートのURL
     sheet_link = "https://docs.google.com/spreadsheets/d/1XZwIJaNVQG-q5SMVJQOXsvcsexTU0eVUCbaH7zscMnU/edit?usp=drivesdk"
     
     if sheet_link.startswith("http"):
@@ -80,23 +66,15 @@ def load_ticker_list() -> list:
                 if name not in ["企業名", "名前", "nan"] and code != "nan" and code != "":
                     sheet_options.append(f"{code} ({name})")
         except Exception as e:
-            st.sidebar.error(f"スプレッドシートの読み込みに失敗しました。権限が「リンクを知っている全員」になっているか確認してください。")
+            st.sidebar.error("スプレッドシートの読み込みに失敗しました。権限が「リンクを知っている全員」か確認してください。")
             
     # 重複を排除して結合
     combined_list = []
-    for item in base_options + csv_options + sheet_options:
+    for item in base_options + sheet_options:
         if item not in combined_list:
             combined_list.append(item)
             
     return combined_list
-
-def save_custom_tickers(ticker_list: list):
-    """追加された銘柄をローカルのCSVに保存する"""
-    try:
-        df = pd.DataFrame(ticker_list)
-        df.to_csv(CSV_FILE, index=False, header=False)
-    except Exception as e:
-        st.sidebar.error(f"CSVへの保存に失敗しました: {e}")
 
 
 # =========================================================
@@ -603,77 +581,57 @@ def render_lightweight_chart_safe(
 
 
 # =========================================================
-# サイドバー（銘柄追加・削除とCSV保存機能）
+# サイドバー（市場切り替えと銘柄選択）
 # =========================================================
 st.sidebar.header("銘柄・指標設定")
 
-# 1. まず現在のリストを読み込む
-base_ticker_list = load_ticker_list()
+# 1. リストを読み込み
+all_options = load_ticker_list()
 
-# Session Stateの初期化
-if "custom_tickers" not in st.session_state:
-    st.session_state.custom_tickers = []
-if "selected_ticker" not in st.session_state:
-    st.session_state.selected_ticker = base_ticker_list[0] if base_ticker_list else "7974.T (任天堂)"
+# ---------------------------------------------------------
+# 日本株と米国株を自動で振り分ける
+# ---------------------------------------------------------
+jp_stocks = []
+us_stocks = []
 
-# 2. 全ての選択肢を作成（スプレッドシートの銘柄も含む）
-all_options = base_ticker_list + st.session_state.custom_tickers
-# 重複を排除しつつ順序を維持
-seen = set()
-unique_options = [x for x in all_options if not (x in seen or seen.add(x))]
-# 最後に「追加」メニューを配置
-final_options = unique_options + ["+ 新しい銘柄を追加する"]
+for ticker in all_options:
+    # コード部分だけを抽出（例："7203.T (トヨタ)" -> "7203.T"）
+    code_part = ticker.split(" ")[0] 
+    
+    # .T で終わるか、4桁の数字なら日本株
+    if code_part.endswith(".T") or re.fullmatch(r"\d{4}", code_part):
+        jp_stocks.append(ticker)
+    else:
+        # それ以外は米国株
+        us_stocks.append(ticker)
 
-# 現在選択中の銘柄がリストに存在するか確認し、なければ先頭に戻す
-if st.session_state.selected_ticker not in final_options:
-    st.session_state.selected_ticker = final_options[0]
+if not jp_stocks: jp_stocks = ["登録なし"]
+if not us_stocks: us_stocks = ["登録なし"]
 
-default_index = final_options.index(st.session_state.selected_ticker)
+# ---------------------------------------------------------
+# セレクトボックスを市場ごとに分ける
+# ---------------------------------------------------------
+st.sidebar.subheader("銘柄選択")
+market_choice = st.sidebar.radio("市場を選んでください", ["日本株", "米国株"], horizontal=True)
 
-# 【修正ポイント】セレクトボックスの変更を即座にSession Stateに反映させる関数を用意
-def on_ticker_change():
-    new_selection = st.session_state.ticker_selector
-    if new_selection != "+ 新しい銘柄を追加する":
-        st.session_state.selected_ticker = new_selection
-
-# セレクトボックス（on_changeコールバックを使用）
-selected_option = st.sidebar.selectbox(
-    "銘柄選択", 
-    final_options, 
-    index=default_index,
-    key="ticker_selector", 
-    on_change=on_ticker_change
-)
-
-input_symbol = st.session_state.selected_ticker
-
-# 3. 追加と削除の処理
-if selected_option == "+ 新しい銘柄を追加する":
-    with st.sidebar.form(key='add_ticker_form'):
-        new_ticker = st.text_input("銘柄コードを入力 (例: 7203.T, MSFT.US)")
-        st.caption("※追加した銘柄は同じフォルダの tickers.csv に保存されます。\n（クラウド環境では再起動時に消えることがあります）")
-        submit_button = st.form_submit_button(label="リストに追加して分析")
+# 選択された市場に応じて表示するリストを切り替える
+if market_choice == "日本株":
+    if st.session_state.get("selected_ticker") not in jp_stocks:
+        st.session_state.selected_ticker = jp_stocks[0]
         
-        if submit_button:
-            if new_ticker:
-                clean_ticker = new_ticker.strip().upper()
-                if clean_ticker not in st.session_state.custom_tickers and clean_ticker not in base_ticker_list:
-                    st.session_state.custom_tickers.append(clean_ticker)
-                    save_custom_tickers(st.session_state.custom_tickers)
-                
-                st.session_state.selected_ticker = clean_ticker
-                st.rerun()
-            else:
-                st.warning("コードを入力してください")
-    st.stop()
+    default_index = jp_stocks.index(st.session_state.selected_ticker)
+    selected_option = st.sidebar.selectbox("日本株リスト", jp_stocks, index=default_index, key="jp_selector")
+    
 else:
-    # 削除機能：手入力で追加された銘柄（custom_tickers）のみ削除可能
-    if selected_option in st.session_state.custom_tickers:
-        if st.sidebar.button("この追加銘柄を削除"):
-            st.session_state.custom_tickers.remove(selected_option)
-            save_custom_tickers(st.session_state.custom_tickers)
-            st.session_state.selected_ticker = base_ticker_list[0] if base_ticker_list else "7974.T (任天堂)"
-            st.rerun()
+    if st.session_state.get("selected_ticker") not in us_stocks:
+        st.session_state.selected_ticker = us_stocks[0]
+        
+    default_index = us_stocks.index(st.session_state.selected_ticker)
+    selected_option = st.sidebar.selectbox("米国株リスト", us_stocks, index=default_index, key="us_selector")
+
+# 選んだ銘柄を確定
+st.session_state.selected_ticker = selected_option
+input_symbol = st.session_state.selected_ticker
 
 display_symbol, provider_symbol = normalize_symbol(input_symbol)
 
