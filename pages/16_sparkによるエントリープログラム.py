@@ -110,7 +110,6 @@ def normalize_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
     except (TypeError, AttributeError):
         pass
 
-    # 重複日付の排除
     data = data[~data.index.duplicated(keep="last")]
     data = data.sort_index()
     return data
@@ -192,13 +191,13 @@ def add_indicators(
     # 20日中央線の傾き
     data["BB_Middle_Slope_5"] = data["BB_Middle"].pct_change(5) * 100
 
-    # 下ヒゲ比率（％）: (実体の下端 - 安値) / (高値 - 安値) * 100
+    # 下ヒゲ比率（％）
     candle_range = (data["High"] - data["Low"]).replace(0, np.nan)
     real_body_bottom = data[["Open", "Close"]].min(axis=1)
     lower_shadow = real_body_bottom - data["Low"]
     data["Lower_Shadow_Pct"] = (lower_shadow / candle_range * 100).fillna(0)
 
-    # 移動平均線（中期SMA・200日線）
+    # 移動平均線
     data["Mid_SMA"] = data["Close"].rolling(mid_period).mean()
     data["SMA200"] = data["Close"].rolling(200).mean()
     data["RSI"] = calculate_rsi(data["Close"], 14)
@@ -217,44 +216,44 @@ def add_indicators(
     return data
 
 # =========================================================
-# シグナル判定（実戦的な柔軟性を持たせた最適化版）
+# シグナル判定（バンドウォーク完全排除版）
 # =========================================================
 def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: float) -> pd.DataFrame:
     result = data.copy()
 
-    # 1. 必須フィルター（大局上昇トレンドのみ厳格に保持）
+    # 1. 必須フィルター①：大局200日線以上
     result["Pass_SMA200"] = result["SMA200"].isna() | (result["Close"] >= result["SMA200"])
     
-    # バンド急拡大の判定（急拡大していないか、または急拡大でも強い下ヒゲ・反発があれば例外許可）
-    result["No_Expansion_Raw"] = result["BB_Width_Change_5"].isna() | (result["BB_Width_Change_5"] <= 40.0)
-    
-    # 2. 下限接近と反発判定
+    # 2. 下限接近判定
     lower_limit = result["BB_Lower"] * (1 + tolerance_pct / 100)
     result["Near_Lower"] = result["Low"] <= lower_limit
 
-    close_to_close_recovery = (result["Close"].shift(1) <= result["BB_Lower"].shift(1)) & (result["Close"] > result["BB_Lower"])
-    same_day_recovery = (result["Low"] <= result["BB_Lower"]) & (result["Close"] > result["BB_Lower"])
-    exact_recovery = (close_to_close_recovery | same_day_recovery).fillna(False)
-    result["Band_Recovery"] = exact_recovery.rolling(window=3, min_periods=1).max().astype(bool)
-
-    result["Bullish_Reversal"] = (
-        (result["Close"] > result["Open"])
-        & (result["Close"] > result["Close"].shift(1))
-    )
-
+    # 3. 【最重要改善】当日の足そのものの反発判定（rolling持ち越しを廃止）
+    # 当日下限に触れたが、終値では下限以上まで回復した足
+    result["Today_Recovery"] = (result["Low"] <= result["BB_Lower"]) & (result["Close"] >= result["BB_Lower"])
+    # 当日の陽線反転（始値および前日終値より高い）
+    result["Today_Bullish"] = (result["Close"] > result["Open"]) & (result["Close"] > result["Close"].shift(1))
+    # 当日の強い下ヒゲ（安値からの強い買い支え）
     result["Strong_Lower_Shadow"] = result["Lower_Shadow_Pct"] >= 35.0
-    result["Rebound"] = result["Band_Recovery"] | result["Bullish_Reversal"] | result["Strong_Lower_Shadow"]
 
-    # 急拡大フィルター：穏やかな拡大であるか、または急拡大中でも強い反発足（下ヒゲ等）があれば合格
-    result["Pass_No_Expansion"] = result["No_Expansion_Raw"] | result["Strong_Lower_Shadow"] | result["Bullish_Reversal"]
+    # 反発判定：当日の足が「下限回復」または「反転陽線」または「下ヒゲ35%以上」
+    result["Rebound"] = result["Today_Recovery"] | result["Today_Bullish"] | result["Strong_Lower_Shadow"]
 
-    # 20日線の傾き（急降下していないか）
+    # 4. 【最重要改善】下落バンドウォーク禁止フィルター
+    # 終値がBB下限を下回り、かつ陰線（始値以下）で引けている足は、下落バンドウォーク突入足として完全排除！
+    result["Is_Bandwalk_Drop"] = (result["Close"] < result["BB_Lower"]) & (result["Close"] <= result["Open"])
+
+    # バンド急拡大の評価（40%以下、または強い反発足があれば許容）
+    result["No_Expansion_Raw"] = result["BB_Width_Change_5"].isna() | (result["BB_Width_Change_5"] <= 40.0)
+    result["Pass_No_Expansion"] = result["No_Expansion_Raw"] | result["Strong_Lower_Shadow"] | result["Today_Bullish"]
+
+    # 20日線の傾き（急降下の抑制）
     result["Pass_Middle_Slope"] = result["BB_Middle_Slope_5"].isna() | (result["BB_Middle_Slope_5"] >= -3.5)
 
-    # 必須足切り条件：200日線以上 ＋ (急拡大なし または 強い反発足あり)
-    result["Mandatory_Filter_Pass"] = result["Pass_SMA200"] & result["Pass_No_Expansion"]
+    # 必須足切り条件：200日線以上 ＋ (急拡大なし or 強い反発) ＋ 【バンドウォーク急落中でないこと】
+    result["Mandatory_Filter_Pass"] = result["Pass_SMA200"] & result["Pass_No_Expansion"] & (~result["Is_Bandwalk_Drop"])
 
-    # 3. 補助条件スコアリング
+    # 5. 補助条件スコアリング
     result["RSI_Improving"] = (result["RSI"] > result["RSI"].shift(1)) & (result["RSI"] >= 25)
     result["MACD_Improving"] = result["MACD_Hist"] > result["MACD_Hist"].shift(1)
     result["Above_Mid_SMA"] = result["Mid_SMA"].notna() & (result["Close"] >= result["Mid_SMA"])
@@ -262,55 +261,57 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     result["Volume_Expansion"] = (result["Volume_MA20"] > 0) & (result["Volume"] >= result["Volume_MA20"])
     result["Lower_Not_Collapsing"] = result["Lower_Slope_3"] > -3.0
 
-    # スコア計算（合計11点満点）
     result["Score"] = (
         result["Near_Lower"].astype(float) * 2.0
         + result["Rebound"].astype(float) * 2.0
         + result["Strong_Lower_Shadow"].astype(float) * 1.5
         + result["RSI_Improving"].astype(float) * 1.5
         + result["MACD_Improving"].astype(float) * 1.0
-        + result["No_Expansion_Raw"].astype(float) * 1.0  # バンドが穏やかなら+1点ボーナス
-        + result["Pass_Middle_Slope"].astype(float) * 0.5  # 20日線が安定なら+0.5点
+        + result["No_Expansion_Raw"].astype(float) * 1.0
+        + result["Pass_Middle_Slope"].astype(float) * 0.5
         + result["Volume_Expansion"].astype(float) * 0.5
         + result["Lower_Not_Collapsing"].astype(float) * 1.0
     )
 
-    # 5. エントリーシグナル
+    # 6. エントリーシグナル
     result["Entry_Signal"] = (
         result["Mandatory_Filter_Pass"]
         & result["Near_Lower"]
         & result["Rebound"]
+        & (~result["Is_Bandwalk_Drop"])  # バンドウォーク足は完全ブロック
         & (result["Score"] >= score_threshold)
     )
 
-    # 6. アドバイス文生成
+    # 7. アドバイス文生成
     def generate_learning_tip(row):
         warnings = []
         positives = []
 
+        if row["Is_Bandwalk_Drop"]:
+            warnings.append("・【危険】下落バンドウォーク中（下限割れ＆陰線）：安値追いエントリー厳禁")
         if not row["Pass_SMA200"]:
             warnings.append("・200日線未満：大局下降トレンド（戻り売りに注意）")
         if not row["No_Expansion_Raw"]:
             w_chg = row["BB_Width_Change_5"]
             w_str = f"{w_chg:+.1f}%" if pd.notna(w_chg) else "拡大中"
-            if row["Strong_Lower_Shadow"] or row["Bullish_Reversal"]:
-                positives.append(f"・バンド急拡大中({w_str})ですが、強い反発足（下ヒゲ・陽線）による買い支えを確認したためエントリー許可")
+            if row["Strong_Lower_Shadow"] or row["Today_Bullish"]:
+                positives.append(f"・バンド拡大中({w_str})ですが、当日の強い反発足（下ヒゲ/陽線）を確認")
             else:
-                warnings.append(f"・バンド急拡大中({w_str})：下落トレンド警戒")
+                warnings.append(f"・バンド急拡大中({w_str})：下落継続に警戒")
 
         if row["Near_Lower"]:
             if row["Strong_Lower_Shadow"]:
-                positives.append(f"・下限タッチ＋長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)：安値での強力な買い支え")
+                positives.append(f"・下限タッチ＋長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)：強力な買い支え")
             elif row["Rebound"]:
-                positives.append("・下限からの反発足を確認")
+                positives.append("・当日の下限からの切り返し・反発を確認")
             else:
-                warnings.append(f"・下限接近中だが下ヒゲ不足({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)＆反発未確認")
+                warnings.append("・下限接近中だが当日の反発足が未確認")
         else:
             if row["Strong_Lower_Shadow"]:
-                positives.append(f"・長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)出現：買い支えの兆候")
+                positives.append(f"・長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)：買い支えの兆候")
 
         if row["Entry_Signal"]:
-            positives.append("★【条件成立】大局トレンド内＋反発確認。1R損切りを設定して検証可")
+            positives.append("★【条件成立】バンドウォーク否定＋当日の反発確認。1R損切りを設定して検証可")
 
         text_parts = []
         if warnings:
@@ -339,7 +340,10 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
     vol_ma_val = float(bar.get("Volume_MA20", 1))
     vol_pct = (vol_val / vol_ma_val * 100) if vol_ma_val > 0 else 100.0
 
-    if not bool(bar["Mandatory_Filter_Pass"]):
+    if bool(bar.get("Is_Bandwalk_Drop", False)):
+        status = "下落バンドウォーク中（見送り）"
+        message = "終値がBB下限を下回る陰線となっており、下落バンドウォーク進行中のため見送り推奨です。"
+    elif not bool(bar["Mandatory_Filter_Pass"]):
         status = "必須条件不合格（見送り）"
         message = "200日線未満、または反発足のないバンド急拡大中のため、見送り推奨の局面です。"
     elif not bool(bar["Near_Lower"]):
@@ -347,7 +351,7 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
         message = f"BB下限付近ではありません（下限まであと {diff_lower:,.2f}{unit} / {pct_lower:+.1f}%）。条件の再成立を待つ状態です。"
     elif not bool(bar["Rebound"]):
         status = "落下中・監視"
-        message = "BB下限付近ですが、反発足が確認できていません。下落バンドウォークに注意します。"
+        message = "BB下限付近ですが、当日の反発足が確認できていません。下落バンドウォークに注意します。"
     elif pd.isna(bar["Score"]) or bar["Score"] < score_threshold:
         status = "弱い反発"
         message = "反発は確認されましたが、補助条件の点数が不足しています。"
@@ -360,10 +364,11 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
     lower_shadow_val = float(bar.get("Lower_Shadow_Pct", 0))
 
     conditions = {
+        "【必須】下落バンドウォークではない（下限割れ陰線の否定）": not bool(bar.get("Is_Bandwalk_Drop", False)),
         "【必須】200日線以上（大局上昇トレンド）": bool(bar["Pass_SMA200"]),
         f"【必須】バンド穏やか または 強い反発足あり（実績: {bb_width_str}）": bool(bar["Pass_No_Expansion"]),
         f"BB下限接近（下限まであと {diff_lower:,.2f}{unit} / {pct_lower:+.1f}%）": bool(bar["Near_Lower"]),
-        "反発を確認（陽線・回復・下ヒゲ）": bool(bar["Rebound"]),
+        "当日の反発を確認（陽線・下限回復・下ヒゲ）": bool(bar["Rebound"]),
         f"下ヒゲが長い（基準: 35%以上で合格 / 実績: {lower_shadow_val:.1f}%）": bool(bar["Strong_Lower_Shadow"]),
         f"バンドが穏やか（基準: +40%以下 / 実績: {bb_width_str}）": bool(bar["No_Expansion_Raw"]),
         f"20日線が安定（基準: -3.5%以上 / 実績: {bb_slope_str}）": bool(bar["Pass_Middle_Slope"]),
@@ -629,7 +634,7 @@ def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: 
     return fig
 
 # =========================================================
-# TradingView風チャート描画 (Lightweight Charts：堅牢版)
+# TradingView風チャート描画 (Lightweight Charts)
 # =========================================================
 def render_lightweight_chart_safe(
     data: pd.DataFrame, display_symbol: str, unique_key: str = "lw_chart"
@@ -766,7 +771,6 @@ bb_sigma = st.sidebar.number_input("BB標準偏差", value=2.0, step=0.1)
 atr_period = st.sidebar.number_input("ATR期間", value=14)
 swing_lookback = st.sidebar.number_input("直近安値の確認本数", value=10)
 tolerance_pct = st.sidebar.number_input("BB下限接近許容幅（％）", value=1.0, step=0.1)
-# スコア基準のデフォルトを実戦的な6.5点に調整
 score_threshold = st.sidebar.number_input("条件成立点数", value=6.5, step=0.5)
 
 # =========================================================
@@ -824,7 +828,7 @@ with tab1:
             target_date_str = recent_date_list[0]
             st.info(f"📅 現在 **最新日【{target_date_str}】** のデータと合否判定を表示しています。")
         else:
-            default_idx = recent_date_list.index("2026-09-08") if "2026-09-08" in recent_date_list else 0
+            default_idx = recent_date_list.index("2026-02-10") if "2026-02-10" in recent_date_list else 0
             target_date_str = st.selectbox(
                 "分析したい日付を選択してください",
                 options=recent_date_list,
@@ -857,7 +861,7 @@ with tab1:
 
     if status == "条件成立候補":
         st.success(f"判定（{target_date_str}）：{status}")
-    elif "不合格" in status or status in ["落下中・監視", "弱い反発"]:
+    elif "バンドウォーク" in status or "不合格" in status or status in ["落下中・監視", "弱い反発"]:
         st.warning(f"判定（{target_date_str}）：{status}")
     else:
         st.info(f"判定（{target_date_str}）：{status}")
@@ -867,7 +871,7 @@ with tab1:
 
     st.markdown("#### 【上の表示】合否確認テーブル")
     condition_table = pd.DataFrame([
-        {"確認項目": name, f"判定（{target_date_str}）": ("✅ 成立・合格" if result else "❌ 未成立・注意")}
+        {"確認項目": name, f"判定（{target_date_str}）": ("✅ 成立・合格" if result else "❌ 未成立・警告")}
         for name, result in conditions.items()
     ])
     display_df_safe(condition_table, use_container_width=True)
@@ -885,210 +889,4 @@ with tab1:
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.caption("マウスのホイールで拡大縮小、ドラッグで時間軸の移動が可能です。")
-        render_lightweight_chart_safe(usable_data, display_symbol, unique_key=f"main_lw_{display_symbol}")
-
-    st.markdown(f"### 📋 【下の詳細表示】{target_date_str} の診断カルテ")
-
-    sma200_val = target_bar.get("SMA200", np.nan)
-    if pd.notna(sma200_val) and sma200_val > 0:
-        diff_200 = close_val - sma200_val
-        pct_200 = (close_val / sma200_val - 1) * 100
-        sma200_desc = f"株価 {close_val:,.2f}{currency_unit} vs 200日線 {sma200_val:,.2f}{currency_unit}（{diff_200:+,.2f}{currency_unit} / {pct_200:+.1f}%）"
-    else:
-        sma200_desc = "200日線未算出（データ期間不足）"
-
-    mid_sma_val = target_bar.get("Mid_SMA", np.nan)
-    if pd.notna(mid_sma_val) and mid_sma_val > 0:
-        diff_mid = close_val - mid_sma_val
-        pct_mid = (close_val / mid_sma_val - 1) * 100
-        mid_sma_desc = f"{mid_trend_period}日線 {mid_sma_val:,.2f}{currency_unit} まで {diff_mid:+,.2f}{currency_unit}（{pct_mid:+.1f}%）"
-    else:
-        mid_sma_desc = f"{mid_trend_period}日線未算出"
-
-    bb_chg_val = target_bar.get("BB_Width_Change_5", np.nan)
-    bb_chg_str = f"{bb_chg_val:+.1f}%" if pd.notna(bb_chg_val) else "0.0%（変化なし）"
-
-    bb_slope_val = target_bar.get("BB_Middle_Slope_5", np.nan)
-    bb_slope_str = f"{bb_slope_val:+.1f}%" if pd.notna(bb_slope_val) else "0.0%（平坦）"
-
-    vol_p = float(target_bar.get("Volume", 0))
-    vol_ma_p = float(target_bar.get("Volume_MA20", 1))
-    vol_pct = (vol_p / vol_ma_p * 100) if vol_ma_p > 0 else 100.0
-
-    card_col1, card_col2, card_col3 = st.columns(3)
-
-    with card_col1:
-        st.markdown("#### ① 必須フィルター診断")
-        pass_200 = "✅ 合格" if target_bar["Pass_SMA200"] else "❌ 不合格"
-        pass_no_exp = "✅ 合格" if target_bar["Pass_No_Expansion"] else "❌ 急拡大・反発なし"
-        st.markdown(f"- **200日線以上（大局上昇）**: {pass_200}\n  - 基準: 200日線以上\n  - 実績: {sma200_desc}")
-        st.markdown(f"- **危険な急拡大の回避**: {pass_no_exp}\n  - 基準: 5日変化+40%以下 または 強い反発足あり\n  - 実績: バンド変化 **{bb_chg_str}**")
-
-    with card_col2:
-        st.markdown("#### ② 足型と反発の診断")
-        reach_lower = "✅ 到達" if target_bar["Near_Lower"] else "❌ 未到達"
-        shadow_judge = "✅ 合格" if target_bar["Strong_Lower_Shadow"] else "❌ 不足（弱い）"
-        rebound_judge = "✅ 確認済" if target_bar["Rebound"] else "❌ 未確認"
-        st.markdown(f"- **BB下限接近**: {reach_lower}\n  - 基準: 下限+{tolerance_pct}%以内\n  - 実績: 下限まであと **{diff_lower_val:,.2f} {currency_unit}**（{dist_lower_pct:+.1f}%）")
-        st.markdown(f"- **下ヒゲの長さ（買い支え）**: {shadow_judge}\n  - 基準: **35%以上**で合格（50%以上で強力ピンバー）\n  - 実績: **{target_bar['Lower_Shadow_Pct']:.1f}%**")
-        st.markdown(f"- **反発確認（反転足型）**: {rebound_judge}\n  - 基準: 下ヒゲ35%以上 または 陽線反転 または 下限回復")
-
-    with card_col3:
-        st.markdown("#### ③ 補助指標とトレンド")
-        mid_judge = "✅ 以上" if target_bar["Above_Mid_SMA"] else "❌ 未満"
-        rsi_judge = "✅ 改善中" if target_bar["RSI_Improving"] else "❌ 悪化中"
-        vol_judge = "✅ 増加" if target_bar["Volume_Expansion"] else "❌ 平均未満"
-        st.markdown(f"- **20日線の傾き（急降下抑制）**: {bb_slope_str}")
-        st.markdown(f"- **RSI（モメンタム）**: {rsi_judge}\n  - 基準: 25以上 かつ 前日より上昇\n  - 実績: **{target_bar['RSI']:.1f}**")
-        st.markdown(f"- **出来高（買い需要）**: {vol_judge}\n  - 基準: 20日平均以上（**100%以上**）\n  - 実績: 20日平均比 **{vol_pct:.0f}%**")
-
-    st.markdown("#### 💡 その日の分析アドバイス")
-    raw_tip = str(target_bar.get("Learning_Tip", ""))
-    clean_tip = raw_tip.replace("<b>", "**").replace("</b>", "**").replace("<br>", "\n\n")
-    st.info(clean_tip)
-
-with tab2:
-    st.subheader("損切り・利確価格の計画")
-    latest = usable_data.iloc[-1]
-
-    plan_col1, plan_col2, plan_col3 = st.columns(3)
-    with plan_col1:
-        planned_entry = st.number_input("予定または実際のエントリー価格", value=float(round(latest["Close"], 4)), step=0.1)
-    with plan_col2:
-        stop_method_plan = st.selectbox("損切り計算方法", ["ATR基準", "直近安値基準", "ATRと直近安値の遠い方"], key="plan_stop_method")
-    with plan_col3:
-        atr_multiplier_plan = st.number_input("ATR倍率", value=1.5, step=0.1, key="plan_atr")
-
-    if stop_method_plan == "手動入力":
-        default_manual_stop = max(0.0001, planned_entry - float(latest["ATR"]) * 1.5)
-        stop_price_plan = st.number_input("当初の損切り価格", value=float(round(default_manual_stop, 4)), step=0.1)
-    else:
-        stop_price_plan = calculate_stop_price(planned_entry, latest, stop_method_plan, atr_multiplier_plan)
-        st.write(f"自動計算された損切り価格：**{stop_price_plan:,.4f}**")
-
-    initial_risk = planned_entry - stop_price_plan
-    if initial_risk <= 0:
-        st.error("ロング計画では、損切り価格をエントリー価格より低くしてください。")
-    else:
-        target_15 = planned_entry + initial_risk * 1.5
-        target_20 = planned_entry + initial_risk * 2.0
-        stop_distance_pct = (initial_risk / planned_entry) * 100
-
-        p1, p2, p3, p4 = st.columns(4)
-        p1.metric("1Rの価格差", f"{initial_risk:,.4f}")
-        p2.metric("損切り幅", f"{stop_distance_pct:.2f}%")
-        p3.metric("1:1.5目標", f"{target_15:,.4f}")
-        p4.metric("1:2目標", f"{target_20:,.4f}")
-
-        st.markdown("---")
-        st.subheader("エントリー後の管理")
-        manage1, manage2 = st.columns(2)
-        with manage1:
-            current_price = st.number_input("確認時の価格", value=float(round(latest["Close"], 4)), step=0.1)
-        with manage2:
-            highest_price = st.number_input("エントリー後の最高値", value=float(round(max(planned_entry, latest["High"]), 4)), step=0.1)
-
-        current_r = (current_price - planned_entry) / initial_risk
-        trailing_stop = highest_price - float(latest["ATR"]) * 2.0
-        management_stop = stop_price_plan
-
-        if current_r >= 1.0: management_stop = max(management_stop, planned_entry)
-        if current_r >= 1.5: management_stop = max(management_stop, trailing_stop)
-
-        m1, m2, m3 = st.columns(3)
-        m1.metric("現在のR", f"{current_r:.2f}R")
-        m2.metric("参考管理ストップ", f"{management_stop:,.4f}")
-        m3.metric("2Rまでの価格差", f"{target_20 - current_price:,.4f}")
-
-        if current_price <= stop_price_plan:
-            st.error("確認価格が当初の損切り価格以下です。事前に定めたルールを確認する局面です。")
-        elif current_r < 0:
-            st.warning("現在はマイナスRです。含み損を理由に損切り位置を下げると、当初のリスク定義が崩れます。")
-        elif current_r < 1:
-            st.info("現在は0Rから1Rの範囲です。小さな値動きだけで計画を変更しないか確認します。")
-        elif current_r < 1.5:
-            st.success("現在は1R以上です。建値付近へのストップ変更を検討する学習上の確認段階です。")
-        elif current_r < 2:
-            st.success("現在は1.5R以上です。利確またはトレーリング管理の条件を確認します。")
-        else:
-            st.success("現在は2R以上です。利益保護ルールが計画どおりか確認します。")
-
-        plan_data = pd.DataFrame([{
-            "作成日": date.today().isoformat(), "銘柄": display_symbol, "判定": status,
-            "条件点数": latest["Score"], "エントリー": planned_entry, "当初損切り": stop_price_plan,
-            "1R価格差": initial_risk, "1対1.5目標": target_15, "1対2目標": target_20,
-            "現在R": current_r, "管理ストップ": management_stop,
-        }])
-        st.download_button("計画をCSV保存", data=plan_data.to_csv(index=False).encode("utf-8-sig"), file_name=f"{display_symbol}_trade_plan.csv", mime="text/csv")
-
-with tab3:
-    st.subheader("過去データ検証")
-    st.warning("バックテストは過去データ上の機械的な試算です。将来の成果を示すものではありません。")
-
-    bt1, bt2, bt3, bt4 = st.columns(4)
-    with bt1:
-        backtest_stop_method = st.selectbox("検証時の損切り方法", ["ATR基準", "直近安値基準", "ATRと直近安値の遠い方"], index=2, key="backtest_stop")
-    with bt2:
-        backtest_atr_multiplier = st.number_input("検証時のATR倍率", value=1.5, step=0.1, key="backtest_atr")
-    with bt3:
-        maximum_holding_bars = st.number_input("最大保有本数", value=40, step=1)
-    with bt4:
-        slippage_bps = st.number_input("片道スリッページ（bps）", value=5.0, step=1.0)
-    cost_bps = st.number_input("各売買価格に対するコスト想定（bps）", value=0.0, step=1.0)
-
-    if st.button("1:1.5と1:2を検証する", type="primary"):
-        with st.spinner("バックテストを計算しています..."):
-            trades_15 = run_backtest(usable_data, 1.5, backtest_stop_method, backtest_atr_multiplier, maximum_holding_bars, slippage_bps, cost_bps)
-            trades_20 = run_backtest(usable_data, 2.0, backtest_stop_method, backtest_atr_multiplier, maximum_holding_bars, slippage_bps, cost_bps)
-
-        summary_table = pd.DataFrame([summarize_backtest(trades_15, 1.5), summarize_backtest(trades_20, 2.0)])
-        st.subheader("並列比較")
-        display_df_safe(
-            summary_table.style.format({"勝率": "{:.1f}%", "平均R": "{:.3f}", "中央値R": "{:.3f}", "利益係数": "{:.3f}", "累積R": "{:.3f}", "最大ドローダウンR": "{:.3f}"}, na_rep="-"),
-            use_container_width=True
-        )
-
-        st.markdown("### 累積Rの推移")
-        st.plotly_chart(
-            create_equity_chart(trades_15, trades_20),
-            use_container_width=True,
-            config={"displayModeBar": True, "scrollZoom": True}
-        )
-
-        detail_tab_15, detail_tab_20 = st.tabs(["RR 1:1.5 売買履歴", "RR 1:2 売買履歴"])
-        with detail_tab_15:
-            if trades_15.empty:
-                st.info("条件に該当する取引がありません。")
-            else:
-                display_df_safe(trades_15.style.format({"エントリー": "{:,.4f}", "損切り": "{:,.4f}", "利確目標": "{:,.4f}", "決済価格": "{:,.4f}", "結果R": "{:.3f}", "シグナル点数": "{:.1f}"}), use_container_width=True)
-                st.download_button("1:1.5の履歴をCSV保存", data=trades_15.to_csv(index=False).encode("utf-8-sig"), file_name=f"{display_symbol}_RR_1_5.csv", mime="text/csv")
-        with detail_tab_20:
-            if trades_20.empty:
-                st.info("条件に該当する取引がありません。")
-            else:
-                display_df_safe(trades_20.style.format({"エントリー": "{:,.4f}", "損切り": "{:,.4f}", "利確目標": "{:,.4f}", "決済価格": "{:,.4f}", "結果R": "{:.3f}", "シグナル点数": "{:.1f}"}), use_container_width=True)
-                st.download_button("1:2の履歴をCSV保存", data=trades_20.to_csv(index=False).encode("utf-8-sig"), file_name=f"{display_symbol}_RR_2_0.csv", mime="text/csv")
-
-with tab4:
-    st.subheader("このプログラムの判断順序と学習ポイント")
-    st.markdown("""
-### 1．大局トレンドと反発足の確認（改善版ルール）
-- **200日移動平均線以上**: 長期上昇トレンドの銘柄に絞ります。
-- **反発足による急拡大の例外許可**: バンドが急拡大している最中でも、**安値での強力な買い支え（下ヒゲ35%以上や反転陽線）**が出ている場合は、大底からの自律反発局面としてエントリーを許可します。
-- **だらだら下げの回避**: 強い反発足がないまま下落しているバンドウォークは厳格に見送ります。
-
-### 2．足型トリガー
-- **下限接近**: BB下限（-2σ）付近への到達。
-- **下ヒゲの目安（重要）**:
-  - **35%以上**: 下ヒゲが目立ち、安値圏で押し戻す買い支えが確認できた状態。
-  - **50%以上**: 半分以上が下ヒゲの「ピンバー」。強力な反発シグナル。
-
-### 3．1R（リスク）と目標の定義
-- `1R = エントリー価格 − 当初損切り価格`
-- 1:1.5目標 = エントリー価格 ＋ 1R × 1.5
-- 1:2.0目標 = エントリー価格 ＋ 1R × 2.0
-    """)
-    st.error("重要：含み損を理由に当初の損切り位置を下げることは禁止です。ルールを一貫して守ることが期待値検証の本質です。")
-
-st.markdown("---")
-st.caption("本アプリは一般的な投資知識の学習と過去データ検証を目的としています。個別の売買判断を示すものではありません。")
+        render_lightweight_chart_safe(usable_data, display_symbol, unique_key=f"
