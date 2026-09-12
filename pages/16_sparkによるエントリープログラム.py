@@ -328,17 +328,17 @@ def build_signals(
         if not row["Pass_SMA200"]:
             warnings.append("・200日線未満：大局下降トレンド（戻り売りに注意）")
         if not row["Pass_No_Expansion"]:
-            warnings.append(f"・バンド急拡大中(+{row['BB_Width_Change_5']:.1f}%)：下落トレンド警戒")
+            warnings.append(f"・バンド急拡大中(+{row['BB_Width_Change_5']:.1f}% / 基準: +30%以下)：下落トレンド警戒")
         if not row["Pass_Middle_Slope"]:
             warnings.append("・20日線が急降下中：頭を抑えられやすい局面")
 
         if row["Near_Lower"]:
             if row["Strong_Lower_Shadow"]:
-                positives.append(f"・下限タッチ＋長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}%)：安値での買い支え確認")
+                positives.append(f"・下限タッチ＋長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)：安値での買い支え確認")
             elif row["Rebound"]:
                 positives.append("・下限からの反発足を確認")
             else:
-                warnings.append(f"・下限接近中だが下ヒゲ不足({row['Lower_Shadow_Pct']:.1f}%)＆反発未確認")
+                warnings.append(f"・下限接近中だが下ヒゲ不足({row['Lower_Shadow_Pct']:.1f}% / 基準: 35%以上)＆反発未確認")
 
         if row["Entry_Signal"]:
             positives.append("★【条件成立】必須条件合格＋反発確認。1R損切りを設定して検証可")
@@ -360,15 +360,21 @@ def build_signals(
 # =========================================================
 # 最新判定
 # =========================================================
-def evaluate_latest(data: pd.DataFrame, score_threshold: float, mid_period: int):
+def evaluate_latest(data: pd.DataFrame, score_threshold: float, mid_period: int, is_japan: bool = False):
     latest = data.iloc[-1]
+    unit = "円" if is_japan else "ドル"
+
+    diff_lower = latest["Close"] - latest["BB_Lower"]
+    pct_lower = (latest["Close"] / latest["BB_Lower"] - 1) * 100
+
+    vol_pct = (latest["Volume"] / latest["Volume_MA20"] * 100) if latest["Volume_MA20"] > 0 else 100
 
     if not bool(latest["Mandatory_Filter_Pass"]):
         status = "必須条件不合格（見送り）"
         message = "200日線未満、またはバンド急拡大中（下落トレンド警戒）のため、見送り推奨の局面です。"
     elif not bool(latest["Near_Lower"]):
         status = "待機"
-        message = "現在の足はBB下限付近ではありません。条件の再成立を待つ状態です。"
+        message = f"現在の足はBB下限付近ではありません（下限まであと {diff_lower:,.2f}{unit} / {pct_lower:+.1f}%）。条件の再成立を待つ状態です。"
     elif not bool(latest["Rebound"]):
         status = "落下中・監視"
         message = "BB下限付近ですが、反発が確認できていません。下落バンドウォークに注意します。"
@@ -380,16 +386,16 @@ def evaluate_latest(data: pd.DataFrame, score_threshold: float, mid_period: int)
         message = "必須フィルター・下限反発・スコア基準をすべて満たしました。1Rの損切り価格を決めて検証します。"
 
     conditions = {
-        "【必須】200日線以上（大局上昇）": bool(latest["Pass_SMA200"]),
-        "【必須】バンド急拡大なし（ウォーク回避）": bool(latest["Pass_No_Expansion"]),
-        "【必須】20日線が急降下していない": bool(latest["Pass_Middle_Slope"]),
-        "BB下限付近に到達": bool(latest["Near_Lower"]),
+        "【必須】200日線以上（大局上昇トレンド）": bool(latest["Pass_SMA200"]),
+        f"【必須】バンド急拡大なし（基準: +30%以下 / 実績: {latest['BB_Width_Change_5']:+.1f}%）": bool(latest["Pass_No_Expansion"]),
+        f"【必須】20日線が急降下していない（基準: -2.5%以上 / 実績: {latest['BB_Middle_Slope_5']:+.1f}%）": bool(latest["Pass_Middle_Slope"]),
+        f"BB下限接近（下限まであと {diff_lower:,.2f}{unit} / {pct_lower:+.1f}%）": bool(latest["Near_Lower"]),
         "反発を確認（陽線・回復・下ヒゲ）": bool(latest["Rebound"]),
-        f"下ヒゲが長い（35%以上で合格 / 現在: {latest['Lower_Shadow_Pct']:.1f}%）": bool(latest["Strong_Lower_Shadow"]),
-        "RSIが改善": bool(latest["RSI_Improving"]),
-        "MACDが改善": bool(latest["MACD_Improving"]),
+        f"下ヒゲが長い（基準: 35%以上で合格 / 実績: {latest['Lower_Shadow_Pct']:.1f}%）": bool(latest["Strong_Lower_Shadow"]),
+        f"RSIが改善（基準: 25以上＆上昇 / 実績: {latest['RSI']:.1f}）": bool(latest["RSI_Improving"]),
+        "MACDが改善（ヒストグラム好転）": bool(latest["MACD_Improving"]),
         f"{mid_period}日線以上(中期)": bool(latest["Above_Mid_SMA"]),
-        "出来高が20日平均以上": bool(latest["Volume_Expansion"]),
+        f"出来高が20日平均以上（基準: 100%以上 / 実績: {vol_pct:.0f}%）": bool(latest["Volume_Expansion"]),
         "BB下限が急落していない": bool(latest["Lower_Not_Collapsing"]),
     }
 
@@ -612,9 +618,11 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
 # =========================================================
 # 学習用インタラクティブローソク足チャート（50日線＆ホバー解説付き）
 # =========================================================
-def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: str, mid_period: int):
-    """ローソク足にカーソルを乗せると、その日ごとの必須条件合否や注意点が表示されるPlotlyチャート"""
+def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: str, mid_period: int, is_japan: bool = False):
     plot_df = chart_data.tail(150).copy()
+    unit = "円" if is_japan else "ドル"
+
+    diff_lower_arr = plot_df["Close"] - plot_df["BB_Lower"]
 
     custom_data = np.stack(
         [
@@ -622,6 +630,7 @@ def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: 
             np.where(plot_df["Mandatory_Filter_Pass"], "合格 ✅", "不合格 ❌"),
             plot_df["Lower_Shadow_Pct"].round(1),
             plot_df["BB_Width_Pct"].round(1),
+            diff_lower_arr.round(2),
             plot_df["Learning_Tip"],
         ],
         axis=-1,
@@ -629,15 +638,15 @@ def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: 
 
     hover_candlestick = (
         "<b>%{x|%Y-%m-%d}</b><br>"
-        "始値: %{open:,.2f}  高値: %{high:,.2f}<br>"
-        "安値: %{low:,.2f}  終値: %{close:,.2f}<br>"
+        f"終値: %{{close:,.2f}}{unit}  高値: %{{high:,.2f}}{unit}<br>"
+        f"安値: %{{low:,.2f}}{unit}  始値: %{{open:,.2f}}{unit}<br>"
         "------------------------------------<br>"
         "<b>スコア:</b> %{customdata[0]} / 11 点<br>"
         "<b>必須フィルター:</b> %{customdata[1]}<br>"
-        "<b>下ヒゲ比率:</b> %{customdata[2]}% (35%以上で買い支え)<br>"
-        "<b>バンド幅:</b> %{customdata[3]}%<br>"
+        "<b>下ヒゲ比率:</b> %{customdata[2]}% (基準: 35%以上)<br>"
+        f"<b>BB下限まで:</b> あと %{{customdata[4]:,.2f}}{unit}<br>"
         "------------------------------------<br>"
-        "%{customdata[4]}<extra></extra>"
+        "%{customdata[5]}<extra></extra>"
     )
 
     fig = go.Figure()
@@ -688,7 +697,7 @@ def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: 
     fig.update_layout(
         title=f"📊 【{display_symbol}】学習用チャート（ローソク足にカーソルを乗せると分析解説が出ます）",
         xaxis_title="日付",
-        yaxis_title="株価",
+        yaxis_title=f"株価 ({unit})",
         xaxis_rangeslider_visible=False,
         template="plotly_white",
         height=580,
@@ -797,6 +806,8 @@ else:
     selected_option = st.sidebar.selectbox("日本株リスト", target_stocks, index=0)
 
 display_symbol, provider_symbol = normalize_symbol(selected_option)
+is_japan_stock = display_symbol.endswith(".T")
+currency_unit = "円" if is_japan_stock else "ドル"
 
 st.sidebar.markdown("---")
 period = st.sidebar.selectbox("データ期間", ["1y", "2y", "5y", "10y"], index=2)
@@ -839,7 +850,7 @@ data_load_container.empty()
 
 latest = usable_data.iloc[-1]
 previous = usable_data.iloc[-2]
-status, status_message, conditions = evaluate_latest(usable_data, float(score_threshold), int(mid_trend_period))
+status, status_message, conditions = evaluate_latest(usable_data, float(score_threshold), int(mid_trend_period), is_japan_stock)
 
 
 # =========================================================
@@ -850,10 +861,12 @@ latest_date = usable_data.index[-1]
 st.caption(f"データ最終日：{latest_date:%Y-%m-%d} （外部データのためリアルタイムとは限りません）")
 
 distance_from_lower = (latest["Close"] / latest["BB_Lower"] - 1) * 100
+diff_lower_val = latest["Close"] - latest["BB_Lower"]
+
 metric1, metric2, metric3, metric4, metric5 = st.columns(5)
-metric1.metric("終値", f"{latest['Close']:,.2f}", f"{latest['Close'] - previous['Close']:,.2f}")
-metric2.metric("BB下限", f"{latest['BB_Lower']:,.2f}")
-metric3.metric("下限からの距離", f"{distance_from_lower:.2f}%")
+metric1.metric("終値", f"{latest['Close']:,.2f} {currency_unit}", f"{latest['Close'] - previous['Close']:,.2f}")
+metric2.metric("BB下限", f"{latest['BB_Lower']:,.2f} {currency_unit}")
+metric3.metric("下限まで", f"{diff_lower_val:,.2f} {currency_unit}", f"{distance_from_lower:+.2f}%")
 metric4.metric("RSI", f"{latest['RSI']:.1f}")
 metric5.metric("条件点数", f"{latest['Score']:.1f}/11")
 
@@ -881,48 +894,98 @@ with tab1:
     # 学習用インタラクティブチャートの表示（50日線付き）
     st.markdown("---")
     st.markdown("### 💡 学習用インタラクティブチャート（50日線＆ホバー解説付き）")
-    st.caption("ローソク足にカーソルを乗せると、必須条件合否・下ヒゲ比率・バンド幅・注意点が表示されます。紫色の線が50日移動平均線、オレンジ色が200日移動平均線です。")
+    st.caption(f"ローソク足にマウスを乗せると詳細ポップアップが出ます。紫色の線＝{mid_trend_period}日移動平均線、オレンジ色の線＝200日移動平均線です。")
     st.plotly_chart(
-        create_learning_candlestick_chart(usable_data, display_symbol, int(mid_trend_period)),
+        create_learning_candlestick_chart(usable_data, display_symbol, int(mid_trend_period), is_japan_stock),
         use_container_width=True,
     )
 
     # グラフの下で任意の日付の詳細カルテを確認できる機能
     st.markdown("### 📋 日付を選んで詳細を確認（学習カルテ）")
-    st.caption("直近150日の中から気になる日（シグナル点灯日や急落日など）を選ぶと、その日の詳細な診断カルテをじっくり確認できます。")
+    st.caption("直近150日の中から気になる日（シグナル点灯日や急落日など）を選ぶと、合否基準と実績・下限までの価格差が詳しく表示されます。")
 
     recent_date_list = [d.strftime("%Y-%m-%d") for d in usable_data.index[-150:][::-1]]
     selected_date_str = st.selectbox("分析したい日付を選択してください", options=recent_date_list, index=0)
 
     target_bar = usable_data.loc[usable_data.index.strftime("%Y-%m-%d") == selected_date_str].iloc[0]
 
+    close_p = target_bar["Close"]
+    lower_p = target_bar["BB_Lower"]
+    diff_lower = close_p - lower_p
+    pct_lower = (close_p / lower_p - 1) * 100
+
+    sma200_p = target_bar.get("SMA200", np.nan)
+    diff_200 = close_p - sma200_p
+    pct_200 = (close_p / sma200_p - 1) * 100
+
+    mid_sma_p = target_bar.get("Mid_SMA", np.nan)
+    diff_mid = close_p - mid_sma_p
+    pct_mid = (close_p / mid_sma_p - 1) * 100
+
+    vol_p = target_bar.get("Volume", 0)
+    vol_ma_p = target_bar.get("Volume_MA20", 1)
+    vol_pct = (vol_p / vol_ma_p * 100) if vol_ma_p > 0 else 100
+
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("選択日終値", f"{target_bar['Close']:,.2f}")
+    k1.metric("選択日終値", f"{close_p:,.2f} {currency_unit}")
     k2.metric("条件スコア", f"{target_bar['Score']:.1f} / 11点")
     k3.metric("必須フィルター", "合格 ✅" if target_bar["Mandatory_Filter_Pass"] else "不合格 ❌")
-    k4.metric("下ヒゲ比率", f"{target_bar['Lower_Shadow_Pct']:.1f}%")
-    k5.metric("バンド幅変化率(5日)", f"{target_bar['BB_Width_Change_5']:+.1f}%")
+    k4.metric("下ヒゲ比率", f"{target_bar['Lower_Shadow_Pct']:.1f}%", "基準: 35%以上")
+    k5.metric("BB下限まで", f"{diff_lower:,.2f} {currency_unit}", f"{pct_lower:+.1f}%")
 
-    # 3つの診断カードに整理して表示
     card_col1, card_col2, card_col3 = st.columns(3)
 
     with card_col1:
         st.markdown("#### ① 必須フィルター診断")
-        st.write(f"- **200日線以上**: {'✅ 合格' if target_bar['Pass_SMA200'] else '❌ 不合格'}（株価: {target_bar['Close']:,.2f} vs 200日線: {target_bar['SMA200']:,.2f}）")
-        st.write(f"- **バンド急拡大なし**: {'✅ 合格' if target_bar['Pass_No_Expansion'] else '❌ 急拡大中'}（直近5日変化: {target_bar['BB_Width_Change_5']:+.1f}%）")
-        st.write(f"- **20日線の傾き**: {'✅ 良好' if target_bar['Pass_Middle_Slope'] else '❌ 急降下中'}（直近5日変化: {target_bar['BB_Middle_Slope_5']:+.1f}%）")
+        st.write(
+            f"- **200日線以上（大局上昇）**: {'✅ 合格' if target_bar['Pass_SMA200'] else '❌ 不合格'}\n"
+            f"  - 基準: 200日線以上\n"
+            f"  - 実績: 株価 {close_p:,.2f}{currency_unit} vs 200日線 {sma200_p:,.2f}{currency_unit}（{diff_200:+,.2f}{currency_unit} / {pct_200:+.1f}%）"
+        )
+        st.write(
+            f"- **バンド急拡大なし（ウォーク回避）**: {'✅ 合格' if target_bar['Pass_No_Expansion'] else '❌ 急拡大中'}\n"
+            f"  - 基準: 5日変化が **+30%以下**\n"
+            f"  - 実績: **{target_bar['BB_Width_Change_5']:+.1f}%**"
+        )
+        st.write(
+            f"- **20日線の傾き（急降下回避）**: {'✅ 良好' if target_bar['Pass_Middle_Slope'] else '❌ 急降下中'}\n"
+            f"  - 基準: 5日変化が **-2.5%以上**\n"
+            f"  - 実績: **{target_bar['BB_Middle_Slope_5']:+.1f}%**"
+        )
 
     with card_col2:
         st.markdown("#### ② 足型と反発の診断")
-        st.write(f"- **BB下限接近**: {'✅ 到達' if target_bar['Near_Lower'] else '❌ 未到達'}（下限価格: {target_bar['BB_Lower']:,.2f}）")
-        st.write(f"- **下ヒゲの長さ**: {'✅ 35%以上（買い支えあり）' if target_bar['Strong_Lower_Shadow'] else '❌ 35%未満（買い支え弱い）'}（実績: {target_bar['Lower_Shadow_Pct']:.1f}%）")
-        st.write(f"- **反発確認**: {'✅ 確認済' if target_bar['Rebound'] else '❌ 未確認'}")
+        st.write(
+            f"- **BB下限接近**: {'✅ 到達' if target_bar['Near_Lower'] else '❌ 未到達'}\n"
+            f"  - 基準: 下限+{tolerance_pct}%以内\n"
+            f"  - 実績: 下限まであと **{diff_lower:,.2f} {currency_unit}**（{pct_lower:+.1f}%）"
+        )
+        st.write(
+            f"- **下ヒゲの長さ（買い支え）**: {'✅ 合格' if target_bar['Strong_Lower_Shadow'] else '❌ 不足（弱い）'}\n"
+            f"  - 基準: **35%以上**で合格（50%以上で強力ピンバー）\n"
+            f"  - 実績: **{target_bar['Lower_Shadow_Pct']:.1f}%**"
+        )
+        st.write(
+            f"- **反発確認（反転足型）**: {'✅ 確認済' if target_bar['Rebound'] else '❌ 未確認'}\n"
+            f"  - 基準: 下ヒゲ35%以上 または 陽線反転 または 下限回復"
+        )
 
     with card_col3:
         st.markdown("#### ③ 補助指標とトレンド")
-        st.write(f"- **50日線以上**: {'✅ 以上' if target_bar['Above_Mid_SMA'] else '❌ 未満'}（50日線: {target_bar['Mid_SMA']:,.2f}）")
-        st.write(f"- **RSI**: {target_bar['RSI']:.1f}（{'改善中 ✅' if target_bar['RSI_Improving'] else '悪化中 ❌'}）")
-        st.write(f"- **出来高**: {'20日平均以上 ✅' if target_bar['Volume_Expansion'] else '平均未満 ❌'}")
+        st.write(
+            f"- **{mid_trend_period}日線以上（中期トレンド）**: {'✅ 以上' if target_bar['Above_Mid_SMA'] else '❌ 未満'}\n"
+            f"  - 実績: {mid_trend_period}日線 {mid_sma_p:,.2f}{currency_unit} まで {diff_mid:+,.2f}{currency_unit}（{pct_mid:+.1f}%）"
+        )
+        st.write(
+            f"- **RSI（モメンタム）**: {'✅ 改善中' if target_bar['RSI_Improving'] else '❌ 悪化中'}\n"
+            f"  - 基準: 25以上 かつ 前日より上昇\n"
+            f"  - 実績: **{target_bar['RSI']:.1f}**"
+        )
+        st.write(
+            f"- **出来高（買い需要）**: {'✅ 増加' if target_bar['Volume_Expansion'] else '❌ 平均未満'}\n"
+            f"  - 基準: 20日平均以上（**100%以上**）\n"
+            f"  - 実績: 20日平均比 **{vol_pct:.0f}%**"
+        )
 
     st.markdown("#### 💡 その日の分析アドバイス")
     clean_tip = target_bar["Learning_Tip"].replace("<b>", "**").replace("</b>", "**").replace("<br>", "\n\n")
@@ -1045,7 +1108,7 @@ with tab3:
             config={"displayModeBar": True, "scrollZoom": True}
         )
 
-        detail_tab_15, detail_tab_20 = st.tabs(["RR 1:1.5 売戻履歴", "RR 1:2 売買履歴"])
+        detail_tab_15, detail_tab_20 = st.tabs(["RR 1:1.5 売買履歴", "RR 1:2 売買履歴"])
         with detail_tab_15:
             if trades_15.empty:
                 st.info("条件に該当する取引がありません。")
@@ -1068,8 +1131,8 @@ with tab4:
     st.markdown("""
 ### 1．【必須】大局トレンドと危険回避（ゲートキーパー）
 - **200日移動平均線以上**: 長期上昇トレンドの銘柄に絞ります（200日線未満は反発しても戻り売りに押されやすいため見送り）。
-- **バンド急拡大の回避**: バンドが急拡大（エクスパンション）している最中の下落は、下限に沿って落ち続ける「バンドウォーク」の可能性が高いためエントリーを禁止します。
-- **20日線の傾き**: 20日SMAが急降下している時は、反発してもすぐに頭を抑えられるため警戒します。
+- **バンド急拡大の回避**: バンドが急拡大（エクスパンション）している最中の下落は、下限に沿って落ち続ける「バンドウォーク」の可能性が高いためエントリーを禁止します（基準: 直近5日で+30%以下）。
+- **20日線の傾き**: 20日SMAが急降下している時は、反発してもすぐに頭を抑えられるため警戒します（基準: 直近5日で-2.5%以上）。
 
 ### 2．下限への接近と反発確認（足型トリガー）
 - **下限接近**: BB下限（-2σ）付近への到達。
