@@ -30,7 +30,7 @@ st.set_page_config(
 
 st.title("🛡️ ボリンジャーバンド反発確認・R管理＆学習システム")
 st.caption(
-    "BB下限に触れただけではエントリーせず、大局トレンド・バンド状態・反発足型（下ヒゲ等）を確認し、"
+    "BB下限のタッチや接触中ではエントリーせず、終値でバンド内への完全復帰（陽線）を確認してから入る、"
     "1R損切り・リスクリワード・保有管理・過去検証・学習用解説を一体化した実践学習用アプリです。"
 )
 
@@ -216,7 +216,7 @@ def add_indicators(
     return data
 
 # =========================================================
-# シグナル判定（下落中陰線排除＆ツータッチ反発陽線対応版）
+# シグナル判定（下限タッチ排除・バンド内完全復帰必須版）
 # =========================================================
 def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: float) -> pd.DataFrame:
     result = data.copy()
@@ -224,67 +224,72 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     # 1. 必須フィルター①：大局200日線以上
     result["Pass_SMA200"] = result["SMA200"].isna() | (result["Close"] >= result["SMA200"])
 
-    # 2. 下限接近・タッチ判定（当日、または直近2営業日以内に下限タッチ・接近があったか確認）
-    lower_limit = result["BB_Lower"] * (1 + tolerance_pct / 100)
-    result["Near_Lower_Today"] = result["Low"] <= lower_limit
-    result["Near_Lower_1"] = result["Low"].shift(1) <= (result["BB_Lower"].shift(1) * (1 + tolerance_pct / 100))
-    result["Near_Lower_2"] = result["Low"].shift(2) <= (result["BB_Lower"].shift(2) * (1 + tolerance_pct / 100))
-    # 直近3日間（当日〜前々日）で下限を試した後の反発を許容
-    result["Near_Lower"] = result["Near_Lower_Today"] | result["Near_Lower_1"] | result["Near_Lower_2"]
+    # 2. 事前条件：BB下限（-2σ）へのタッチ・下抜けテストの実績（直近3営業日以内）
+    result["Touched_Lower_Today"] = result["Low"] <= result["BB_Lower"]
+    result["Touched_Lower_1"] = result["Low"].shift(1) <= result["BB_Lower"].shift(1)
+    result["Touched_Lower_2"] = result["Low"].shift(2) <= result["BB_Lower"].shift(2)
+    result["Touched_Lower_Recent"] = result["Touched_Lower_Today"] | result["Touched_Lower_1"] | result["Touched_Lower_2"]
 
-    # 3. 陽線判定・下ヒゲ判定
+    # 3. 【最重要改善】終値でバンド内への完全復帰判定
+    # 下限のタッチや接触中（Close <= BB_Lower）は絶対にエントリーさせない！
+    # 終値がBB下限より明確に上にあること（完全復帰）
+    result["Closed_Inside_Band"] = result["Close"] > result["BB_Lower"]
+
+    # 4. 陽線判定・下ヒゲ判定
     result["Is_Bullish"] = result["Close"] > result["Open"]
     result["Strong_Lower_Shadow"] = result["Lower_Shadow_Pct"] >= 35.0
 
-    # 【反発判定の厳格化・確実化】
-    # パターン①：下限タッチからの当日陽線回復
+    # 反発パターンの判定
+    # パターン①：同日下限タッチからバンド内へ力強く復帰した陽線
     result["Today_Recovery"] = (
-        (result["Low"] <= result["BB_Lower"])
-        & (result["Close"] >= result["BB_Lower"])
+        result["Touched_Lower_Today"]
+        & result["Closed_Inside_Band"]
         & result["Is_Bullish"]
     )
-    # パターン②：明確な陽線反転（前日終値を上回る陽線：ツータッチ反発の確定足）
+    # パターン②：前日までに下限テストを終え、当日に陽線で力強く反転（ツータッチ反発の確定足）
     result["Today_Bullish"] = (
-        result["Is_Bullish"]
+        result["Touched_Lower_Recent"]
+        & result["Closed_Inside_Band"]
+        & result["Is_Bullish"]
         & (result["Close"] > result["Close"].shift(1))
     )
-    # パターン③：強力な下ヒゲピンバー（下ヒゲ40%以上かつ始値近辺まで戻している足）
+    # パターン③：強力な下ヒゲピンバー（下ヒゲ40%以上かつ終値がバンド内に復帰）
     result["Today_Hammer"] = (
-        (result["Lower_Shadow_Pct"] >= 40.0)
+        result["Touched_Lower_Recent"]
+        & result["Closed_Inside_Band"]
+        & (result["Lower_Shadow_Pct"] >= 40.0)
         & (result["Close"] >= result["Open"] * 0.997)
     )
 
-    # 反発判定：上記のいずれかを満たすこと
     result["Rebound"] = result["Today_Recovery"] | result["Today_Bullish"] | result["Today_Hammer"]
 
-    # 4. 【下落進行・バンドウォーク排除フィルター】
-    # ① 終値がBB下限を下回る陰線（典型的な下落バンドウォーク）
-    cond_bw1 = (result["Close"] < result["BB_Lower"]) & (result["Close"] <= result["Open"])
-    # ② 当日の足が「陰線（売り優勢）」である（落下中のナイフ：陰線での買いは完全排除！）
-    cond_bw2 = result["Near_Lower_Today"] & (result["Close"] <= result["Open"]) & (~result["Today_Hammer"])
-    # ③ 下限を大幅に割り込んでいる足（下限の2%未満）
-    cond_bw3 = result["Close"] < (result["BB_Lower"] * 0.98)
+    # 5. 【下落進行・下限接触中ブロック（完全排除）】
+    # ① 終値がBB下限以下（ライン上または外側に接触中：完全復帰していない足）
+    cond_touching_or_below = result["Close"] <= result["BB_Lower"]
+    # ② 当日の足が陰線（売り優勢：下落途中での安値追いを排除）
+    cond_bearish = result["Close"] <= result["Open"]
 
-    result["Is_Bandwalk_Drop"] = cond_bw1 | cond_bw2 | cond_bw3
+    result["Is_Bandwalk_Drop"] = cond_touching_or_below | cond_bearish
 
-    # バンド急拡大の評価（通常40%以下、または強い陽線反発・強い下ヒゲがあれば許容）
+    # バンド急拡大の評価（40%以下、または強い陽線反転があれば許容）
     result["No_Expansion_Raw"] = result["BB_Width_Change_5"].isna() | (result["BB_Width_Change_5"] <= 40.0)
-    # 直前の下落でバンドが広がっていても、当日に強い反発陽線（Today_Bullish）が出た場合は合格とする！
     result["Pass_No_Expansion"] = result["No_Expansion_Raw"] | result["Today_Bullish"] | (result["Strong_Lower_Shadow"] & result["Is_Bullish"])
 
     # 20日線の傾き（急降下の抑制）
     result["Pass_Middle_Slope"] = result["BB_Middle_Slope_5"].isna() | (result["BB_Middle_Slope_5"] >= -3.5)
 
     # 必須足切り条件：
-    # 200日線以上 ＋ バンド拡大抑制（陽線反転なら免除） ＋ 【下落中・陰線でないこと】 ＋ 【当日は陽線または強力ピンバー】
+    # 200日線以上 ＋ バンド拡大抑制（陽線反転なら免除） ＋ 【下限接触・陰線でないこと】 ＋ 【終値でバンド内に完全復帰】 ＋ 【当日は陽線または強力ピンバー】
     result["Mandatory_Filter_Pass"] = (
         result["Pass_SMA200"]
         & result["Pass_No_Expansion"]
         & (~result["Is_Bandwalk_Drop"])
+        & result["Closed_Inside_Band"]
         & (result["Is_Bullish"] | result["Today_Hammer"])
     )
 
-    # 5. 補助条件スコアリング
+    # 6. 補助条件スコアリング
+    result["Near_Lower"] = result["Touched_Lower_Recent"]
     result["RSI_Improving"] = (result["RSI"] > result["RSI"].shift(1)) & (result["RSI"] >= 25)
     result["MACD_Improving"] = result["MACD_Hist"] > result["MACD_Hist"].shift(1)
     result["Above_Mid_SMA"] = result["Mid_SMA"].notna() & (result["Close"] >= result["Mid_SMA"])
@@ -293,7 +298,7 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     result["Lower_Not_Collapsing"] = result["Lower_Slope_3"] > -3.0
 
     result["Score"] = (
-        result["Near_Lower"].astype(float) * 2.0
+        result["Closed_Inside_Band"].astype(float) * 2.0
         + result["Rebound"].astype(float) * 2.0
         + result["Today_Bullish"].astype(float) * 1.5
         + result["Strong_Lower_Shadow"].astype(float) * 1.0
@@ -305,53 +310,49 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
         + result["Lower_Not_Collapsing"].astype(float) * 1.0
     )
 
-    # 6. エントリーシグナル
+    # 7. エントリーシグナル
     result["Entry_Signal"] = (
         result["Mandatory_Filter_Pass"]
-        & result["Near_Lower"]
+        & result["Touched_Lower_Recent"]
         & result["Rebound"]
         & (result["Score"] >= score_threshold)
     )
 
-    # 7. アドバイス文生成
+    # 8. アドバイス文生成
     def generate_learning_tip(row):
         warnings = []
         positives = []
 
-        if row["Is_Bandwalk_Drop"]:
-            warnings.append("・【危険】下落進行・バンドウォーク中（下限接近での陰線）：安値追いエントリー厳禁")
+        if not row["Closed_Inside_Band"]:
+            warnings.append("・【未復帰】終値がBB下限以下（ライン上または外側）：バンド内への完全復帰までエントリー禁止")
         elif not row["Is_Bullish"] and not row["Today_Hammer"]:
-            warnings.append("・【注意】当日の足が陰線（売り優勢）：陽線による反発確認までエントリー見送り")
+            warnings.append("・【注意】当日の足が陰線（売り優勢）：陽線による反発確認まで見送り")
 
         if not row["Pass_SMA200"]:
             warnings.append("・200日線未満：大局下降トレンド（戻り売りに注意）")
 
+        if row["Closed_Inside_Band"] and row["Is_Bullish"]:
+            positives.append("・【好材料】終値でBB下限の内側へ完全復帰を確認（買い支えの確定）")
+
         if row["Today_Bullish"]:
-            positives.append("・【好材料】前日終値を上回る力強い陽線反転（買い支え・反発の確定足）")
+            positives.append("・【好材料】前日終値を上回る力強い陽線反転（押し目完了サイン）")
 
         if not row["No_Expansion_Raw"]:
             w_chg = row["BB_Width_Change_5"]
             w_str = f"{w_chg:+.1f}%" if pd.notna(w_chg) else "拡大中"
             if row["Today_Bullish"] or (row["Strong_Lower_Shadow"] and row["Is_Bullish"]):
-                positives.append(f"・バンド拡大中({w_str})ですが、当日の力強い反発足（陽線反転/下ヒゲ）を確認")
+                positives.append(f"・バンド拡大中({w_str})ですが、当日のバンド内復帰陽線を確認")
             else:
                 warnings.append(f"・バンド急拡大中({w_str})：下落継続に警戒")
 
-        if row["Near_Lower"]:
-            if row["Today_Bullish"]:
-                positives.append("・BB下限圏からの力強い陽線切り返しを確認")
-            elif row["Strong_Lower_Shadow"] and row["Is_Bullish"]:
-                positives.append(f"・下限タッチ＋長い下ヒゲ陽線({row['Lower_Shadow_Pct']:.1f}%)：強力な買い支え")
-            elif row["Rebound"]:
-                positives.append("・当日の下限からの陽線切り返しを確認")
+        if row["Touched_Lower_Recent"]:
+            if row["Closed_Inside_Band"] and row["Is_Bullish"]:
+                positives.append("・直近のBB下限テストから、終値でバンド内へ力強く切り返し")
             else:
-                warnings.append("・下限接近中だが当日の反発陽線が未確認")
-        else:
-            if row["Strong_Lower_Shadow"]:
-                positives.append(f"・長い下ヒゲ({row['Lower_Shadow_Pct']:.1f}%)：買い支えの兆候")
+                warnings.append("・下限テスト後ですがバンド内への復帰が未完了")
 
         if row["Entry_Signal"]:
-            positives.append("★【条件成立】下落否定＋当日の陽線反発確認。1R損切りを設定して検証可")
+            positives.append("★【条件成立】下限タッチ・接触を脱し、終値でバンド内への完全復帰（陽線）を確認。1R損切りを設定して検証可")
 
         text_parts = []
         if warnings:
@@ -359,7 +360,7 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
         if positives:
             text_parts.append("<b>【✅ 好材料】</b><br>" + "<br>".join(positives))
         if not text_parts:
-            text_parts.append("巡航レンジ中。下限接近や反発サインを待つ局面です。")
+            text_parts.append("巡航レンジ中。下限テストおよびバンド内完全復帰を待つ局面です。")
 
         return "<br>".join(text_parts)
 
@@ -380,38 +381,39 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
     vol_ma_val = float(bar.get("Volume_MA20", 1))
     vol_pct = (vol_val / vol_ma_val * 100) if vol_ma_val > 0 else 100.0
 
-    if bool(bar.get("Is_Bandwalk_Drop", False)):
-        status = "下落進行中・バンドウォーク警戒（見送り）"
-        message = "下限付近で陰線となっており、下落が進行しているためエントリー厳禁の見送り局面です。"
+    if not bool(bar.get("Closed_Inside_Band", False)):
+        status = "下限接触・下抜け中（完全復帰未確認）"
+        message = f"終値がBB下限以下（下限まであと {diff_lower:,.2f}{unit}）にあり、バンド内への完全復帰が確認できていません。タッチ中のエントリーは禁止です。"
     elif not bool(bar.get("Is_Bullish", False)) and not bool(bar.get("Today_Hammer", False)):
         status = "陰線（反発未確認・見送り）"
-        message = "当日の足が陰線（売り優勢）です。陽線による反発が確認できるまで見送ります。"
+        message = "当日の足が陰線（売り優勢）です。買い手が押し戻して陽線でバンド内へ復帰するまで見送ります。"
     elif not bool(bar["Mandatory_Filter_Pass"]):
         status = "必須条件不合格（見送り）"
         message = "200日線未満、または反発足のないバンド急拡大中のため、見送り推奨の局面です。"
-    elif not bool(bar["Near_Lower"]):
+    elif not bool(bar["Touched_Lower_Recent"]):
         status = "待機"
-        message = f"直近でBB下限付近ではありません（下限まであと {diff_lower:,.2f}{unit} / {pct_lower:+.1f}%）。条件の再成立を待つ状態です。"
+        message = f"直近3日以内にBB下限テスト（タッチ）がありません。下限到達からの復帰を待つ状態です。"
     elif not bool(bar["Rebound"]):
         status = "落下中・監視"
-        message = "BB下限付近ですが、当日の反発陽線が確認できていません。下落バンドウォークに注意します。"
+        message = "下限付近ですが、当日の反発陽線が確認できていません。下落バンドウォークに注意します。"
     elif pd.isna(bar["Score"]) or bar["Score"] < score_threshold:
         status = "弱い反発"
-        message = "反発は確認されましたが、補助条件の点数が不足しています。"
+        message = "バンド内への復帰は確認されましたが、補助条件の点数が不足しています。"
     else:
-        status = "条件成立候補"
-        message = "必須フィルター・下限反発・スコア基準をすべて満たしました。1Rの損切り価格を決めて検証します。"
+        status = "条件成立候補（バンド内完全復帰）"
+        message = "BB下限テスト後、終値でバンド内への完全復帰（陽線）を確認しました。1R損切り価格を決めて検証します。"
 
     bb_width_str = f"{bar['BB_Width_Change_5']:+.1f}%" if pd.notna(bar.get("BB_Width_Change_5")) else "0.0%"
     bb_slope_str = f"{bar['BB_Middle_Slope_5']:+.1f}%" if pd.notna(bar.get("BB_Middle_Slope_5")) else "0.0%"
     lower_shadow_val = float(bar.get("Lower_Shadow_Pct", 0))
 
     conditions = {
-        "【必須】下落中・バンドウォークではない（下落陰線の否定）": not bool(bar.get("Is_Bandwalk_Drop", False)),
-        "【必須】当日の反発足を確認（陽線 または 強力な下ヒゲ）": bool(bar.get("Is_Bullish", False) or bar.get("Today_Hammer", False)),
+        f"【必須】終値でバンド内へ完全復帰（下限より上: +{diff_lower:,.2f}{unit} / タッチ中の買い禁止）": bool(bar.get("Closed_Inside_Band", False)),
+        "【必須】直近3日以内にBB下限テストあり（安値が下限以下）": bool(bar.get("Touched_Lower_Recent", False)),
+        "【必須】当日は陽線で引けている（買い圧力の確認）": bool(bar.get("Is_Bullish", False) or bar.get("Today_Hammer", False)),
+        "【必須】下落中・下限接触中ではない（下落陰線の完全否定）": not bool(bar.get("Is_Bandwalk_Drop", False)),
         "【必須】200日線以上（大局上昇トレンド）": bool(bar["Pass_SMA200"]),
         f"【必須】バンド穏やか または 強い陽線反転（実績: {bb_width_str}）": bool(bar["Pass_No_Expansion"]),
-        f"BB下限圏（直近3日以内に下限タッチ / 当日差: {diff_lower:,.2f}{unit}）": bool(bar["Near_Lower"]),
         "当日の反発を確認（陽線反転・下限回復）": bool(bar["Rebound"]),
         "前日比プラスの陽線反転（買い圧力の確定）": bool(bar.get("Today_Bullish", False)),
         f"下ヒゲが長い（基準: 35%以上で合格 / 実績: {lower_shadow_val:.1f}%）": bool(bar["Strong_Lower_Shadow"]),
@@ -630,9 +632,10 @@ def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: 
             "------------------------------------<br>"
             f"<b>判定スコア:</b> {row['Score']:.1f} / 11 点<br>"
             f"<b>必須フィルター:</b> {'合格 ✅' if row['Mandatory_Filter_Pass'] else '不合格 ❌'}<br>"
-            f"<b>当日の足:</b> {'陽線（買い優勢）' if row['Is_Bullish'] else '陰線（売り優勢・見送り）'}<br>"
+            f"<b>バンド内完全復帰:</b> {'復帰済み（下限より上） ✅' if row['Closed_Inside_Band'] else '下限接触・下抜け中 ❌'}<br>"
+            f"<b>当日の足型:</b> {'陽線（買い優勢）' if row['Is_Bullish'] else '陰線（売り優勢・見送り）'}<br>"
             f"<b>下ヒゲ比率:</b> {row['Lower_Shadow_Pct']:.1f}% (基準: 35%以上で合格)<br>"
-            f"<b>BB下限まで:</b> あと {diff_lower:,.2f}{unit}<br>"
+            f"<b>BB下限との差:</b> {diff_lower:+,.2f}{unit}<br>"
             "------------------------------------<br>"
             f"{row['Learning_Tip']}"
         )
@@ -901,13 +904,13 @@ with tab1:
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("終値", f"{close_val:,.2f} {currency_unit}")
     m2.metric("BB下限", f"{bb_lower_val:,.2f} {currency_unit}")
-    m3.metric("下限まで", f"{diff_lower_val:,.2f} {currency_unit}", f"{dist_lower_pct:+.2f}%")
+    m3.metric("BB下限との差", f"{diff_lower_val:+,.2f} {currency_unit}", "下限より上が完全復帰")
     m4.metric("当日の足型", "陽線（買い）" if target_bar["Is_Bullish"] else "陰線（売り）", "反発には陽線が必須")
     m5.metric("条件スコア", f"{target_bar['Score']:.1f} / 11点")
 
-    if status == "条件成立候補":
+    if "完全復帰" in status:
         st.success(f"判定（{target_date_str}）：{status}")
-    elif "バンドウォーク" in status or "不合格" in status or "陰線" in status or status in ["落下中・監視", "弱い反発"]:
+    elif "接触" in status or "不合格" in status or "陰線" in status or status in ["落下中・監視", "弱い反発"]:
         st.warning(f"判定（{target_date_str}）：{status}")
     else:
         st.info(f"判定（{target_date_str}）：{status}")
@@ -1017,7 +1020,7 @@ with tab2:
 
 with tab3:
     st.subheader("📈 過去データ検証（バックテスト）")
-    st.caption("過去の相場で「下落陰線排除＋ツータッチ反発陽線」の厳格ルールに従って取引した場合の統計パフォーマンスです。")
+    st.caption("過去の相場で「下限タッチ排除＋終値でのバンド内完全復帰（陽線）」の厳格ルールに従って取引した場合の統計パフォーマンスです。")
 
     bt_col1, bt_col2, bt_col3, bt_col4 = st.columns(4)
     with bt_col1:
@@ -1074,20 +1077,20 @@ with tab3:
 with tab4:
     st.subheader("📖 本システムの設計思想と実践ルール解説")
     st.markdown("""
-    ### 1. なぜ「BB下限タッチ」だけでは買ってはいけないのか？
-    * **バンドウォークの危険性**:
-      ボリンジャーバンドの -2σ に接触したからといって即座に逆張り買いを入れると、バンドが急拡大（エクスパンション）して下限に沿って急落し続ける「下落バンドウォーク」に巻き込まれるリスクがあります。
-    * **本システムの防護策**:
-      * **陰線での買いは完全禁止**: 当日の終値が始値以下の陰線（売り優勢）である日は、下限に触れていても絶対に買いシグナルを出しません。
-      * **下落突入足の完全ブロック**: 終値がBB下限を下回る陰線や、下限付近で売り込まれている足は無条件で見送りと判定します。
+    ### 1. なぜ「下限タッチ中」や「終値接触」ではエントリーしてはいけないのか？
+    * **バンドウォーク・下落継続の罠**:
+      安値がボリンジャーバンド下限（-2σ）にタッチした段階や、終値が下限ライン上にある段階では、まだ下落トレンドが止まった確証はありません。そのままバンドが外側に開き、下限に沿って急落し続けるリスクがあります。
+    * **本システムの鉄則（終値での完全復帰）**:
+      * **下限接触中のエントリー完全禁止**: 終値がBB下限以下（ライン上や下抜け中）にある足では、絶対に買いシグナルを出しません。
+      * **バンド内への完全復帰を確認**: 売り圧力を買い手が押し返し、**終値が明確にBB下限より上（バンド内側）へ戻り、かつ陽線で引けたこと** を確認して初めてエントリーを判定します。
 
     ---
 
     ### 2. 反発エントリーの必須確認事項
-    1. **下限テストと反発足型（ツータッチ反発対応）**:
-       * 前日までに下限（-2σ）近辺まで押し目を形成し、**当日の引け値が始値および前日終値を力強く上回る「陽線」** で反転が確定した足（または強力な下ヒゲピンバー）をエントリー対象とします。
+    1. **下限テスト後のバンド内完全復帰（陽線が必須）**:
+       * 直近（当日〜前々日）に安値で下限をテストした後、**当日の終値がBB下限を上回ってバンド内に復帰し、さらに始値より高い「陽線」** で引けていることをエントリーの必須条件とします。
     2. **大局トレンド（200日移動平均線）**:
-       * 200日SMAの上にある局面を対象とします。大局下落トレンドでの逆張りは避け、大局上昇トレンド中の「押し目買い」に限定します。
+       * 200日SMAの上にある局面を対象とします。長期下落相場での逆張りは避け、上昇トレンド中の健全な押し目完了足に絞り込みます。
     3. **バンド幅の安定性**:
        * バンド急拡大時は原則警戒しますが、当日に強力な反発陽線（買い優勢の確定足）が出ている場合は押し目完了とみなしてエントリーを許可します。
 
