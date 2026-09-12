@@ -638,15 +638,17 @@ def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: 
 
     hover_candlestick = (
         "<b>%{x|%Y-%m-%d}</b><br>"
-        f"終値: %{{close:,.2f}}{unit}  高値: %{{high:,.2f}}{unit}<br>"
-        f"安値: %{{low:,.2f}}{unit}  始値: %{{open:,.2f}}{unit}<br>"
+        f"終値: %{{close:,.2f}}{unit}  始値: %{{open:,.2f}}{unit}<br>"
+        f"高値: %{{high:,.2f}}{unit}  安値: %{{low:,.2f}}{unit}<br>"
         "------------------------------------<br>"
-        "<b>スコア:</b> %{customdata[0]} / 11 点<br>"
+        "<b>判定スコア:</b> %{customdata[0]} / 11 点<br>"
         "<b>必須フィルター:</b> %{customdata[1]}<br>"
-        "<b>下ヒゲ比率:</b> %{customdata[2]}% (基準: 35%以上)<br>"
+        "<b>下ヒゲ比率:</b> %{customdata[2]}% (基準: 35%以上で合格)<br>"
         f"<b>BB下限まで:</b> あと %{{customdata[4]:,.2f}}{unit}<br>"
         "------------------------------------<br>"
-        "%{customdata[5]}<extra></extra>"
+        "%{customdata[5]}<br>"
+        "------------------------------------<br>"
+        "<i>💡 クリックすると下のカルテがこの日に連動します</i><extra></extra>"
     )
 
     fig = go.Figure()
@@ -891,21 +893,56 @@ with tab1:
     condition_table = pd.DataFrame([{"確認項目": name, "結果": ("✅ 成立" if result else "❌ 未成立")} for name, result in conditions.items()])
     st.dataframe(condition_table, hide_index=True, use_container_width=True)
 
-    # 学習用インタラクティブチャートの表示（50日線付き）
+    # -----------------------------------------------------
+    # 学習用インタラクティブチャートの表示（クリック連動対応）
+    # -----------------------------------------------------
     st.markdown("---")
-    st.markdown("### 💡 学習用インタラクティブチャート（50日線＆ホバー解説付き）")
-    st.caption(f"ローソク足にマウスを乗せると詳細ポップアップが出ます。紫色の線＝{mid_trend_period}日移動平均線、オレンジ色の線＝200日移動平均線です。")
-    st.plotly_chart(
-        create_learning_candlestick_chart(usable_data, display_symbol, int(mid_trend_period), is_japan_stock),
-        use_container_width=True,
-    )
+    st.markdown("### 💡 学習用インタラクティブチャート（クリック連動＆50日線表示）")
+    st.caption(f"ローソク足にマウスを乗せると詳細が出ます。さらに**気になるローソク足を「カチッと1回クリック」すると、下の詳細カルテがその日の内容にパッと自動連動**します！")
 
-    # グラフの下で任意の日付の詳細カルテを確認できる機能
-    st.markdown("### 📋 日付を選んで詳細を確認（学習カルテ）")
-    st.caption("直近150日の中から気になる日（シグナル点灯日や急落日など）を選ぶと、合否基準と実績・下限までの価格差が詳しく表示されます。")
+    fig = create_learning_candlestick_chart(usable_data, display_symbol, int(mid_trend_period), is_japan_stock)
 
     recent_date_list = [d.strftime("%Y-%m-%d") for d in usable_data.index[-150:][::-1]]
-    selected_date_str = st.selectbox("分析したい日付を選択してください", options=recent_date_list, index=0)
+
+    # Plotlyのクリックイベントを取得
+    clicked_date = None
+    try:
+        chart_event = st.plotly_chart(
+            fig,
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode=["points"],
+        )
+        if chart_event and chart_event.get("selection", {}).get("points"):
+            raw_point_x = chart_event["selection"]["points"][0].get("x")
+            if raw_point_x:
+                clean_x = str(raw_point_x).split(" ")[0].split("T")[0]
+                if clean_x in recent_date_list:
+                    clicked_date = clean_x
+    except TypeError:
+        st.plotly_chart(fig, use_container_width=True)
+
+    if clicked_date:
+        st.session_state["selected_card_date"] = clicked_date
+
+    # -----------------------------------------------------
+    # グラフの下の詳細カルテ（クリックまたはセレクトボックス連動）
+    # -----------------------------------------------------
+    st.markdown("### 📋 選択した日の詳細カルテ（グラフと完全連動）")
+    st.caption("上のグラフのローソク足をクリックするか、下のセレクトボックスから日付を選ぶと、その日の合格基準と実績が詳しく展開されます。")
+
+    current_default_date = st.session_state.get("selected_card_date", recent_date_list[0])
+    if current_default_date not in recent_date_list:
+        current_default_date = recent_date_list[0]
+    default_idx = recent_date_list.index(current_default_date)
+
+    selected_date_str = st.selectbox(
+        "分析したい日付を選択（上のチャートをクリックしても自動で切り替わります）",
+        options=recent_date_list,
+        index=default_idx,
+        key="card_date_select_box"
+    )
+    st.session_state["selected_card_date"] = selected_date_str
 
     target_bar = usable_data.loc[usable_data.index.strftime("%Y-%m-%d") == selected_date_str].iloc[0]
 
@@ -1062,6 +1099,7 @@ with tab2:
 
         render_lightweight_chart_safe(
             usable_data, display_symbol, entry=planned_entry, stop=management_stop,
+            target            usable_data, display_symbol, entry=planned_entry, stop=management_stop,
             target_15=target_15, target_20=target_20, unique_key="tab2_chart"
         )
 
@@ -1122,41 +1160,4 @@ with tab3:
                 st.dataframe(trades_20.style.format({"エントリー": "{:,.4f}", "損切り": "{:,.4f}", "利確目標": "{:,.4f}", "決済価格": "{:,.4f}", "結果R": "{:.3f}", "シグナル点数": "{:.1f}"}), hide_index=True, use_container_width=True)
                 st.download_button("1:2の履歴をCSV保存", data=trades_20.to_csv(index=False).encode("utf-8-sig"), file_name=f"{display_symbol}_RR_2_0.csv", mime="text/csv")
 
-        st.info("この比較は、どちらが優れているかを決めるものではありません。取引回数、平均R、最大ドローダウン、ギャップ損切りの発生などを同じ条件で観察するためのものです。")
-    else:
-        st.info("設定を確認し、上の検証ボタンを押してください。")
-
-with tab4:
-    st.subheader("このプログラムの判断順序と学習ポイント")
-    st.markdown("""
-### 1．【必須】大局トレンドと危険回避（ゲートキーパー）
-- **200日移動平均線以上**: 長期上昇トレンドの銘柄に絞ります（200日線未満は反発しても戻り売りに押されやすいため見送り）。
-- **バンド急拡大の回避**: バンドが急拡大（エクスパンション）している最中の下落は、下限に沿って落ち続ける「バンドウォーク」の可能性が高いためエントリーを禁止します（基準: 直近5日で+30%以下）。
-- **20日線の傾き**: 20日SMAが急降下している時は、反発してもすぐに頭を抑えられるため警戒します（基準: 直近5日で-2.5%以上）。
-
-### 2．下限への接近と反発確認（足型トリガー）
-- **下限接近**: BB下限（-2σ）付近への到達。
-- **下ヒゲの目安（重要）**:
-  - **0〜20%**: 下ヒゲがほぼなく、買い支えが極めて弱い（安値引けに近い状態）。
-  - **20〜35%**: 通常のローソク足。
-  - **35%以上（本アプリの合格ライン）**: 下ヒゲが目立ち、安値圏で押し戻す買い（買い支え）が確認できた状態。
-  - **50%以上**: 半分以上が下ヒゲの「ピンバー（ハンマー・カラカサ）」。強烈な反転シグナル。
-
-### 3．補助条件のスコアリング
-RSIの改善、MACDの改善、50日移動平均線、出来高の増加、BB下限の傾きを総合評価（11点満点）します。
-
-### 4．1R（リスク）と目標の定義
-- `1R = エントリー価格 − 当初損切り価格`
-- 1:1.5目標 = エントリー価格 ＋ 1R × 1.5
-- 1:2.0目標 = エントリー価格 ＋ 1R × 2.0
-
-### 5．バックテストの現実的仕様
-- 終値確定後にシグナル判定 → 翌日の始値でエントリー
-- ギャップダウンは始値で損切り（不利な約定を反映）
-- ギャップアップは始値で利確（有利な約定を反映）
-- 同一足で損切りと利確の両方に触れた場合は「損切り」を優先
-    """)
-    st.error("重要：含み損を理由に当初の損切り位置を下げることは禁止です。ルールを一貫して守り、期待値を検証することが運用の本質です。")
-
-st.markdown("---")
-st.caption("本アプリは一般的な投資知識の学習と過去データ検証を目的としています。個別の売買判断を示すものではありません。")
+        st.info("この比較は、どちらが優れているかを決めるものではありません。取引回数、平均R、最大ドローダウン、ギャップ損切りの発生などを同じ条件で観察するためのものです。
