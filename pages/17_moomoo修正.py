@@ -106,10 +106,6 @@ def load_ticker_list() -> list[str]:
 
 # =========================================================
 # 銘柄コード変換
-#
-# 戻り値:
-#   provider_symbol: yfinanceへ渡すコード
-#   display_symbol : 画面表示用コード
 # =========================================================
 def normalize_symbol(symbol: str) -> tuple[str, str]:
     default_provider = "GOOG"
@@ -553,18 +549,14 @@ def generate_learning_tip(row: pd.Series) -> str:
 
     if warnings:
         parts.append(
-            "<b>【⚠️ 注意・見送り理由】</b>
-"
-            + "
-".join(warnings)
+            "<b>【⚠️ 注意・見送り理由】</b>\n"
+            + "\n".join(warnings)
         )
 
     if positives:
         parts.append(
-            "<b>【✅ 確認できた条件】</b>
-"
-            + "
-".join(positives)
+            "<b>【✅ 確認できた条件】</b>\n"
+            + "\n".join(positives)
         )
 
     if not parts:
@@ -572,8 +564,7 @@ def generate_learning_tip(row: pd.Series) -> str:
             "BB下限テストと、その後の陽線復帰を待つ状態です。"
         )
 
-    return "
-".join(parts)
+    return "\n".join(parts)
 
 
 # =========================================================
@@ -1041,15 +1032,6 @@ def calculate_stop_price(
 
 # =========================================================
 # バックテスト
-#
-# 仕様:
-# ・シグナル翌営業日の始値でエントリー
-# ・同一銘柄につき同時保有は1ポジション
-# ・保有中の追加シグナルは無視
-# ・同一足で損切りと利確に到達した場合は損切り優先
-# ・調整後OHLCを使用
-# ・価格ベース初期リスクを1Rとする
-# ・結果Rはスリッページと売買コスト控除後
 # =========================================================
 def run_backtest(
     data: pd.DataFrame,
@@ -1420,40 +1402,29 @@ def create_learning_candlestick_chart(
 
         if not learning_tip:
             learning_tip = generate_learning_tip(row)
-
+            
+        # Plotlyのホバーテキスト内で改行させるために <br> や \n を使用
         hover_texts.append(
-            f"<b>{index:%Y-%m-%d}</b>
-"
+            f"<b>{index:%Y-%m-%d}</b><br>"
             f"終値: {row['Close']:,.2f}{unit}　"
-            f"始値: {row['Open']:,.2f}{unit}
-"
+            f"始値: {row['Open']:,.2f}{unit}<br>"
             f"高値: {row['High']:,.2f}{unit}　"
-            f"安値: {row['Low']:,.2f}{unit}
-"
-            "------------------------------------
-"
+            f"安値: {row['Low']:,.2f}{unit}<br>"
+            "------------------------------------<br>"
             f"<b>判定スコア:</b> "
-            f"{row.get('Score', 0):.1f} / {MAX_SCORE:g}点
-"
+            f"{row.get('Score', 0):.1f} / {MAX_SCORE:g}点<br>"
             f"<b>指標計算:</b> "
-            f"{'完了 ✅' if row.get('Indicator_Ready', False) else '未完了 ❌'}
-"
+            f"{'完了 ✅' if row.get('Indicator_Ready', False) else '未完了 ❌'}<br>"
             f"<b>必須フィルター:</b> "
-            f"{'合格 ✅' if row.get('Mandatory_Filter_Pass', False) else '不合格 ❌'}
-"
+            f"{'合格 ✅' if row.get('Mandatory_Filter_Pass', False) else '不合格 ❌'}<br>"
             f"<b>BB内復帰:</b> "
-            f"{'確認済み ✅' if row.get('Closed_Inside_Band', False) else '未確認 ❌'}
-"
+            f"{'確認済み ✅' if row.get('Closed_Inside_Band', False) else '未確認 ❌'}<br>"
             f"<b>足型:</b> "
-            f"{'陽線' if row.get('Is_Bullish', False) else '陰線または同値'}
-"
+            f"{'陽線' if row.get('Is_Bullish', False) else '陰線または同値'}<br>"
             f"<b>下ヒゲ比率:</b> "
-            f"{row.get('Lower_Shadow_Pct', 0):.1f}%
-"
-            f"<b>BB下限との差:</b> {difference_text}
-"
-            "------------------------------------
-"
+            f"{row.get('Lower_Shadow_Pct', 0):.1f}%<br>"
+            f"<b>BB下限との差:</b> {difference_text}<br>"
+            "------------------------------------<br>"
             f"{learning_tip}"
         )
 
@@ -1733,6 +1704,7 @@ def render_lightweight_chart_safe(
             "Lightweight Chartsの描画に失敗しました。"
             "Plotlyチャートをご利用ください。"
         )
+
 # =========================================================
 # UI補助関数
 # =========================================================
@@ -1741,10 +1713,6 @@ def format_metric_value(
     decimals: int = 2,
     suffix: str = "",
 ) -> str:
-    """
-    st.metric用の安全な数値フォーマット。
-    NaN、inf、Noneを考慮する。
-    """
     numeric_value = pd.to_numeric(
         value,
         errors="coerce",
@@ -1766,9 +1734,6 @@ def format_price(
     value,
     is_japan: bool,
 ) -> str:
-    """
-    日本株と米国株で通貨表示を切り替える。
-    """
     numeric_value = pd.to_numeric(
         value,
         errors="coerce",
@@ -1787,9 +1752,6 @@ def status_message_box(
     status: str,
     message: str,
 ) -> None:
-    """
-    判定ステータスに応じて表示色を切り替える。
-    """
     success_statuses = {
         "条件成立候補",
     }
@@ -1812,9 +1774,6 @@ def status_message_box(
 def create_condition_table(
     conditions: dict,
 ) -> pd.DataFrame:
-    """
-    evaluate_target_bar()が返した条件辞書を表示用DataFrameへ変換する。
-    """
     rows = []
 
     for condition_name, passed in conditions.items():
@@ -1833,9 +1792,6 @@ def create_recent_signal_table(
     is_japan: bool,
     maximum_rows: int = 50,
 ) -> pd.DataFrame:
-    """
-    直近のエントリーシグナルを一覧化する。
-    """
     if signal_data is None or signal_data.empty:
         return pd.DataFrame()
 
@@ -1883,9 +1839,6 @@ def create_recent_signal_table(
 def prepare_trade_table(
     trades: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    バックテスト結果を画面表示向けに整形する。
-    """
     if trades is None or trades.empty:
         return pd.DataFrame()
 
@@ -1929,9 +1882,6 @@ def create_backtest_summary_table(
     summary_15: dict,
     summary_20: dict,
 ) -> pd.DataFrame:
-    """
-    2つのRR設定の結果を比較表にする。
-    """
     summary_frame = pd.DataFrame(
         [summary_15, summary_20]
     )
@@ -1955,9 +1905,6 @@ def create_backtest_summary_table(
 def dataframe_to_csv_bytes(
     data: pd.DataFrame,
 ) -> bytes:
-    """
-    Excelで文字化けしにくいUTF-8 BOM付きCSVを生成する。
-    """
     if data is None:
         data = pd.DataFrame()
 
@@ -2219,7 +2166,6 @@ def render_judgement_tab(
 
     target_bar = signal_data.loc[selected_date]
 
-    # 万一、重複インデックスでDataFrameになった場合は最後の行を利用
     if isinstance(target_bar, pd.DataFrame):
         target_bar = target_bar.iloc[-1]
 
@@ -2548,7 +2494,6 @@ def render_backtest_tab(
                     reward_r=2.0,
                 )
 
-                # 再描画時にも結果を保持
                 st.session_state["backtest_results"] = {
                     "symbol": display_symbol,
                     "settings": settings.copy(),
@@ -2960,18 +2905,3 @@ def main() -> None:
 # =========================================================
 if __name__ == "__main__":
     main()
-ファイル構成
-前回のコードと今回の追加部分を、1つのファイルにまとめます。
-
-project/
-├─ app.py
-└─ requirements.txt
-app.pyの構造は次の順番です。
-
-Pythonコード
-# 1. import
-# 2. 定数
-# 3. 前回提示した各種関数
-# 4. 今回提示したUI関数
-# 5. main()
-# 6. if __name__ == "__main__":
