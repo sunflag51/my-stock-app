@@ -807,8 +807,6 @@ status, status_message, conditions = evaluate_target_bar(
 # =========================================================
 tab1, tab2, tab3, tab4 = st.tabs(["① 条件判定・チャート・カルテ", "② 計画と保有管理", "③ 過去データ検証", "④ 使い方・注意点"])
 
-with tab1:["① 条件判定・チャート・カルテ", "② 計画と保有管理", "③ 過去データ検証", "④ 使い方・注意点"])
-
 with tab1:
     st.subheader(f"📊 {display_symbol} 条件判定・学習カルテ")
 
@@ -920,3 +918,133 @@ with tab2:
 
         stop_method_choice = st.selectbox(
             "損切り価格の決定方式",
+            ["ATR基準", "直近安値基準", "より安全な方（低い方）"],
+            index=0,
+        )
+        atr_mult_input = st.slider("ATR乗数（ボラティリティ余白）", min_value=1.0, max_value=3.0, value=1.5, step=0.1)
+
+    with col_plan2:
+        st.markdown("##### 2. 損切り・利確目標・適正株数")
+        calculated_stop = calculate_stop_price(
+            entry_price=current_entry_price,
+            signal_row=target_bar,
+            method=stop_method_choice,
+            atr_multiplier=atr_mult_input,
+        )
+
+        risk_per_share = current_entry_price - calculated_stop
+        if risk_per_share <= 0:
+            st.error("損切り価格がエントリー価格以上になっています。設定を見直してください。")
+        else:
+            suggested_shares = math.floor(max_loss_budget / risk_per_share)
+            if is_japan_stock:
+                suggested_lots = suggested_shares // 100
+                display_shares_note = f"{suggested_shares:,} 株 (単元株換算: 約 {suggested_lots} 単元)"
+            else:
+                display_shares_note = f"{suggested_shares:,} 株"
+
+            target_15 = current_entry_price + risk_per_share * 1.5
+            target_20 = current_entry_price + risk_per_share * 2.0
+            target_30 = current_entry_price + risk_per_share * 3.0
+
+            st.metric("損切り価格 (1R)", f"{calculated_stop:,.2f} {currency_unit}", f"-{risk_per_share:,.2f} {currency_unit} / 株")
+            st.metric("推奨エントリー株数", display_shares_note)
+
+            plan_summary = pd.DataFrame([
+                {"項目": "1株あたりリスク (1R)", "価格/金額": f"{risk_per_share:,.2f} {currency_unit}", "リスクリワード": "-1.0 R"},
+                {"項目": "利確目標 1 (手堅い)", "価格/金額": f"{target_15:,.2f} {currency_unit}", "リスクリワード": "+1.5 R"},
+                {"項目": "利確目標 2 (標準)", "価格/金額": f"{target_20:,.2f} {currency_unit}", "リスクリワード": "+2.0 R"},
+                {"項目": "利確目標 3 (伸長狙い)", "価格/金額": f"{target_30:,.2f} {currency_unit}", "リスクリワード": "+3.0 R"},
+            ])
+            display_df_safe(plan_summary)
+
+            st.success(
+                f"✅ **トレード計画の要約**: 株価 {current_entry_price:,.2f}{currency_unit} でエントリーした場合、"
+                f"{calculated_stop:,.2f}{currency_unit} で損切りを設定します。"
+                f"目標株価は +1.5R: {target_15:,.2f}{currency_unit} / +2.0R: {target_20:,.2f}{currency_unit} です。"
+            )
+
+with tab3:
+    st.subheader("📈 過去データ検証（バックテスト）")
+    st.caption("過去の相場で「下落バンドウォーク排除＋反発確認」のルールに従って取引した場合の統計パフォーマンスです。")
+
+    bt_col1, bt_col2, bt_col3, bt_col4 = st.columns(4)
+    with bt_col1:
+        bt_stop_method = st.selectbox("検証用 損切り方式", ["ATR基準", "直近安値基準", "より安全な方（低い方）"], index=0, key="bt_stop")
+    with bt_col2:
+        bt_atr_mult = st.number_input("検証用 ATR乗数", value=1.5, step=0.1, key="bt_atr")
+    with bt_col3:
+        bt_max_bars = st.number_input("最大保有本数（タイムアウト）", value=20, step=1, key="bt_bars")
+    with bt_col4:
+        bt_cost_bps = st.number_input("想定コスト＋スリッページ (bps)", value=10.0, step=5.0, key="bt_cost")
+
+    trades_15 = run_backtest(
+        data=usable_data,
+        reward_r=1.5,
+        stop_method=bt_stop_method,
+        atr_multiplier=bt_atr_mult,
+        maximum_holding_bars=int(bt_max_bars),
+        slippage_bps=float(bt_cost_bps) / 2,
+        cost_bps=float(bt_cost_bps) / 2,
+    )
+
+    trades_20 = run_backtest(
+        data=usable_data,
+        reward_r=2.0,
+        stop_method=bt_stop_method,
+        atr_multiplier=bt_atr_mult,
+        maximum_holding_bars=int(bt_max_bars),
+        slippage_bps=float(bt_cost_bps) / 2,
+        cost_bps=float(bt_cost_bps) / 2,
+    )
+
+    summary_15 = summarize_backtest(trades_15, 1.5)
+    summary_20 = summarize_backtest(trades_20, 2.0)
+    summary_df = pd.DataFrame([summary_15, summary_20])
+
+    st.markdown("##### 📊 バックテスト成績サマリー")
+    display_df_safe(summary_df)
+
+    st.markdown("##### 📈 累積R（損益曲線）推移")
+    equity_fig = create_equity_chart(trades_15, trades_20)
+    st.plotly_chart(equity_fig, use_container_width=True)
+
+    st.markdown("##### 📝 直近のトレード履歴（RR 1:2）")
+    if not trades_20.empty:
+        display_trades = trades_20.tail(15).copy()
+        display_trades["エントリー日"] = display_trades["エントリー日"].dt.strftime("%Y-%m-%d")
+        display_trades["決済日"] = display_trades["決済日"].dt.strftime("%Y-%m-%d")
+        display_trades["シグナル日"] = display_trades["シグナル日"].dt.strftime("%Y-%m-%d")
+        display_trades["結果R"] = display_trades["結果R"].map(lambda x: f"{x:+.2f} R")
+        display_df_safe(display_trades)
+    else:
+        st.info("過去検証期間内に条件を満たしたトレードはありませんでした。")
+
+with tab4:
+    st.subheader("📖 本システムの設計思想と実践ルール解説")
+    st.markdown("""
+    ### 1. なぜ「BB下限タッチ」だけでは買ってはいけないのか？
+    * **バンドウォークの危険性**:
+      ボリンジャーバンドの -2σ に接触したからといって即座に逆張り買いを入れると、バンドが急拡大（エクスパンション）して下限に沿って急落し続ける「下落バンドウォーク」に巻き込まれるリスクがあります。
+    * **本システムの防護策**:
+      終値がBB下限を下回る陰線（下落バンドウォーク突入足）が出ている局面では、**無条件で見送り（エントリー完全ブロック）**と判定します。
+
+    ---
+
+    ### 2. 反発エントリーの必須確認事項
+    1. **当日の反発足型**:
+       * 下限に触れた後に陽線で切り返している、または下ヒゲ比率が35%以上あるなど「買い支えの事実」を確認してからエントリーします。
+    2. **大局トレンド（200日移動平均線）**:
+       * 200日SMAの上にある局面を対象とします。大局下落トレンドでの逆張りは避け、大局上昇トレンド中の「押し目買い」に限定します。
+    3. **バンド幅の安定性**:
+       * バンド幅が急激に拡大していない（スクイーズまたは緩やかな推移）ことを確認します。
+
+    ---
+
+    ### 3. 「1R（リスク固定）」資金管理の重要性
+    * **1Rとは**: 1回の取引で「もし損切りになったらいくら失うか」という許容損失額を1単位（1R）と定義します。
+    * **株数の調整**:
+      エントリー価格と損切り価格の幅が広いときは株数を減らし、幅が狭いときは株数を増やすことで、**どの銘柄・どのトレードでも損切り時の損失額を一定（例: 資金の1%）に固定**します。
+    * **リスクリワード 1:1.5 〜 1:2**:
+      勝率が50%前後であっても、利益（+1.5R〜+2R）が損失（-1R）を上回る設計にすることで、長期的に安定した運用を目指します。
+    """)
