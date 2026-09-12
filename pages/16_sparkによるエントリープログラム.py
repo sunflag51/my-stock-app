@@ -790,3 +790,240 @@ if raw_data.empty:
 data = add_indicators(raw_data, int(bb_period), float(bb_sigma), int(atr_period), int(swing_lookback), int(mid_trend_period))
 data = build_signals(data, float(tolerance_pct), float(score_threshold))
 usable_data = data.dropna(subset=["BB_Lower", "ATR", "Recent_Low"]).copy()
+
+if len(usable_data) < 3:
+    st.error("計算に必要な価格データが不足しています。データ期間を長くしてください。")
+    st.stop()
+
+# 重複なしの日付一覧リスト（最新日が先頭）
+seen_dates = set()
+recent_date_list = []
+for d in usable_data.index[-150:][::-1]:
+    d_str = d.strftime("%Y-%m-%d")
+    if d_str not in seen_dates:
+        seen_dates.add(d_str)
+        recent_date_list.append(d_str)
+
+if not recent_date_list:
+    recent_date_list = [usable_data.index[-1].strftime("%Y-%m-%d")]
+
+
+# =========================================================
+# タブ表示
+# =========================================================
+tab1, tab2, tab3, tab4 = st.tabs(["① 条件判定・チャート・カルテ", "② 計画と保有管理", "③ 過去データ検証", "④ 使い方・注意点"])
+
+with tab1:
+    # -----------------------------------------------------
+    # 1. 分析対象日の選択（上の表示と下の詳細表示を完全一致させる司令塔）
+    # -----------------------------------------------------
+    st.subheader(f"📊 {display_symbol} 条件判定・学習カルテ")
+
+    date_col1, date_col2 = st.columns([1, 2])
+    with date_col1:
+        date_mode = st.radio(
+            "分析する日付の基準",
+            ["最新日（直近足）", "過去の日付を指定"],
+            horizontal=True,
+            key=f"date_mode_{display_symbol}",
+        )
+    with date_col2:
+        if date_mode == "最新日（直近足）":
+            target_date_str = recent_date_list[0]
+            st.info(f"📅 現在 **最新日【{target_date_str}】** のデータと合否判定を表示しています。")
+        else:
+            default_idx = recent_date_list.index("2026-09-08") if "2026-09-08" in recent_date_list else 0
+            target_date_str = st.selectbox(
+                "分析したい日付を選択してください",
+                options=recent_date_list,
+                index=default_idx,
+                key=f"target_date_select_{display_symbol}",
+            )
+            st.info(f"📅 現在 過去の **【{target_date_str}】** のデータと合否判定を表示しています。")
+
+    # 対象の足（target_bar）を取得（上の表示も下のカルテも全てここから参照）
+    matched_bars = usable_data.loc[usable_data.index.strftime("%Y-%m-%d") == target_date_str]
+    if not matched_bars.empty:
+        target_bar = matched_bars.iloc[-1]
+    else:
+        target_bar = usable_data.iloc[-1]
+
+    # 対象日に対するステータスと11項目の合否判定を計算
+    status, status_message, conditions = evaluate_target_bar(
+        target_bar, float(score_threshold), int(mid_trend_period), is_japan_stock
+    )
+
+    # -----------------------------------------------------
+    # 2. 上の表示（メトリクス ＆ 条件成立判定テーブル）
+    # -----------------------------------------------------
+    close_val = float(target_bar["Close"])
+    bb_lower_val = float(target_bar["BB_Lower"])
+    diff_lower_val = close_val - bb_lower_val
+    dist_lower_pct = (close_val / bb_lower_val - 1) * 100 if bb_lower_val > 0 else 0.0
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("終値", f"{close_val:,.2f} {currency_unit}")
+    m2.metric("BB下限", f"{bb_lower_val:,.2f} {currency_unit}")
+    m3.metric("下限まで", f"{diff_lower_val:,.2f} {currency_unit}", f"{dist_lower_pct:+.2f}%")
+    m4.metric("下ヒゲ比率", f"{target_bar['Lower_Shadow_Pct']:.1f}%", "合格基準: 35%以上")
+    m5.metric("条件スコア", f"{target_bar['Score']:.1f} / 11点")
+
+    if status == "条件成立候補":
+        st.success(f"判定（{target_date_str}）：{status}")
+    elif "不合格" in status or status in ["落下中・監視", "弱い反発"]:
+        st.warning(f"判定（{target_date_str}）：{status}")
+    else:
+        st.info(f"判定（{target_date_str}）：{status}")
+
+    st.write(status_message)
+    st.progress(min(max(float(target_bar["Score"]) / 11, 0.0), 1.0))
+
+    st.markdown("#### 【上の表示】11項目の合否確認テーブル")
+    condition_table = pd.DataFrame([
+        {"確認項目": name, f"判定（{target_date_str}）": ("✅ 成立・合格" if result else "❌ 未成立・不合格")}
+        for name, result in conditions.items()
+    ])
+    st.dataframe(condition_table, hide_index=True, use_container_width=True)
+
+    # -----------------------------------------------------
+    # 3. チャート表示（Plotly と TradingView風 の切り替え）
+    # -----------------------------------------------------
+    st.markdown("---")
+    chart_view = st.radio(
+        "📈 表示するチャートの種類を選択してください",
+        ["📊 インタラクティブ学習チャート（Plotly：ホバー解説・50日線・200日線）", "📈 TradingView風チャート（Lightweight Charts：サクサク拡大縮小）"],
+        horizontal=True,
+        key=f"chart_choice_{display_symbol}",
+    )
+
+    if "Plotly" in chart_view:
+        fig = create_learning_candlestick_chart(usable_data, display_symbol, int(mid_trend_period), is_japan_stock)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.caption("マウスのホイールで拡大縮小、ドラッグで時間軸の移動が可能です。")
+        render_lightweight_chart_safe(usable_data, display_symbol, unique_key=f"main_lw_{display_symbol}")
+
+    # -----------------------------------------------------
+    # 4. 下の詳細表示（選択した日の詳細カルテ）
+    # -----------------------------------------------------
+    st.markdown(f"### 📋 【下の詳細表示】{target_date_str} の診断カルテ")
+    st.caption("上の判定テーブルと同じ日のデータに基づき、詳しい基準値と実績の内訳を表示しています。")
+
+    # 200日線と中期線の安全取得
+    sma200_val = target_bar.get("SMA200", np.nan)
+    if pd.notna(sma200_val) and sma200_val > 0:
+        diff_200 = close_val - sma200_val
+        pct_200 = (close_val / sma200_val - 1) * 100
+        sma200_desc = f"株価 {close_val:,.2f}{currency_unit} vs 200日線 {sma200_val:,.2f}{currency_unit}（{diff_200:+,.2f}{currency_unit} / {pct_200:+.1f}%）"
+    else:
+        sma200_desc = "200日線未算出（データ期間不足）"
+
+    mid_sma_val = target_bar.get("Mid_SMA", np.nan)
+    if pd.notna(mid_sma_val) and mid_sma_val > 0:
+        diff_mid = close_val - mid_sma_val
+        pct_mid = (close_val / mid_sma_val - 1) * 100
+        mid_sma_desc = f"{mid_trend_period}日線 {mid_sma_val:,.2f}{currency_unit} まで {diff_mid:+,.2f}{currency_unit}（{pct_mid:+.1f}%）"
+    else:
+        mid_sma_desc = f"{mid_trend_period}日線未算出"
+
+    bb_chg_val = target_bar.get("BB_Width_Change_5", np.nan)
+    bb_chg_str = f"{bb_chg_val:+.1f}%" if pd.notna(bb_chg_val) else "0.0%（変化なし）"
+
+    bb_slope_val = target_bar.get("BB_Middle_Slope_5", np.nan)
+    bb_slope_str = f"{bb_slope_val:+.1f}%" if pd.notna(bb_slope_val) else "0.0%（平坦）"
+
+    vol_p = float(target_bar.get("Volume", 0))
+    vol_ma_p = float(target_bar.get("Volume_MA20", 1))
+    vol_pct = (vol_p / vol_ma_p * 100) if vol_ma_p > 0 else 100.0
+
+    card_col1, card_col2, card_col3 = st.columns(3)
+
+    with card_col1:
+        st.markdown("#### ① 必須フィルター診断")
+        st.write(
+            f"- **200日線以上（大局上昇）**: {'✅ 合格' if target_bar['Pass_SMA200'] else '❌ 不合格'}\n"
+            f"  - 基準: 200日線以上\n"
+            f"  - 実績: {sma200_desc}"
+        )
+        st.write(
+            f"- **バンド急拡大なし（ウォーク回避）**: {'✅ 合格' if target_bar['Pass_No_Expansion'] else '❌ 急拡大中'}\n"
+            f"  - 基準: 5日変化が **+30%以下**\n"
+            f"  - 実績: **{bb_chg_str}**"
+        )
+        st.write(
+            f"- **20日線の傾き（急降下回避）**: {'✅ 良好' if target_bar['Pass_Middle_Slope'] else '❌ 急降下中'}\n"
+            f"  - 基準: 5日変化が **-2.5%以上**\n"
+            f"  - 実績: **{bb_slope_str}**"
+        )
+
+    with card_col2:
+        st.markdown("#### ② 足型と反発の診断")
+        st.write(
+            f"- **BB下限接近**: {'✅ 到達' if target_bar['Near_Lower'] else '❌ 未到達'}\n"
+            f"  - 基準: 下限+{tolerance_pct}%以内\n"
+            f"  - 実績: 下限まであと **{diff_lower_val:,.2f} {currency_unit}**（{dist_lower_pct:+.1f}%）"
+        )
+        # 上の表示と同じ判定（Strong_Lower_Shadow）を明確に表示
+        st.write(
+            f"- **下ヒゲの長さ（買い支え）**: {'✅ 合格' if target_bar['Strong_Lower_Shadow'] else '❌ 不足（弱い）'}\n"
+            f"  - 基準: **35%以上**で合格（50%以上で強力ピンバー）\n"
+            f"  - 実績: **{target_bar['Lower_Shadow_Pct']:.1f}%**"
+        )
+        st.write(
+            f"- **反発確認（反転足型）**: {'✅ 確認済' if target_bar['Rebound'] else '❌ 未確認'}\n"
+            f"  - 基準: 下ヒゲ35%以上 または 陽線反転 または 下限回復"
+        )
+
+    with card_col3:
+        st.markdown("#### ③ 補助指標とトレンド")
+        st.write(
+            f"- **{mid_trend_period}日線以上（中期トレンド）**: {'✅ 以上' if target_bar['Above_Mid_SMA'] else '❌ 未満'}\n"
+            f"  - 実績: {mid_sma_desc}"
+        )
+        st.write(
+            f"- **RSI（モメンタム）**: {'✅ 改善中' if target_bar['RSI_Improving'] else '❌ 悪化中'}\n"
+            f"  - 基準: 25以上 かつ 前日より上昇\n"
+            f"  - 実績: **{target_bar['RSI']:.1f}**"
+        )
+        st.write(
+            f"- **出来高（買い需要）**: {'✅ 増加' if target_bar['Volume_Expansion'] else '❌ 平均未満'}\n"
+            f"  - 基準: 20日平均以上（**100%以上**）\n"
+            f"  - 実績: 20日平均比 **{vol_pct:.0f}%**"
+        )
+
+    st.markdown("#### 💡 その日の分析アドバイス")
+    raw_tip = str(target_bar.get("Learning_Tip", ""))
+    clean_tip = raw_tip.replace("<b>", "**").replace("</b>", "**").replace("<br>", "\n\n")
+    st.info(clean_tip)
+
+with tab2:
+    st.subheader("損切り・利確価格の計画")
+    latest = usable_data.iloc[-1]
+
+    plan_col1, plan_col2, plan_col3 = st.columns(3)
+    with plan_col1:
+        planned_entry = st.number_input("予定または実際のエントリー価格", value=float(round(latest["Close"], 4)), step=0.1)
+    with plan_col2:
+        stop_method_plan = st.selectbox("損切り計算方法", ["ATR基準", "直近安値基準", "ATRと直近安値の遠い方"], key="plan_stop_method")
+    with plan_col3:
+        atr_multiplier_plan = st.number_input("ATR倍率", value=1.5, step=0.1, key="plan_atr")
+
+    if stop_method_plan == "手動入力":
+        default_manual_stop = max(0.0001, planned_entry - float(latest["ATR"]) * 1.5)
+        stop_price_plan = st.number_input("当初の損切り価格", value=float(round(default_manual_stop, 4)), step=0.1)
+    else:
+        stop_price_plan = calculate_stop_price(planned_entry, latest, stop_method_plan, atr_multiplier_plan)
+        st.write(f"自動計算された損切り価格：**{stop_price_plan:,.4f}**")
+
+    initial_risk = planned_entry - stop_price_plan
+    if initial_risk <= 0:
+        st.error("ロング計画では、損切り価格をエントリー価格より低くしてください。")
+    else:
+        target_15 = planned_entry + initial_risk * 1.5
+        target_20 = planned_entry + initial_risk * 2.0
+        stop_distance_pct = (initial_risk / planned_entry) * 100
+
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("1Rの価格差", f"{initial_risk:,.4f}")
+        p2.metric("損切り幅", f"{stop_distance_pct:.2f}%")
+        p3.metric("1:
