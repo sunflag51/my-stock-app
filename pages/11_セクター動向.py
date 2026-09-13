@@ -1,17 +1,5 @@
-# ============================================================
-# app.py
-# 米国株セクター分析ダッシュボード
-#
-# 主な機能
-# 1. 選択銘柄の価格チャート
-# 2. セクター・業種の判定
-# 3. GOOG.US、 GOOGL.US 、ISRG.USの予備分類
-# 4. 米国11セクターの騰落率ヒートマップ（スマホ対応版）
-# 5. セクター相対強度・モメンタム移動図
-# ============================================================
-
 import re
-from datetime import datetime
+from html import escape
 
 import numpy as np
 import pandas as pd
@@ -20,1562 +8,1663 @@ import streamlit as st
 import yfinance as yf
 
 
-# ============================================================
+# =========================================================
 # Streamlit基本設定
-# ============================================================
+# =========================================================
 
 st.set_page_config(
-    page_title="米国株セクター分析",
+    page_title="米国セクター・ローテーション分析",
     page_icon="📊",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 
-# ============================================================
-# CSS
-# ============================================================
+# =========================================================
+# 定数
+# =========================================================
 
-st.markdown(
-    """
-    <style>
-    .block-container {
-        padding-top: 1.5rem;
-        padding-bottom: 2rem;
-    }
+BENCHMARK = "SPY"
 
-    div[data-testid="stMetric"] {
-        background-color: rgba(128, 128, 128, 0.08);
-        border: 1px solid rgba(128, 128, 128, 0.20);
-        padding: 12px;
-        border-radius: 10px;
-    }
+SECTOR_ETFS = {
+    "XLC": "コミュニケーション・サービス",
+    "XLY": "一般消費財",
+    "XLP": "生活必需品",
+    "XLE": "エネルギー",
+    "XLF": "金融",
+    "XLV": "ヘルスケア",
+    "XLI": "資本財",
+    "XLB": "素材",
+    "XLRE": "不動産",
+    "XLK": "情報技術",
+    "XLU": "公益事業",
+}
 
-    .small-note {
-        font-size: 0.85rem;
-        color: #777777;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
+SECTOR_SHORT_NAMES = {
+    "XLC": "通信",
+    "XLY": "一般消費財",
+    "XLP": "生活必需品",
+    "XLE": "エネルギー",
+    "XLF": "金融",
+    "XLV": "ヘルスケア",
+    "XLI": "資本財",
+    "XLB": "素材",
+    "XLRE": "不動産",
+    "XLK": "情報技術",
+    "XLU": "公益事業",
+}
 
+RRG_STATUS_INFO = {
+    "主導": {
+        "color": "#16A34A",
+        "background": "rgba(22,163,74,0.09)",
+        "short": "市場平均より相対的に強く、勢いも上向いています。",
+        "beginner": (
+            "ベンチマークより相対的に強く、その優位性も拡大している状態です。"
+            "ただし、実際の価格が必ず上昇しているとは限らず、"
+            "上昇後の過熱状態である可能性にも注意が必要です。"
+        ),
+    },
+    "鈍化": {
+        "color": "#F59E0B",
+        "background": "rgba(245,158,11,0.10)",
+        "short": "相対的には強いものの、勢いが弱くなっています。",
+        "beginner": (
+            "まだベンチマークより相対的に強い位置ですが、"
+            "これまでの優位性が縮小し始めています。"
+            "一時的な調整か、主導力低下の初期かを確認する段階です。"
+        ),
+    },
+    "劣後": {
+        "color": "#DC2626",
+        "background": "rgba(220,38,38,0.08)",
+        "short": "市場平均より相対的に弱く、勢いも低下しています。",
+        "beginner": (
+            "ベンチマークを相対的に下回り、その差も悪化している状態です。"
+            "左下にあるという理由だけで反発が近いとは判断せず、"
+            "矢印が上向きへ転換するかを観察することが重要です。"
+        ),
+    },
+    "改善": {
+        "color": "#2563EB",
+        "background": "rgba(37,99,235,0.09)",
+        "short": "まだ相対的には弱いものの、勢いが改善しています。",
+        "beginner": (
+            "現時点ではベンチマークより相対的に弱いものの、"
+            "その差が縮小している状態です。"
+            "主導へ移行する可能性を観察する段階ですが、"
+            "途中で失速して劣後へ戻ることもあります。"
+        ),
+    },
+}
 
-# ============================================================
-# 米国11セクターETF
-# ============================================================
+YFINANCE_SECTOR_TO_ETF = {
+    "Communication Services": "XLC",
+    "Consumer Cyclical": "XLY",
+    "Consumer Defensive": "XLP",
+    "Energy": "XLE",
+    "Financial Services": "XLF",
+    "Healthcare": "XLV",
+    "Industrials": "XLI",
+    "Basic Materials": "XLB",
+    "Real Estate": "XLRE",
+    "Technology": "XLK",
+    "Utilities": "XLU",
+}
 
-US_SECTOR_ETFS = {
-    "XLC.US": {
-        "yahoo": "XLC",
-        "sector_en": "Communication Services",
-        "sector_ja": "コミュニケーション・サービス"
-    },
-    "XLY.US": {
-        "yahoo": "XLY",
-        "sector_en": "Consumer Discretionary",
-        "sector_ja": "一般消費財"
-    },
-    "XLP.US": {
-        "yahoo": "XLP",
-        "sector_en": "Consumer Staples",
-        "sector_ja": "生活必需品"
-    },
-    "XLE.US": {
-        "yahoo": "XLE",
-        "sector_en": "Energy",
-        "sector_ja": "エネルギー"
-    },
-    "XLF.US": {
-        "yahoo": "XLF",
-        "sector_en": "Financials",
-        "sector_ja": "金融"
-    },
-    "XLV.US": {
-        "yahoo": "XLV",
-        "sector_en": "Health Care",
-        "sector_ja": "ヘルスケア"
-    },
-    "XLI.US": {
-        "yahoo": "XLI",
-        "sector_en": "Industrials",
-        "sector_ja": "資本財・産業"
-    },
-    "XLB.US": {
-        "yahoo": "XLB",
-        "sector_en": "Materials",
-        "sector_ja": "素材"
-    },
-    "XLRE.US": {
-        "yahoo": "XLRE",
-        "sector_en": "Real Estate",
-        "sector_ja": "不動産"
-    },
-    "XLK.US": {
-        "yahoo": "XLK",
-        "sector_en": "Information Technology",
-        "sector_ja": "情報技術"
-    },
-    "XLU.US": {
-        "yahoo": "XLU",
-        "sector_en": "Utilities",
-        "sector_ja": "公益事業"
-    }
+# 情報取得が失敗した場合にも判定できる代表的な銘柄
+# 必要に応じて追加できます。
+SYMBOL_SECTOR_OVERRIDES = {
+    "GOOG": "XLC",
+    "GOOGL": "XLC",
+    "META": "XLC",
+    "NFLX": "XLC",
+    "DIS": "XLC",
+    "T": "XLC",
+    "VZ": "XLC",
+
+    "AMZN": "XLY",
+    "TSLA": "XLY",
+    "HD": "XLY",
+    "MCD": "XLY",
+    "NKE": "XLY",
+    "SBUX": "XLY",
+
+    "PG": "XLP",
+    "KO": "XLP",
+    "PEP": "XLP",
+    "WMT": "XLP",
+    "COST": "XLP",
+    "PM": "XLP",
+
+    "XOM": "XLE",
+    "CVX": "XLE",
+    "COP": "XLE",
+    "SLB": "XLE",
+
+    "JPM": "XLF",
+    "BAC": "XLF",
+    "WFC": "XLF",
+    "GS": "XLF",
+    "MS": "XLF",
+    "V": "XLF",
+    "MA": "XLF",
+
+    "LLY": "XLV",
+    "UNH": "XLV",
+    "JNJ": "XLV",
+    "ABBV": "XLV",
+    "MRK": "XLV",
+    "PFE": "XLV",
+    "ISRG": "XLV",
+
+    "GE": "XLI",
+    "CAT": "XLI",
+    "BA": "XLI",
+    "HON": "XLI",
+    "UPS": "XLI",
+    "RTX": "XLI",
+
+    "LIN": "XLB",
+    "APD": "XLB",
+    "SHW": "XLB",
+    "FCX": "XLB",
+
+    "PLD": "XLRE",
+    "AMT": "XLRE",
+    "EQIX": "XLRE",
+    "SPG": "XLRE",
+
+    "AAPL": "XLK",
+    "MSFT": "XLK",
+    "NVDA": "XLK",
+    "AVGO": "XLK",
+    "ORCL": "XLK",
+    "CRM": "XLK",
+    "AMD": "XLK",
+    "INTC": "XLK",
+
+    "NEE": "XLU",
+    "SO": "XLU",
+    "DUK": "XLU",
+    "D": "XLU",
 }
 
 
-# ============================================================
-# Yahoo Financeで情報を取得できない場合の予備分類
-# ============================================================
-
-KNOWN_US_STOCK_SECTORS = {
-    "GOOG": {
-        "sector": "Communication Services",
-        "industry": "Internet Content & Information",
-        "reference_code": "XLC.US"
-    },
-    "GOOGL": {
-        "sector": "Communication Services",
-        "industry": "Internet Content & Information",
-        "reference_code": "XLC.US"
-    },
-    "ISRG": {
-        "sector": "Healthcare",
-        "industry": "Medical Instruments & Supplies",
-        "reference_code": "XLV.US"
-    }
-}
-
-
-# ============================================================
+# =========================================================
 # 共通関数
-# ============================================================
+# =========================================================
 
-def safe_float(value):
-    """数値へ安全に変換します。"""
-    try:
-        result = float(value)
-
-        if np.isnan(result) or np.isinf(result):
-            return None
-
-        return result
-
-    except (TypeError, ValueError):
-        return None
-
-
-def format_price(value):
-    """価格表示用。"""
-    number = safe_float(value)
-
-    if number is None:
-        return "取得不可"
-
-    return f"{number:,.2f}"
-
-
-def format_percent(value):
-    """騰落率表示用。"""
-    number = safe_float(value)
-
-    if number is None:
-        return "取得不可"
-
-    return f"{number:+.2f}%"
-
-
-def normalize_sector_text(value):
+def display_us_code(symbol):
     """
-    セクター名の表記差を吸収します。
-
-    例：
-    Health Care → healthcare
-    Communication Services → communicationservices
+    画面表示用に米国市場サフィックスを付けます。
     """
-    if value is None:
-        return ""
+    symbol = str(symbol).strip().upper()
 
-    text = str(value).strip().lower()
-    text = text.replace("&", "and")
-    text = re.sub(r"[\s/_\-\.,]+", "", text)
+    if symbol.endswith(".US"):
+        return symbol
 
-    return text
+    return f"{symbol}.US"
 
 
-def normalize_us_ticker(ticker_symbol):
+def normalize_yfinance_symbol(symbol):
     """
-    GOOG.USをGOOGへ変換します。
-    Yahoo Finance用の銘柄コードとして使用します。
+    ユーザー入力をyfinance用コードへ変換します。
+
+    例:
+        GOOG.US -> GOOG
+         BRK.B.US  -> BRK-B
     """
-    ticker = str(ticker_symbol).strip().upper()
+    symbol = str(symbol).strip().upper()
+    symbol = re.sub(r"\.US$", "", symbol)
+    symbol = symbol.replace(".", "-")
 
-    if ticker.endswith(".US"):
-        ticker = ticker[:-3]
-
-    return ticker
-
-
-def detect_market(ticker_symbol):
-    """入力された銘柄コードから市場を簡易判定します。"""
-    ticker = str(ticker_symbol).strip().upper()
-
-    if ticker.endswith(".US"):
-        return "US"
-
-    if ticker.endswith(".T") or ticker.endswith(".JP"):
-        return "JP"
-
-    if re.fullmatch(r"\d{4}", ticker):
-        return "JP"
-
-    return "US"
+    return symbol
 
 
-def to_yahoo_ticker(ticker_symbol):
+def classify_rrg(rs_ratio, rs_momentum, center=100.0):
     """
-    表示用銘柄コードをYahoo Finance用へ変換します。
-
-    GOOG.US → GOOG
-     7203.JP  → 7203.T
-    7203    → 7203.T
+    4象限を日本語で判定します。
     """
-    ticker = str(ticker_symbol).strip().upper()
-    market = detect_market(ticker)
+    if rs_ratio >= center and rs_momentum >= center:
+        return "主導"
 
-    if market == "US":
-        return normalize_us_ticker(ticker)
+    if rs_ratio >= center and rs_momentum < center:
+        return "鈍化"
 
-    if ticker.endswith(".JP"):
-        return ticker[:-3] + ".T"
+    if rs_ratio < center and rs_momentum < center:
+        return "劣後"
 
-    if re.fullmatch(r"\d{4}", ticker):
-        return ticker + ".T"
-
-    return ticker
+    return "改善"
 
 
-def to_display_ticker(ticker_symbol):
-    """画面表示用の完全な銘柄コードへ変換します。"""
-    ticker = str(ticker_symbol).strip().upper()
-    market = detect_market(ticker)
+def classify_direction(
+    previous_ratio,
+    previous_momentum,
+    current_ratio,
+    current_momentum,
+    tolerance=0.03,
+):
+    """
+    直前地点から最新地点への移動方向を判定します。
+    """
+    dx = current_ratio - previous_ratio
+    dy = current_momentum - previous_momentum
 
-    if market == "US":
-        return f"{normalize_us_ticker(ticker)}.US"
+    if abs(dx) <= tolerance and abs(dy) <= tolerance:
+        return "横ばい", "直近では相対状態に大きな変化がありません。"
 
-    if ticker.endswith(".T"):
-        return ticker[:-2] + ".JP"
+    if dx > tolerance and dy > tolerance:
+        return (
+            "右上",
+            "相対強度と相対モメンタムがともに改善しています。",
+        )
 
-    if re.fullmatch(r"\d{4}", ticker):
-        return ticker + ".JP"
+    if dx > tolerance and dy < -tolerance:
+        return (
+            "右下",
+            "相対強度は改善していますが、勢いは低下しています。",
+        )
 
-    return ticker
+    if dx < -tolerance and dy < -tolerance:
+        return (
+            "左下",
+            "相対強度と相対モメンタムがともに悪化しています。",
+        )
+
+    if dx < -tolerance and dy > tolerance:
+        return (
+            "左上",
+            "相対強度は低下していますが、勢いは改善しています。",
+        )
+
+    if dx > tolerance:
+        return "右", "主に相対強度が改善しています。"
+
+    if dx < -tolerance:
+        return "左", "主に相対強度が低下しています。"
+
+    if dy > tolerance:
+        return "上", "主に相対モメンタムが改善しています。"
+
+    return "下", "主に相対モメンタムが低下しています。"
 
 
-def get_sector_display_name(reference_code):
-    """ETFコードからセクター表示名を作成します。"""
-    sector_data = US_SECTOR_ETFS.get(reference_code)
-
-    if not sector_data:
-        return "判定できませんでした"
+def make_beginner_comment(status, direction, direction_comment):
+    """
+    象限と移動方向から初心者向け解説を生成します。
+    """
+    status_comment = RRG_STATUS_INFO[status]["beginner"]
 
     return (
-        f"{sector_data['sector_ja']} "
-        f"（{sector_data['sector_en']}／{reference_code}）"
+        f"現在の判定は「{status}」です。"
+        f"直近の矢印は「{direction}」方向です。"
+        f"{direction_comment}"
+        f"{status_comment}"
+        "この判定はベンチマークに対する相対評価であり、"
+        "価格そのものの上昇・下落を直接示すものではありません。"
     )
 
 
-# ============================================================
-# データ取得関数
-# ============================================================
+# =========================================================
+# データ取得
+# =========================================================
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def get_company_info(yahoo_ticker):
+def download_market_data(period="2y"):
     """
-    Yahoo Financeから企業情報を取得します。
+    セクターETFとベンチマークの価格を取得します。
+    """
+    tickers = [BENCHMARK] + list(SECTOR_ETFS.keys())
 
-    取得できない場合は空の辞書を返します。
+    raw_data = yf.download(
+        tickers=tickers,
+        period=period,
+        interval="1d",
+        auto_adjust=True,
+        progress=False,
+        group_by="column",
+        threads=True,
+    )
+
+    if raw_data is None or raw_data.empty:
+        return pd.DataFrame()
+
+    if isinstance(raw_data.columns, pd.MultiIndex):
+        level_zero = raw_data.columns.get_level_values(0)
+
+        if "Close" in level_zero:
+            prices = raw_data["Close"].copy()
+        else:
+            prices = raw_data.xs(
+                "Close",
+                axis=1,
+                level=-1,
+            ).copy()
+    else:
+        if "Close" not in raw_data.columns:
+            return pd.DataFrame()
+
+        prices = raw_data[["Close"]].copy()
+        prices.columns = [tickers[0]]
+
+    if isinstance(prices, pd.Series):
+        prices = prices.to_frame()
+
+    prices.index = pd.to_datetime(prices.index)
+    prices = prices.sort_index()
+    prices = prices.replace([np.inf, -np.inf], np.nan)
+    prices = prices.ffill()
+    prices = prices.dropna(how="all")
+
+    valid_columns = [
+        ticker
+        for ticker in tickers
+        if ticker in prices.columns
+    ]
+
+    return prices[valid_columns].copy()
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_symbol_information(symbol):
     """
+    yfinanceから銘柄の会社名・セクター情報を取得します。
+    """
+    normalized_symbol = normalize_yfinance_symbol(symbol)
+
+    result = {
+        "symbol": normalized_symbol,
+        "name": "",
+        "sector": "",
+        "industry": "",
+        "quote_type": "",
+    }
+
     try:
-        ticker = yf.Ticker(yahoo_ticker)
-        info = ticker.get_info()
+        ticker = yf.Ticker(normalized_symbol)
 
-        if isinstance(info, dict):
-            return info
+        try:
+            info = ticker.get_info()
+        except Exception:
+            info = ticker.info
+
+        if not isinstance(info, dict):
+            return result
+
+        result["name"] = (
+            info.get("longName")
+            or info.get("shortName")
+            or ""
+        )
+        result["sector"] = info.get("sector") or ""
+        result["industry"] = info.get("industry") or ""
+        result["quote_type"] = info.get("quoteType") or ""
 
     except Exception:
         pass
 
-    return {}
+    return result
 
 
-@st.cache_data(ttl=900, show_spinner=False)
-def get_price_history(yahoo_ticker, period="1y"):
-    """株価履歴を取得します。"""
-    try:
-        data = yf.Ticker(yahoo_ticker).history(
-            period=period,
-            interval="1d",
-            auto_adjust=True
-        )
+# =========================================================
+# RRG計算
+# =========================================================
 
-        if data is None or data.empty:
-            return pd.DataFrame()
+def calculate_rrg(
+    prices,
+    ratio_window=26,
+    momentum_lookback=4,
+    momentum_window=26,
+):
+    """
+    簡易RRG指標を計算します。
 
-        data = data.copy()
-
-        if isinstance(data.index, pd.DatetimeIndex):
-            try:
-                data.index = data.index.tz_localize(None)
-            except TypeError:
-                pass
-
-        return data.dropna(how="all")
-
-    except Exception:
+    注意:
+    これは公開価格データから作成する簡易的な正規化指標です。
+    商用RRG固有の計算式を再現するものではありません。
+    """
+    if prices.empty:
         return pd.DataFrame()
 
+    required_columns = [BENCHMARK] + list(SECTOR_ETFS.keys())
 
-@st.cache_data(ttl=900, show_spinner=False)
-def get_sector_price_table(period="1y"):
-    """
-    米国11セクターETFとS&P 500連動ETFの価格を取得します。
-    """
-    price_series = {}
+    available_columns = [
+        column
+        for column in required_columns
+        if column in prices.columns
+    ]
 
-    symbols = {
-        code: data["yahoo"]
-        for code, data in US_SECTOR_ETFS.items()
-    }
+    if BENCHMARK not in available_columns:
+        return pd.DataFrame()
 
-    symbols["SPY.US"] = "SPY"
+    weekly_prices = (
+        prices[available_columns]
+        .resample("W-FRI")
+        .last()
+        .ffill()
+    )
 
-    for display_code, yahoo_code in symbols.items():
-        try:
-            history = yf.Ticker(yahoo_code).history(
-                period=period,
-                interval="1d",
-                auto_adjust=True
-            )
+    benchmark_prices = weekly_prices[BENCHMARK].replace(0, np.nan)
 
-            if history is None or history.empty:
-                continue
+    records = []
 
-            close = history["Close"].copy()
-            close.name = display_code
-
-            if isinstance(close.index, pd.DatetimeIndex):
-                try:
-                    close.index = close.index.tz_localize(None)
-                except TypeError:
-                    pass
-
-            price_series[display_code] = close
-
-        except Exception:
+    for sector_ticker in SECTOR_ETFS:
+        if sector_ticker not in weekly_prices.columns:
             continue
 
-    if not price_series:
+        relative_strength = (
+            weekly_prices[sector_ticker] / benchmark_prices
+        ).replace([np.inf, -np.inf], np.nan)
+
+        ratio_mean = relative_strength.rolling(
+            ratio_window,
+            min_periods=max(10, ratio_window // 2),
+        ).mean()
+
+        ratio_std = relative_strength.rolling(
+            ratio_window,
+            min_periods=max(10, ratio_window // 2),
+        ).std()
+
+        ratio_std = ratio_std.replace(0, np.nan)
+
+        rs_ratio = 100.0 + (
+            (relative_strength - ratio_mean) / ratio_std
+        )
+
+        relative_momentum = relative_strength.pct_change(
+            momentum_lookback,
+            fill_method=None,
+        )
+
+        momentum_mean = relative_momentum.rolling(
+            momentum_window,
+            min_periods=max(10, momentum_window // 2),
+        ).mean()
+
+        momentum_std = relative_momentum.rolling(
+            momentum_window,
+            min_periods=max(10, momentum_window // 2),
+        ).std()
+
+        momentum_std = momentum_std.replace(0, np.nan)
+
+        rs_momentum = 100.0 + (
+            (relative_momentum - momentum_mean) / momentum_std
+        )
+
+        sector_frame = pd.DataFrame(
+            {
+                "date": weekly_prices.index,
+                "ticker": sector_ticker,
+                "sector": SECTOR_ETFS[sector_ticker],
+                "rs_ratio": rs_ratio.to_numpy(),
+                "rs_momentum": rs_momentum.to_numpy(),
+            }
+        )
+
+        sector_frame = sector_frame.replace(
+            [np.inf, -np.inf],
+            np.nan,
+        )
+
+        sector_frame = sector_frame.dropna(
+            subset=["rs_ratio", "rs_momentum"]
+        )
+
+        records.append(sector_frame)
+
+    if not records:
         return pd.DataFrame()
 
-    prices = pd.concat(price_series.values(), axis=1)
-    prices = prices.sort_index()
-    prices = prices.ffill()
-    prices = prices.dropna(how="all")
+    rrg_df = pd.concat(records, ignore_index=True)
 
-    return prices
-
-
-# ============================================================
-# セクター判定
-# ============================================================
-
-def infer_us_sector_reference(info, ticker_symbol=""):
-    """
-    米国株のセクターを米国11セクターETFへ対応させます。
-
-    判定順：
-    1. セクター名
-    2. 業種名
-    3. 銘柄別予備分類
-    """
-    if not isinstance(info, dict):
-        info = {}
-
-    ticker = normalize_us_ticker(ticker_symbol)
-
-    sector_map = {
-        "communicationservices": "XLC.US",
-        "communicationservice": "XLC.US",
-        "communications": "XLC.US",
-        "telecommunicationservices": "XLC.US",
-
-        "consumercyclical": "XLY.US",
-        "consumerdiscretionary": "XLY.US",
-        "cyclicalconsumer": "XLY.US",
-
-        "consumerdefensive": "XLP.US",
-        "consumerstaples": "XLP.US",
-        "defensiveconsumer": "XLP.US",
-
-        "energy": "XLE.US",
-
-        "financialservices": "XLF.US",
-        "financials": "XLF.US",
-        "finance": "XLF.US",
-
-        "healthcare": "XLV.US",
-        "health": "XLV.US",
-        "medical": "XLV.US",
-
-        "industrials": "XLI.US",
-        "industrial": "XLI.US",
-
-        "basicmaterials": "XLB.US",
-        "materials": "XLB.US",
-
-        "realestate": "XLRE.US",
-
-        "technology": "XLK.US",
-        "informationtechnology": "XLK.US",
-        "tech": "XLK.US",
-
-        "utilities": "XLU.US",
-        "utility": "XLU.US"
-    }
-
-    sector_candidates = [
-        info.get("sector"),
-        info.get("sectorDisp"),
-        info.get("category")
-    ]
-
-    for sector_value in sector_candidates:
-        normalized = normalize_sector_text(sector_value)
-
-        if normalized in sector_map:
-            return sector_map[normalized]
-
-    industry_candidates = [
-        info.get("industry"),
-        info.get("industryDisp")
-    ]
-
-    industry_text = " ".join(
-        str(value).strip().lower()
-        for value in industry_candidates
-        if value
+    rrg_df["status"] = rrg_df.apply(
+        lambda row: classify_rrg(
+            row["rs_ratio"],
+            row["rs_momentum"],
+            center=100.0,
+        ),
+        axis=1,
     )
 
-    industry_rules = [
-        (
-            [
-                "internet content",
-                "interactive media",
-                "advertising agencies",
-                "entertainment",
-                "broadcasting",
-                "telecom",
-                "publishing",
-                "electronic gaming",
-                "media"
-            ],
-            "XLC.US"
-        ),
-        (
-            [
-                "medical instruments",
-                "medical devices",
-                "medical distribution",
-                "medical care",
-                "diagnostics",
-                "healthcare",
-                "health information",
-                "pharmaceutical",
-                "biotechnology",
-                "drug manufacturers"
-            ],
-            "XLV.US"
-        ),
-        (
-            [
-                "semiconductor",
-                "software",
-                "computer hardware",
-                "information technology",
-                "electronic components",
-                "communication equipment"
-            ],
-            "XLK.US"
-        ),
-        (
-            [
-                "auto manufacturers",
-                "auto parts",
-                "restaurants",
-                "travel services",
-                "lodging",
-                "apparel",
-                "specialty retail",
-                "internet retail"
-            ],
-            "XLY.US"
-        ),
-        (
-            [
-                "beverages",
-                "packaged foods",
-                "confectioners",
-                "household products",
-                "tobacco",
-                "grocery stores",
-                "discount stores"
-            ],
-            "XLP.US"
-        ),
-        (
-            [
-                "banks",
-                "credit services",
-                "insurance",
-                "asset management",
-                "capital markets",
-                "financial data",
-                "mortgage finance"
-            ],
-            "XLF.US"
-        ),
-        (
-            [
-                "aerospace",
-                "defense",
-                "farm machinery",
-                "industrial machinery",
-                "specialty industrial",
-                "railroads",
-                "trucking",
-                "airlines",
-                "integrated freight"
-            ],
-            "XLI.US"
-        ),
-        (
-            [
-                "oil & gas",
-                "oil and gas",
-                "energy equipment",
-                "thermal coal",
-                "uranium"
-            ],
-            "XLE.US"
-        ),
-        (
-            [
-                "chemicals",
-                "steel",
-                "aluminum",
-                "copper",
-                "gold",
-                "building materials",
-                "paper"
-            ],
-            "XLB.US"
-        ),
-        (
-            [
-                "reit",
-                "real estate",
-                "property management"
-            ],
-            "XLRE.US"
-        ),
-        (
-            [
-                "utilities",
-                "regulated electric",
-                "regulated gas",
-                "regulated water",
-                "independent power"
-            ],
-            "XLU.US"
-        )
-    ]
-
-    for keywords, reference_code in industry_rules:
-        if any(keyword in industry_text for keyword in keywords):
-            return reference_code
-
-    known_stock = KNOWN_US_STOCK_SECTORS.get(ticker)
-
-    if known_stock:
-        return known_stock["reference_code"]
-
-    return None
+    return rrg_df.sort_values(
+        ["ticker", "date"]
+    ).reset_index(drop=True)
 
 
-def get_selected_sector_reference(ticker_symbol, info):
-    """
-    選択銘柄のセクター情報をまとめます。
-    """
-    if not isinstance(info, dict):
-        info = {}
+# =========================================================
+# RRGグラフ
+# =========================================================
 
-    market = detect_market(ticker_symbol)
-    normalized_ticker = normalize_us_ticker(ticker_symbol)
+def render_rrg_chart(
+    rrg_df,
+    tail_length=8,
+    selected_tickers=None,
+):
+    if rrg_df.empty:
+        st.warning("RRGを計算できるデータがありません。")
+        return pd.DataFrame()
 
-    sector_name = (
-        info.get("sector")
-        or info.get("sectorDisp")
-        or ""
-    )
+    if selected_tickers:
+        chart_df = rrg_df[
+            rrg_df["ticker"].isin(selected_tickers)
+        ].copy()
+    else:
+        chart_df = rrg_df.copy()
 
-    industry_name = (
-        info.get("industry")
-        or info.get("industryDisp")
-        or ""
-    )
+    if chart_df.empty:
+        st.warning("表示対象のセクターがありません。")
+        return pd.DataFrame()
 
-    used_fallback = False
-    reference_code = None
+    tail_frames = []
 
-    if market == "US":
-        known_stock = KNOWN_US_STOCK_SECTORS.get(
-            normalized_ticker
+    for _, group in chart_df.groupby("ticker"):
+        tail_frames.append(
+            group.sort_values("date").tail(
+                max(int(tail_length), 2)
+            )
         )
 
-        if not sector_name and known_stock:
-            sector_name = known_stock["sector"]
-            used_fallback = True
+    plot_df = pd.concat(tail_frames, ignore_index=True)
 
-        if not industry_name and known_stock:
-            industry_name = known_stock["industry"]
-            used_fallback = True
+    x_values = plot_df["rs_ratio"].to_numpy(dtype=float)
+    y_values = plot_df["rs_momentum"].to_numpy(dtype=float)
 
-        reference_code = infer_us_sector_reference(
-            info=info,
-            ticker_symbol=ticker_symbol
-        )
-
-    if not sector_name:
-        sector_name = "取得できませんでした"
-
-    if not industry_name:
-        industry_name = "取得できませんでした"
-
-    return {
-        "market": market,
-        "sector": sector_name,
-        "industry": industry_name,
-        "reference_code": reference_code,
-        "reference_name": get_sector_display_name(reference_code),
-        "estimated": used_fallback,
-        "used_fallback": used_fallback
-    }
-
-
-# ============================================================
-# 株価指標
-# ============================================================
-
-def calculate_stock_metrics(history):
-    """選択銘柄の株価指標を計算します。"""
-    if history is None or history.empty:
-        return {}
-
-    close = history["Close"].dropna()
-
-    if close.empty:
-        return {}
-
-    current_price = close.iloc[-1]
-
-    previous_price = (
-        close.iloc[-2]
-        if len(close) >= 2
-        else None
+    x_distance = max(
+        float(np.nanmax(np.abs(x_values - 100.0))),
+        1.0,
     )
 
-    daily_return = None
+    y_distance = max(
+        float(np.nanmax(np.abs(y_values - 100.0))),
+        1.0,
+    )
 
-    if previous_price not in (None, 0):
-        daily_return = (
-            current_price / previous_price - 1
-        ) * 100
+    x_margin = max(x_distance * 0.28, 0.75)
+    y_margin = max(y_distance * 0.28, 0.75)
 
-    return_21d = None
-    return_63d = None
+    x_min = min(float(np.nanmin(x_values)), 100.0) - x_margin
+    x_max = max(float(np.nanmax(x_values)), 100.0) + x_margin
+    y_min = min(float(np.nanmin(y_values)), 100.0) - y_margin
+    y_max = max(float(np.nanmax(y_values)), 100.0) + y_margin
 
-    if len(close) > 21:
-        return_21d = (
-            current_price / close.iloc[-22] - 1
-        ) * 100
+    fig = go.Figure()
 
-    if len(close) > 63:
-        return_63d = (
-            current_price / close.iloc[-64] - 1
-        ) * 100
+    quadrant_shapes = [
+        {
+            "type": "rect",
+            "x0": x_min,
+            "x1": 100.0,
+            "y0": 100.0,
+            "y1": y_max,
+            "fillcolor": RRG_STATUS_INFO["改善"]["background"],
+            "line": {"width": 0},
+            "layer": "below",
+        },
+        {
+            "type": "rect",
+            "x0": 100.0,
+            "x1": x_max,
+            "y0": 100.0,
+            "y1": y_max,
+            "fillcolor": RRG_STATUS_INFO["主導"]["background"],
+            "line": {"width": 0},
+            "layer": "below",
+        },
+        {
+            "type": "rect",
+            "x0": 100.0,
+            "x1": x_max,
+            "y0": y_min,
+            "y1": 100.0,
+            "fillcolor": RRG_STATUS_INFO["鈍化"]["background"],
+            "line": {"width": 0},
+            "layer": "below",
+        },
+        {
+            "type": "rect",
+            "x0": x_min,
+            "x1": 100.0,
+            "y0": y_min,
+            "y1": 100.0,
+            "fillcolor": RRG_STATUS_INFO["劣後"]["background"],
+            "line": {"width": 0},
+            "layer": "below",
+        },
+    ]
 
-    high_52w = close.tail(252).max()
-    low_52w = close.tail(252).min()
+    fig.update_layout(shapes=quadrant_shapes)
 
-    return {
-        "current_price": current_price,
-        "daily_return": daily_return,
-        "return_21d": return_21d,
-        "return_63d": return_63d,
-        "high_52w": high_52w,
-        "low_52w": low_52w
+    fig.add_vline(
+        x=100.0,
+        line_width=1.5,
+        line_dash="dash",
+        line_color="#64748B",
+    )
+
+    fig.add_hline(
+        y=100.0,
+        line_width=1.5,
+        line_dash="dash",
+        line_color="#64748B",
+    )
+
+    quadrant_labels = [
+        (
+            x_min + (100.0 - x_min) * 0.05,
+            y_max - (y_max - 100.0) * 0.08,
+            "改善
+<span style='font-size:11px'>弱いが勢いは回復</span>",
+            "#2563EB",
+        ),
+        (
+            100.0 + (x_max - 100.0) * 0.05,
+            y_max - (y_max - 100.0) * 0.08,
+            "主導
+<span style='font-size:11px'>強く勢いも上向き</span>",
+            "#16A34A",
+        ),
+        (
+            100.0 + (x_max - 100.0) * 0.05,
+            y_min + (100.0 - y_min) * 0.08,
+            "鈍化
+<span style='font-size:11px'>強いが勢いは低下</span>",
+            "#D97706",
+        ),
+        (
+            x_min + (100.0 - x_min) * 0.05,
+            y_min + (100.0 - y_min) * 0.08,
+            "劣後
+<span style='font-size:11px'>弱く勢いも低下</span>",
+            "#DC2626",
+        ),
+    ]
+
+    for x, y, text, color in quadrant_labels:
+        fig.add_annotation(
+            x=x,
+            y=y,
+            text=text,
+            showarrow=False,
+            xanchor="left",
+            font={
+                "size": 15,
+                "color": color,
+            },
+            bgcolor="rgba(255,255,255,0.78)",
+            bordercolor=color,
+            borderwidth=1,
+            borderpad=5,
+        )
+
+    latest_rows = []
+
+    for ticker, sector_df in plot_df.groupby("ticker", sort=True):
+        sector_df = sector_df.sort_values("date").reset_index(drop=True)
+
+        if sector_df.empty:
+            continue
+
+        latest = sector_df.iloc[-1]
+        latest_status = str(latest["status"])
+        latest_color = RRG_STATUS_INFO[latest_status]["color"]
+
+        latest_ratio = float(latest["rs_ratio"])
+        latest_momentum = float(latest["rs_momentum"])
+        latest_date = pd.Timestamp(latest["date"])
+        sector_name = str(latest["sector"])
+
+        if len(sector_df) >= 2:
+            previous = sector_df.iloc[-2]
+
+            previous_ratio = float(previous["rs_ratio"])
+            previous_momentum = float(previous["rs_momentum"])
+
+            direction, direction_comment = classify_direction(
+                previous_ratio,
+                previous_momentum,
+                latest_ratio,
+                latest_momentum,
+            )
+        else:
+            previous_ratio = latest_ratio
+            previous_momentum = latest_momentum
+            direction = "判定不可"
+            direction_comment = (
+                "比較する過去データが不足しているため、"
+                "移動方向を判定できません。"
+            )
+
+        beginner_comment = make_beginner_comment(
+            latest_status,
+            direction,
+            direction_comment,
+        )
+
+        hover_texts = []
+
+        for _, row in sector_df.iterrows():
+            point_status = classify_rrg(
+                float(row["rs_ratio"]),
+                float(row["rs_momentum"]),
+            )
+
+            point_date = pd.Timestamp(row["date"]).strftime("%Y-%m-%d")
+
+            hover_texts.append(
+                f"<b>{escape(sector_name)}</b>"
+                f"
+コード: {display_us_code(ticker)}"
+                f"
+日付: {point_date}"
+                f"
+判定: <b>{point_status}</b>"
+                f"
+相対強度: {float(row['rs_ratio']):.3f}"
+                f"
+モメンタム: {float(row['rs_momentum']):.3f}"
+                f"
+{RRG_STATUS_INFO[point_status]['short']}"
+            )
+
+        marker_sizes = [
+            13 if index == len(sector_df) - 1 else 6
+            for index in range(len(sector_df))
+        ]
+
+        fig.add_trace(
+            go.Scatter(
+                x=sector_df["rs_ratio"],
+                y=sector_df["rs_momentum"],
+                mode="lines+markers",
+                name=f"{sector_name}（{display_us_code(ticker)}）",
+                line={
+                    "color": latest_color,
+                    "width": 2.5,
+                },
+                marker={
+                    "size": marker_sizes,
+                    "color": latest_color,
+                    "line": {
+                        "color": "white",
+                        "width": 1,
+                    },
+                },
+                text=hover_texts,
+                hovertemplate="%{text}<extra></extra>",
+            )
+        )
+
+        if len(sector_df) >= 2:
+            fig.add_annotation(
+                x=latest_ratio,
+                y=latest_momentum,
+                ax=previous_ratio,
+                ay=previous_momentum,
+                xref="x",
+                yref="y",
+                axref="x",
+                ayref="y",
+                text="",
+                showarrow=True,
+                arrowhead=3,
+                arrowsize=1.3,
+                arrowwidth=3,
+                arrowcolor=latest_color,
+            )
+
+        fig.add_annotation(
+            x=latest_ratio,
+            y=latest_momentum,
+            text=(
+                f"<b>{SECTOR_SHORT_NAMES.get(ticker, sector_name)}"
+                f"｜{latest_status}</b>"
+            ),
+            showarrow=True,
+            arrowhead=0,
+            ax=22,
+            ay=-25,
+            arrowwidth=1,
+            arrowcolor=latest_color,
+            bgcolor="rgba(255,255,255,0.94)",
+            bordercolor=latest_color,
+            borderwidth=1.5,
+            borderpad=4,
+            font={
+                "size": 12,
+                "color": latest_color,
+            },
+        )
+
+        latest_rows.append(
+            {
+                "コード": display_us_code(ticker),
+                "セクター": sector_name,
+                "判定": latest_status,
+                "移動方向": direction,
+                "相対強度": latest_ratio,
+                "モメンタム": latest_momentum,
+                "基準日": latest_date.strftime("%Y-%m-%d"),
+                "初心者向け解説": beginner_comment,
+            }
+        )
+
+    fig.update_layout(
+        title={
+            "text": "米国セクター相対強度・モメンタム移動図",
+            "x": 0.5,
+            "xanchor": "center",
+        },
+        height=780,
+        template="plotly_white",
+        hovermode="closest",
+        dragmode="pan",
+        margin={
+            "l": 60,
+            "r": 80,
+            "t": 80,
+            "b": 90,
+        },
+        legend={
+            "title": "セクター",
+            "orientation": "h",
+            "yanchor": "top",
+            "y": -0.14,
+            "xanchor": "center",
+            "x": 0.5,
+        },
+        xaxis={
+            "title": "相対強度（右ほどベンチマークより相対的に強い）",
+            "range": [x_min, x_max],
+            "zeroline": False,
+            "showgrid": True,
+            "gridcolor": "rgba(148,163,184,0.22)",
+        },
+        yaxis={
+            "title": "相対モメンタム（上ほど相対的な勢いが強い）",
+            "range": [y_min, y_max],
+            "zeroline": False,
+            "showgrid": True,
+            "gridcolor": "rgba(148,163,184,0.22)",
+        },
+    )
+
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            "displaylogo": False,
+            "scrollZoom": True,
+            "modeBarButtonsToRemove": [
+                "lasso2d",
+                "select2d",
+            ],
+        },
+    )
+
+    if not latest_rows:
+        return pd.DataFrame()
+
+    latest_df = pd.DataFrame(latest_rows)
+
+    status_order = {
+        "改善": 1,
+        "主導": 2,
+        "鈍化": 3,
+        "劣後": 4,
     }
 
+    latest_df["_order"] = latest_df["判定"].map(status_order)
 
-def calculate_sector_returns(prices):
-    """各セクターETFの期間別騰落率を計算します。"""
-    if prices is None or prices.empty:
+    latest_df = (
+        latest_df.sort_values(
+            ["_order", "セクター"]
+        )
+        .drop(columns="_order")
+        .reset_index(drop=True)
+    )
+
+    return latest_df
+
+
+# =========================================================
+# 最新判定表示
+# =========================================================
+
+def render_latest_status(latest_df):
+    if latest_df.empty:
+        return
+
+    st.subheader("各セクターの最新判定")
+
+    display_df = latest_df.copy()
+    display_df["相対強度"] = display_df["相対強度"].round(3)
+    display_df["モメンタム"] = display_df["モメンタム"].round(3)
+
+    st.dataframe(
+        display_df,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "コード": st.column_config.TextColumn(
+                "コード",
+                width="small",
+            ),
+            "セクター": st.column_config.TextColumn(
+                "セクター",
+                width="medium",
+            ),
+            "判定": st.column_config.TextColumn(
+                "判定",
+                width="small",
+            ),
+            "移動方向": st.column_config.TextColumn(
+                "矢印",
+                width="small",
+            ),
+            "相対強度": st.column_config.NumberColumn(
+                "相対強度",
+                format="%.3f",
+            ),
+            "モメンタム": st.column_config.NumberColumn(
+                "モメンタム",
+                format="%.3f",
+            ),
+            "基準日": st.column_config.TextColumn(
+                "基準日",
+                width="small",
+            ),
+            "初心者向け解説": st.column_config.TextColumn(
+                "初心者向け解説",
+                width="large",
+            ),
+        },
+    )
+
+    st.subheader("選択したセクターの詳しい説明")
+
+    sector_options = latest_df["セクター"].tolist()
+
+    selected_sector = st.selectbox(
+        "解説を確認するセクター",
+        options=sector_options,
+        key="selected_rrg_sector",
+    )
+
+    selected_row = latest_df.loc[
+        latest_df["セクター"] == selected_sector
+    ].iloc[0]
+
+    status = selected_row["判定"]
+    color = RRG_STATUS_INFO[status]["color"]
+
+    st.markdown(
+        f"""
+        <div style="
+            border-left: 7px solid {color};
+            background-color: rgba(248,250,252,0.98);
+            padding: 18px;
+            border-radius: 9px;
+            margin-top: 8px;
+        ">
+            <div style="font-size:21px; font-weight:700; color:{color};">
+                {escape(str(selected_row["セクター"]))}
+                （{escape(str(selected_row["コード"]))}）：
+                {escape(str(status))}
+            </div>
+            <div style="margin-top:10px;">
+                <b>直近の矢印：</b>
+                {escape(str(selected_row["移動方向"]))}
+            </div>
+            <div style="margin-top:6px;">
+                <b>相対強度：</b>
+                {float(selected_row["相対強度"]):.3f}
+                ／
+                <b>モメンタム：</b>
+                {float(selected_row["モメンタム"]):.3f}
+            </div>
+            <div style="margin-top:12px; line-height:1.8;">
+                {escape(str(selected_row["初心者向け解説"]))}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# =========================================================
+# ヒートマップ
+# =========================================================
+
+def calculate_period_returns(prices):
+    if prices.empty:
         return pd.DataFrame()
 
     periods = {
-        "5営業日": 5,
-        "21営業日": 21,
-        "63営業日": 63,
-        "126営業日": 126
+        "1週間": 5,
+        "1か月": 21,
+        "3か月": 63,
+        "6か月": 126,
+        "1年": 252,
     }
 
-    result = {}
+    records = []
 
-    for display_code in US_SECTOR_ETFS:
-        if display_code not in prices.columns:
+    for ticker, sector_name in SECTOR_ETFS.items():
+        if ticker not in prices.columns:
             continue
 
-        series = prices[display_code].dropna()
+        series = prices[ticker].dropna()
 
-        if len(series) < 2:
+        if series.empty:
             continue
 
-        row = {}
+        row = {
+            "ticker": ticker,
+            "sector": sector_name,
+        }
 
-        for label, days in periods.items():
-            if len(series) > days:
+        for label, trading_days in periods.items():
+            if len(series) > trading_days:
                 row[label] = (
-                    series.iloc[-1] / series.iloc[-days - 1] - 1
+                    series.iloc[-1] / series.iloc[-trading_days - 1] - 1
                 ) * 100
             else:
                 row[label] = np.nan
 
-        result[display_code] = row
+        records.append(row)
 
-    result_df = pd.DataFrame.from_dict(
-        result,
-        orient="index"
-    )
-
-    return result_df
+    return pd.DataFrame(records)
 
 
-# ============================================================
-# グラフ
-# ============================================================
+def render_heatmap(prices):
+    returns_df = calculate_period_returns(prices)
 
-def create_stock_chart(history, display_ticker):
-    """選択銘柄の価格・移動平均チャート。"""
-    if history is None or history.empty:
-        return None
+    if returns_df.empty:
+        st.warning("騰落率を計算できるデータがありません。")
+        return
 
-    data = history.copy()
-    data["MA20"] = data["Close"].rolling(20).mean()
-    data["MA60"] = data["Close"].rolling(60).mean()
-
-    fig = go.Figure()
-
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=data["Close"],
-            mode="lines",
-            name="終値",
-            line=dict(
-                color="#1f77b4",
-                width=2
-            )
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=data["MA20"],
-            mode="lines",
-            name="20日移動平均",
-            line=dict(
-                color="#ff9800",
-                width=1.5
-            )
-        )
-    )
-
-    fig.add_trace(
-        go.Scatter(
-            x=data.index,
-            y=data["MA60"],
-            mode="lines",
-            name="60日移動平均",
-            line=dict(
-                color="#9c27b0",
-                width=1.5
-            )
-        )
-    )
-
-    fig.update_layout(
-        title=f"{display_ticker} 株価推移",
-        xaxis_title="日付",
-        yaxis_title="価格",
-        height=480,
-        hovermode="x unified",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="left",
-            x=0
-        ),
-        margin=dict(
-            l=20,
-            r=20,
-            t=70,
-            b=20
-        )
-    )
-
-    return fig
-
-
-def create_sector_heatmap(sector_returns):
-    """セクター騰落率ヒートマップ（スマホ向けスリム表示）。"""
-    if sector_returns is None or sector_returns.empty:
-        return None
-
-    display_df = sector_returns.copy()
-
-    # ラベルを短縮（.USを除去して横幅を節約）
-    display_df.index = [
-        f"{US_SECTOR_ETFS[code]['sector_ja']} ({code.replace('.US', '')})"
-        for code in display_df.index
+    period_columns = [
+        "1週間",
+        "1か月",
+        "3か月",
+        "6か月",
+        "1年",
     ]
 
-    # 列名も短縮
-    display_df.columns = [col.replace("営業日", "日") for col in display_df.columns]
+    z_values = returns_df[period_columns].to_numpy(dtype=float)
 
-    text_values = display_df.map(
-        lambda value: (
-            ""
-            if pd.isna(value)
-            else f"{value:+.1f}%"
+    text_values = []
+
+    for row in z_values:
+        text_values.append(
+            [
+                "データ不足" if pd.isna(value) else f"{value:+.1f}%"
+                for value in row
+            ]
         )
-    )
+
+    y_labels = [
+        f"{sector}（{display_us_code(ticker)}）"
+        for sector, ticker in zip(
+            returns_df["sector"],
+            returns_df["ticker"],
+        )
+    ]
+
+    finite_values = z_values[np.isfinite(z_values)]
+
+    if finite_values.size > 0:
+        color_limit = max(
+            float(np.nanpercentile(np.abs(finite_values), 90)),
+            1.0,
+        )
+    else:
+        color_limit = 1.0
 
     fig = go.Figure(
         data=go.Heatmap(
-            z=display_df.values,
-            x=display_df.columns,
-            y=display_df.index,
-            text=text_values.values,
+            z=z_values,
+            x=period_columns,
+            y=y_labels,
+            text=text_values,
             texttemplate="%{text}",
-            textfont={"size": 11},
+            textfont={"size": 12},
             colorscale=[
-                [0.0, "#b2182b"],
-                [0.5, "#f7f7f7"],
-                [1.0, "#2166ac"]
+                [0.0, "#B91C1C"],
+                [0.5, "#F8FAFC"],
+                [1.0, "#15803D"],
             ],
             zmid=0,
-            showscale=False,
+            zmin=-color_limit,
+            zmax=color_limit,
+            colorbar={
+                "title": "騰落率
+（%）",
+            },
             hovertemplate=(
-                "セクター：%{y}<br>"
-                "期間：%{x}<br>"
-                "騰落率：%{z:.2f}%"
+                "<b>%{y}</b>"
+                "
+期間: %{x}"
+                "
+騰落率: %{z:.2f}%"
                 "<extra></extra>"
-            )
-        )
-    )
-
-    fig.update_layout(
-        title="セクター別 騰落率ヒートマップ",
-        height=520,
-        margin=dict(
-            l=10,
-            r=10,
-            t=40,
-            b=10
-        ),
-        xaxis=dict(tickfont=dict(size=11)),
-        yaxis=dict(tickfont=dict(size=11), autorange="reversed")
-    )
-
-    return fig
-
-
-def create_relative_rotation_chart(
-    prices,
-    selected_reference=None
-):
-    """
-    S&P 500連動ETFを基準にした相対強度・モメンタム図。
-
-    横軸：
-    SPY.USに対する相対強度の基準値からの乖離
-
-    縦軸：
-    相対強度の短期移動平均に対するモメンタム
-    """
-    if (
-        prices is None
-        or prices.empty
-        or "SPY.US" not in prices.columns
-    ):
-        return None
-
-    benchmark = prices["SPY.US"].dropna()
-
-    if benchmark.empty:
-        return None
-
-    fig = go.Figure()
-
-    colors = [
-        "#1f77b4",
-        "#ff7f0e",
-        "#2ca02c",
-        "#d62728",
-        "#9467bd",
-        "#8c564b",
-        "#e377c2",
-        "#7f7f7f",
-        "#bcbd22",
-        "#17becf",
-        "#003f5c"
-    ]
-
-    trace_count = 0
-
-    for index, code in enumerate(US_SECTOR_ETFS):
-        if code not in prices.columns:
-            continue
-
-        pair = pd.concat(
-            [
-                prices[code].rename("sector"),
-                benchmark.rename("benchmark")
-            ],
-            axis=1
-        ).dropna()
-
-        if len(pair) < 80:
-            continue
-
-        relative = pair["sector"] / pair["benchmark"]
-
-        relative_strength = (
-            relative / relative.rolling(63).mean() * 100
-        )
-
-        relative_momentum = (
-            relative_strength
-            / relative_strength.rolling(10).mean()
-            * 100
-        )
-
-        rotation = pd.DataFrame(
-            {
-                "strength": relative_strength - 100,
-                "momentum": relative_momentum - 100
-            }
-        ).dropna()
-
-        if rotation.empty:
-            continue
-
-        weekly_points = rotation.iloc[::5].tail(8)
-
-        if weekly_points.empty:
-            continue
-
-        line_width = (
-            4
-            if code == selected_reference
-            else 2
-        )
-
-        marker_size = (
-            12
-            if code == selected_reference
-            else 8
-        )
-
-        sector_label = (
-            f"{US_SECTOR_ETFS[code]['sector_ja']} "
-            f"（{code}）"
-        )
-
-        fig.add_trace(
-            go.Scatter(
-                x=weekly_points["strength"],
-                y=weekly_points["momentum"],
-                mode="lines+markers",
-                name=sector_label,
-                line=dict(
-                    color=colors[index % len(colors)],
-                    width=line_width
-                ),
-                marker=dict(
-                    size=marker_size,
-                    color=colors[index % len(colors)]
-                ),
-                text=[
-                    date.strftime("%Y-%m-%d")
-                    for date in weekly_points.index
-                ],
-                hovertemplate=(
-                    f"{sector_label}<br>"
-                    "日付：%{text}<br>"
-                    "相対強度：%{x:.2f}<br>"
-                    "相対モメンタム：%{y:.2f}"
-                    "<extra></extra>"
-                )
-            )
-        )
-
-        latest = weekly_points.iloc[-1]
-
-        fig.add_annotation(
-            x=latest["strength"],
-            y=latest["momentum"],
-            text=code.replace(".US", ""),
-            showarrow=False,
-            xshift=12,
-            font=dict(
-                size=11,
-                color=colors[index % len(colors)]
-            )
-        )
-
-        trace_count += 1
-
-    if trace_count == 0:
-        return None
-
-    fig.add_hline(
-        y=0,
-        line_dash="dash",
-        line_color="gray"
-    )
-
-    fig.add_vline(
-        x=0,
-        line_dash="dash",
-        line_color="gray"
-    )
-
-    fig.add_annotation(
-        x=0.98,
-        y=0.98,
-        xref="paper",
-        yref="paper",
-        text="相対強度＋／モメンタム＋",
-        showarrow=False,
-        font=dict(color="#2e7d32")
-    )
-
-    fig.add_annotation(
-        x=0.02,
-        y=0.98,
-        xref="paper",
-        yref="paper",
-        text="相対強度－／モメンタム＋",
-        showarrow=False,
-        font=dict(color="#f57c00")
-    )
-
-    fig.add_annotation(
-        x=0.02,
-        y=0.02,
-        xref="paper",
-        yref="paper",
-        text="相対強度－／モメンタム－",
-        showarrow=False,
-        font=dict(color="#c62828")
-    )
-
-    fig.add_annotation(
-        x=0.98,
-        y=0.02,
-        xref="paper",
-        yref="paper",
-        text="相対強度＋／モメンタム－",
-        showarrow=False,
-        font=dict(color="#1565c0")
-    )
-
-    fig.update_layout(
-        title="セクター相対強度・モメンタム移動図",
-        xaxis_title="SPY.USに対する相対強度",
-        yaxis_title="相対強度モメンタム",
-        height=700,
-        hovermode="closest",
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=-0.30,
-            xanchor="left",
-            x=0
-        ),
-        margin=dict(
-            l=20,
-            r=20,
-            t=70,
-            b=150
-        )
-    )
-
-    return fig
-
-
-# ============================================================
-# サイドバー
-# ============================================================
-
-st.sidebar.title("📊 分析設定")
-
-input_ticker = st.sidebar.text_input(
-    "銘柄コード",
-    value="GOOG.US",
-    help=(
-        "例：GOOG.US、ISRG.US、 AAPL.US 。"
-        "「.US」を省略してGOOGと入力することもできます。"
-    )
-)
-
-history_period = st.sidebar.selectbox(
-    "株価表示期間",
-    options=["6mo", "1y", "2y", "5y"],
-    index=1,
-    format_func=lambda value: {
-        "6mo": "6か月",
-        "1y": "1年",
-        "2y": "2年",
-        "5y": "5年"
-    }[value]
-)
-
-analyze_button = st.sidebar.button(
-    "分析を更新",
-    type="primary",
-    use_container_width=True
-)
-
-if st.sidebar.button(
-    "キャッシュを削除",
-    use_container_width=True
-):
-    st.cache_data.clear()
-    st.sidebar.success("キャッシュを削除しました。")
-    st.rerun()
-
-st.sidebar.markdown("---")
-
-st.sidebar.caption(
-    "公開市場データの取得にはYahoo Financeを使用します。"
-    "データはリアルタイムではなく、遅延・欠損・取得制限が"
-    "発生する場合があります。"
-)
-
-
-# ============================================================
-# 入力確認
-# ============================================================
-
-if not input_ticker.strip():
-    st.warning("銘柄コードを入力してください。")
-    st.stop()
-
-display_ticker = to_display_ticker(input_ticker)
-yahoo_ticker = to_yahoo_ticker(input_ticker)
-market = detect_market(input_ticker)
-
-
-# ============================================================
-# メインタイトル
-# ============================================================
-
-st.title("📈 株式・セクター分析ダッシュボード")
-
-st.caption(
-    f"対象銘柄：{display_ticker} ｜ "
-    f"データ更新処理時刻：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
-)
-
-
-# ============================================================
-# データ読み込み
-# ============================================================
-
-with st.spinner("企業情報と市場データを読み込んでいます..."):
-    company_info = get_company_info(yahoo_ticker)
-
-    stock_history = get_price_history(
-        yahoo_ticker,
-        period=history_period
-    )
-
-    sector_prices = get_sector_price_table(
-        period="1y"
-    )
-
-
-selected_sector = get_selected_sector_reference(
-    ticker_symbol=input_ticker,
-    info=company_info
-)
-
-stock_metrics = calculate_stock_metrics(
-    stock_history
-)
-
-sector_returns = calculate_sector_returns(
-    sector_prices
-)
-
-
-# ============================================================
-# 企業名
-# ============================================================
-
-company_name = (
-    company_info.get("longName")
-    or company_info.get("shortName")
-    or display_ticker
-)
-
-st.subheader(f"{company_name}（{display_ticker}）")
-
-
-# ============================================================
-# タブ
-# ============================================================
-
-tab1, tab2, tab3, tab4 = st.tabs(
-    [
-        "選択銘柄",
-        "セクター確認",
-        "セクターヒートマップ",
-        "セクター移動図"
-    ]
-)
-
-
-# ============================================================
-# タブ1：選択銘柄
-# ============================================================
-
-with tab1:
-    if stock_history.empty:
-        st.error(
-            "株価データを取得できませんでした。"
-            "銘柄コード、通信状態、データ提供元の取得制限を"
-            "確認してください。"
-        )
-
-    else:
-        metric1, metric2, metric3, metric4 = st.columns(4)
-
-        metric1.metric(
-            "直近価格",
-            format_price(
-                stock_metrics.get("current_price")
             ),
-            format_percent(
-                stock_metrics.get("daily_return")
-            )
         )
-
-        metric2.metric(
-            "21営業日騰落率",
-            format_percent(
-                stock_metrics.get("return_21d")
-            )
-        )
-
-        metric3.metric(
-            "63営業日騰落率",
-            format_percent(
-                stock_metrics.get("return_63d")
-            )
-        )
-
-        metric4.metric(
-            "表示期間内高値／安値",
-            (
-                f"{format_price(stock_metrics.get('high_52w'))}"
-                f"／"
-                f"{format_price(stock_metrics.get('low_52w'))}"
-            )
-        )
-
-        stock_chart = create_stock_chart(
-            stock_history,
-            display_ticker
-        )
-
-        if stock_chart is not None:
-            st.plotly_chart(
-                stock_chart,
-                use_container_width=True
-            )
-
-        st.caption(
-            "移動平均線や過去の騰落率は、将来の値動きを"
-            "保証するものではありません。"
-        )
-
-
-# ============================================================
-# タブ2：セクター確認
-# ============================================================
-
-with tab2:
-    card1, card2, card3 = st.columns(3)
-
-    card1.metric(
-        "取得されたセクター",
-        selected_sector["sector"]
     )
 
-    card2.metric(
-        "取得された業種",
-        selected_sector["industry"]
+    fig.update_layout(
+        title={
+            "text": "セクター別騰落率ヒートマップ",
+            "x": 0.5,
+        },
+        height=620,
+        template="plotly_white",
+        margin={
+            "l": 190,
+            "r": 60,
+            "t": 70,
+            "b": 40,
+        },
     )
 
-    reference_label = "対応セクター"
-
-    if selected_sector.get("used_fallback", False):
-        reference_label = "対応セクター（予備分類）"
-
-    card3.metric(
-        reference_label,
-        selected_sector["reference_name"]
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displaylogo": False},
     )
 
-    if market != "US":
-        st.info(
-            "この完全版のセクターETF対応機能は、"
-            "米国株の11セクターを対象としています。"
-        )
+    st.caption(
+        "緑は対象期間の上昇、赤は下落を示します。"
+        "RRGの相対判定とは異なり、このヒートマップは各ETF自体の騰落率です。"
+    )
 
-    elif selected_sector["reference_code"] is None:
+
+# =========================================================
+# 入力銘柄のセクター判定
+# =========================================================
+
+def determine_symbol_sector(symbol):
+    normalized_symbol = normalize_yfinance_symbol(symbol)
+
+    # セクターETFそのものが入力された場合
+    if normalized_symbol in SECTOR_ETFS:
+        return {
+            "symbol": normalized_symbol,
+            "name": SECTOR_ETFS[normalized_symbol],
+            "source_sector": "Sector ETF",
+            "industry": "",
+            "sector_etf": normalized_symbol,
+            "method": "ETFコードから判定",
+        }
+
+    # 手動補正を優先
+    if normalized_symbol in SYMBOL_SECTOR_OVERRIDES:
+        etf = SYMBOL_SECTOR_OVERRIDES[normalized_symbol]
+        info = get_symbol_information(normalized_symbol)
+
+        return {
+            "symbol": normalized_symbol,
+            "name": info.get("name", ""),
+            "source_sector": info.get("sector", ""),
+            "industry": info.get("industry", ""),
+            "sector_etf": etf,
+            "method": "補正テーブルから判定",
+        }
+
+    info = get_symbol_information(normalized_symbol)
+    source_sector = info.get("sector", "")
+    etf = YFINANCE_SECTOR_TO_ETF.get(source_sector)
+
+    return {
+        "symbol": normalized_symbol,
+        "name": info.get("name", ""),
+        "source_sector": source_sector,
+        "industry": info.get("industry", ""),
+        "sector_etf": etf,
+        "method": "公開企業情報から判定" if etf else "判定できませんでした",
+    }
+
+
+def render_symbol_sector_checker(latest_df):
+    st.subheader("選択した銘柄のセクター確認")
+
+    st.write(
+        "米国株コードを入力すると、対応するセクターETFと、"
+        "そのセクターの最新RRG判定を表示します。"
+    )
+
+    input_symbol = st.text_input(
+        "米国株コード",
+        value="GOOG",
+        placeholder="例：GOOG、GOOG.US、ISRG、AAPL",
+        key="stock_symbol_input",
+    )
+
+    if not input_symbol.strip():
+        st.info("銘柄コードを入力してください。")
+        return
+
+    result = determine_symbol_sector(input_symbol)
+
+    symbol = result["symbol"]
+    sector_etf = result["sector_etf"]
+    company_name = result["name"] or "会社名を取得できませんでした"
+
+    if not sector_etf:
         st.warning(
-            "対応セクターを判定できませんでした。"
-            "データ提供元からセクター・業種情報を取得できないか、"
-            "現在の判定辞書にない分類の可能性があります。"
+            f"{display_us_code(symbol)} の対応セクターを判定できませんでした。"
+            "銘柄コード、上場市場、企業分類をご確認ください。"
         )
 
-    else:
-        reference_code = selected_sector["reference_code"]
-        reference_data = US_SECTOR_ETFS[reference_code]
+        if result["source_sector"]:
+            st.write(
+                f"取得したセクター情報：{result['source_sector']}"
+            )
 
-        st.success(
-            f"{display_ticker}の対応先は、"
-            f"{reference_data['sector_ja']}セクターの"
-            f"{reference_code}です。"
-        )
+        return
 
-    if selected_sector.get("used_fallback", False):
-        st.caption(
-            "※データ提供元からセクターまたは業種を"
-            "取得できなかったため、登録済みの予備分類を"
-            "使用しています。"
-        )
+    sector_name = SECTOR_ETFS.get(
+        sector_etf,
+        "不明なセクター",
+    )
 
-    st.markdown("### 判定方法")
+    status = "データなし"
+    direction = "データなし"
+    ratio = np.nan
+    momentum = np.nan
+    status_comment = ""
+
+    if not latest_df.empty:
+        matched = latest_df[
+            latest_df["コード"] == display_us_code(sector_etf)
+        ]
+
+        if not matched.empty:
+            row = matched.iloc[0]
+            status = row["判定"]
+            direction = row["移動方向"]
+            ratio = float(row["相対強度"])
+            momentum = float(row["モメンタム"])
+            status_comment = row["初心者向け解説"]
+
+    color = RRG_STATUS_INFO.get(
+        status,
+        {"color": "#64748B"},
+    )["color"]
 
     st.markdown(
-        """
-        1. 企業情報のセクター名を標準化して判定  
-        2. セクター名で判定できない場合は業種名から判定  
-        3. 情報が欠落している場合は登録済み予備分類を使用  
-        """
+        f"""
+        <div style="
+            border: 1px solid #CBD5E1;
+            border-left: 7px solid {color};
+            border-radius: 10px;
+            padding: 18px;
+            background: #FFFFFF;
+            margin-top: 10px;
+        ">
+            <div style="font-size:22px; font-weight:700;">
+                {escape(display_us_code(symbol))}
+            </div>
+            <div style="margin-top:5px; color:#475569;">
+                {escape(company_name)}
+            </div>
+            <hr style="border:none; border-top:1px solid #E2E8F0;">
+            <div>
+                <b>対応セクター：</b>
+                {escape(sector_name)}
+            </div>
+            <div style="margin-top:6px;">
+                <b>対応セクターETF：</b>
+                {escape(display_us_code(sector_etf))}
+            </div>
+            <div style="margin-top:6px;">
+                <b>現在のセクター判定：</b>
+                <span style="color:{color}; font-weight:700;">
+                    {escape(status)}
+                </span>
+            </div>
+            <div style="margin-top:6px;">
+                <b>直近の矢印：</b>
+                {escape(direction)}
+            </div>
+            <div style="margin-top:6px;">
+                <b>判定方法：</b>
+                {escape(result["method"])}
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    st.markdown("### 今回登録済みの予備分類")
+    if np.isfinite(ratio) and np.isfinite(momentum):
+        col1, col2 = st.columns(2)
 
-    fallback_table = pd.DataFrame(
+        col1.metric(
+            "セクター相対強度",
+            f"{ratio:.3f}",
+        )
+
+        col2.metric(
+            "セクターモメンタム",
+            f"{momentum:.3f}",
+        )
+
+    if status_comment:
+        st.info(status_comment)
+
+    if result["industry"]:
+        st.caption(
+            f"取得した業種情報：{result['industry']}"
+        )
+
+    st.warning(
+        "個別銘柄の値動きは、所属セクターの動きと一致するとは限りません。"
+        "企業固有の業績、決算、バリュエーション、ニュースなども影響します。"
+    )
+
+
+# =========================================================
+# 説明
+# =========================================================
+
+def render_rrg_guide():
+    st.subheader("RRGの見方")
+
+    guide_df = pd.DataFrame(
         [
             {
-                "銘柄": f"{ticker}.US",
-                "セクター": data["sector"],
-                "業種": data["industry"],
-                "対応ETF": data["reference_code"]
-            }
-            for ticker, data
-            in KNOWN_US_STOCK_SECTORS.items()
+                "判定": "改善",
+                "位置": "左上",
+                "状態": "相対的には弱いが、勢いは改善",
+                "初心者向けの意味": (
+                    "市場平均との差が縮小している段階です。"
+                    "主導へ進むか、途中で失速するかを観察します。"
+                ),
+            },
+            {
+                "判定": "主導",
+                "位置": "右上",
+                "状態": "相対的に強く、勢いも上向き",
+                "初心者向けの意味": (
+                    "市場平均より強く、優位性も拡大している状態です。"
+                ),
+            },
+            {
+                "判定": "鈍化",
+                "位置": "右下",
+                "状態": "相対的には強いが、勢いは低下",
+                "初心者向けの意味": (
+                    "まだ強い位置ですが、これまでの勢いが弱まっています。"
+                ),
+            },
+            {
+                "判定": "劣後",
+                "位置": "左下",
+                "状態": "相対的に弱く、勢いも低下",
+                "初心者向けの意味": (
+                    "市場平均を下回り、相対的な状態も悪化しています。"
+                ),
+            },
         ]
     )
 
     st.dataframe(
-        fallback_table,
+        guide_df,
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
+    )
+
+    st.markdown(
+        """
+        #### 矢印の読み方
+
+        - **右上**：相対強度と勢いがともに改善
+        - **右下**：相対強度は改善しているが、勢いは低下
+        - **左上**：相対強度は低下しているが、勢いは改善
+        - **左下**：相対強度と勢いがともに悪化
+
+        #### 本質的な注意点
+
+        1. 象限だけではなく、**矢印の方向と長さ**を確認します。
+        2. 「改善」は上昇確定ではなく、相対的な回復段階です。
+        3. 「主導」でも実際の価格が下落している場合があります。
+        4. 中心付近の小さな往復は、明確な方向性がない可能性があります。
+        5. RRGはベンチマークとの比較であり、単独の売買シグナルではありません。
+        """
+    )
+
+    st.info(
+        "このアプリのRRGは、公開価格データを基にした簡易正規化モデルです。"
+        "商用RRGの固有計算式を再現したものではありません。"
     )
 
 
-# ============================================================
-# タブ3：セクターヒートマップ
-# ============================================================
+# =========================================================
+# メイン処理
+# =========================================================
 
-with tab3:
-    if sector_returns.empty:
-        st.error("セクターETFの価格データを取得できませんでした。")
-    else:
-        view_mode = st.radio(
-            "表示形式",
-            options=["期間別ランキング", "全期間マトリクス表", "ヒートマップ画像"],
-            horizontal=True,
-            label_visibility="collapsed"
+def main():
+    st.title("📊 米国セクター・ローテーション分析")
+
+    st.write(
+        "米国11セクターの相対強度と相対モメンタムを、"
+        "「改善・主導・鈍化・劣後」の日本語判定で表示します。"
+    )
+
+    st.caption(
+        f"比較ベンチマーク：{display_us_code(BENCHMARK)}"
+        "｜価格データ取得元：Yahoo Finance経由"
+    )
+
+    with st.sidebar:
+        st.header("表示設定")
+
+        data_period = st.selectbox(
+            "データ取得期間",
+            options=["1y", "2y", "5y"],
+            index=1,
+            format_func=lambda value: {
+                "1y": "1年",
+                "2y": "2年",
+                "5y": "5年",
+            }[value],
         )
 
-        table = sector_returns.copy()
-        table.columns = [col.replace("営業日", "日") for col in table.columns]
-        table["セクター"] = [
-            f"{US_SECTOR_ETFS[code]['sector_ja']} ({code.replace('.US', '')})"
-            for code in table.index
+        tail_length = st.slider(
+            "矢印の表示期間（週）",
+            min_value=3,
+            max_value=16,
+            value=8,
+            step=1,
+        )
+
+        selected_sector_names = st.multiselect(
+            "RRGに表示するセクター",
+            options=list(SECTOR_ETFS.values()),
+            default=list(SECTOR_ETFS.values()),
+        )
+
+        selected_tickers = [
+            ticker
+            for ticker, sector_name in SECTOR_ETFS.items()
+            if sector_name in selected_sector_names
         ]
 
-        if view_mode == "期間別ランキング":
-            target_period = st.selectbox(
-                "ソート基準の期間",
-                options=["5日", "21日", "63日", "126日"],
-                index=1
-            )
-            
-            ranking_df = table[["セクター", target_period]].sort_values(
-                by=target_period,
-                ascending=False
-            ).reset_index(drop=True)
-            
-            styled_ranking = ranking_df.style.format(
-                {target_period: "{:+.2f}%"},
-                na_rep="取得不可"
-            ).background_gradient(
-                subset=[target_period],
-                cmap="RdBu",
-                axis=0
-            )
-            
-            st.dataframe(
-                styled_ranking,
-                use_container_width=True,
-                hide_index=True
-            )
-
-        elif view_mode == "全期間マトリクス表":
-            cols = ["セクター"] + [col for col in table.columns if col != "セクター"]
-            matrix_df = table[cols].reset_index(drop=True)
-
-            styled_table = matrix_df.style.format(
-                {
-                    col: "{:+.2f}%"
-                    for col in ["5日", "21日", "63日", "126日"]
-                    if col in matrix_df.columns
-                },
-                na_rep="取得不可"
-            ).background_gradient(
-                subset=[
-                    col
-                    for col in ["5日", "21日", "63日", "126日"]
-                    if col in matrix_df.columns
-                ],
-                cmap="RdBu",
-                axis=0
-            )
-
-            st.dataframe(
-                styled_table,
-                use_container_width=True,
-                hide_index=True
-            )
-
-        else:
-            heatmap = create_sector_heatmap(sector_returns)
-            if heatmap is not None:
-                st.plotly_chart(
-                    heatmap,
-                    use_container_width=True,
-                    config={"displayModeBar": False}
-                )
-
-        st.caption(
-            "青色はプラス、赤色はマイナスの騰落率を示します。"
-            "特定セクターの売買判断を示すものではありません。"
-        )
-
-
-# ============================================================
-# タブ4：セクター移動図
-# ============================================================
-
-with tab4:
-    rotation_chart = create_relative_rotation_chart(
-        prices=sector_prices,
-        selected_reference=selected_sector.get(
-            "reference_code"
-        )
-    )
-
-    if rotation_chart is None:
-        st.error(
-            "セクター移動図を作成するためのデータが"
-            "不足しています。"
-        )
-
-    else:
-        st.plotly_chart(
-            rotation_chart,
-            use_container_width=True
-        )
+        st.divider()
 
         st.markdown(
             """
-            ### 見方
+            **色の意味**
 
-            - **右上**：相対強度と相対モメンタムがともに基準以上
-            - **左上**：相対強度は基準未満、モメンタムは基準以上
-            - **左下**：相対強度と相対モメンタムがともに基準未満
-            - **右下**：相対強度は基準以上、モメンタムは基準未満
+            - 🔵 改善
+            - 🟢 主導
+            - 🟠 鈍化
+            - 🔴 劣後
             """
         )
 
-        if selected_sector.get("reference_code"):
-            st.info(
-                f"選択銘柄{display_ticker}の対応セクター"
-                f"{selected_sector['reference_code']}は、"
-                "線と点を太く表示しています。"
-            )
+        if st.button(
+            "データを再取得",
+            use_container_width=True,
+        ):
+            st.cache_data.clear()
+            st.rerun()
 
-        st.caption(
-            "この図はSPY.USに対する各セクターETFの"
-            "相対的な価格推移を簡易的に可視化したものです。"
-            "正式な指数提供会社のRRG指標と計算方法が"
-            "一致するとは限りません。"
+    if not selected_tickers:
+        st.warning(
+            "サイドバーで、少なくとも1つのセクターを選択してください。"
+        )
+        return
+
+    with st.spinner("市場データを取得しています..."):
+        prices = download_market_data(data_period)
+
+    if prices.empty:
+        st.error(
+            "市場データを取得できませんでした。"
+            "通信環境、銘柄コード、データ提供元の状態をご確認ください。"
+        )
+        return
+
+    missing_tickers = [
+        ticker
+        for ticker in [BENCHMARK] + list(SECTOR_ETFS.keys())
+        if ticker not in prices.columns
+    ]
+
+    if missing_tickers:
+        missing_display = ", ".join(
+            display_us_code(ticker)
+            for ticker in missing_tickers
         )
 
+        st.warning(
+            f"一部のデータを取得できませんでした：{missing_display}"
+        )
 
-# ============================================================
-# フッター
-# ============================================================
+    available_dates = prices.dropna(how="all").index
 
-st.markdown("---")
+    if len(available_dates) > 0:
+        latest_market_date = available_dates.max().strftime("%Y-%m-%d")
+        st.caption(f"取得データの最新日：{latest_market_date}")
 
-st.caption(
-    "本画面は公開市場データを用いた情報提供用の分析画面です。"
-    "データはリアルタイムではなく、遅延・欠損・誤差が"
-    "発生する場合があります。最新の株価・企業情報は"
-    "moomooでご確認ください。本内容は投資判断を目的とした"
-    "ものではありません。"
-)
+    rrg_df = calculate_rrg(prices)
+
+    if rrg_df.empty:
+        st.error(
+            "相対強度・モメンタムを計算できませんでした。"
+            "取得期間を長くして再度お試しください。"
+        )
+        return
+
+    tab_rrg, tab_heatmap, tab_symbol, tab_guide = st.tabs(
+        [
+            "🧭 セクター移動図",
+            "🔥 騰落率ヒートマップ",
+            "🔎 銘柄のセクター確認",
+            "📘 見方・注意点",
+        ]
+    )
+
+    with tab_rrg:
+        st.markdown(
+            """
+            **最新地点のラベル**に、セクター名と現在の日本語判定を表示します。  
+            点へマウスを重ねると、その時点の日付・数値・初心者向け説明を確認できます。
+            """
+        )
+
+        latest_df = render_rrg_chart(
+            rrg_df=rrg_df,
+            tail_length=tail_length,
+            selected_tickers=selected_tickers,
+        )
+
+        render_latest_status(latest_df)
+
+    with tab_heatmap:
+        render_heatmap(prices)
+
+    with tab_symbol:
+        all_latest_df = render_rrg_chart_for_table(rrg_df)
+        render_symbol_sector_checker(all_latest_df)
+
+    with tab_guide:
+        render_rrg_guide()
+
+    st.divider()
+
+    st.caption(
+        "本画面は公開市場データを基にした参考情報です。"
+        "データには遅延、欠損、取得失敗が生じる場合があります。"
+        "RRGの判定はベンチマークに対する相対評価であり、"
+        "将来の価格変動や投資成果を保証するものではありません。"
+    )
+
+
+def render_rrg_chart_for_table(rrg_df):
+    """
+    銘柄セクター確認タブ用に、全セクターの最新判定を作成します。
+    グラフは描画しません。
+    """
+    if rrg_df.empty:
+        return pd.DataFrame()
+
+    rows = []
+
+    for ticker, sector_df in rrg_df.groupby("ticker"):
+        sector_df = sector_df.sort_values("date")
+
+        if sector_df.empty:
+            continue
+
+        latest = sector_df.iloc[-1]
+        status = classify_rrg(
+            float(latest["rs_ratio"]),
+            float(latest["rs_momentum"]),
+        )
+
+        if len(sector_df) >= 2:
+            previous = sector_df.iloc[-2]
+
+            direction, direction_comment = classify_direction(
+                float(previous["rs_ratio"]),
+                float(previous["rs_momentum"]),
+                float(latest["rs_ratio"]),
+                float(latest["rs_momentum"]),
+            )
+        else:
+            direction = "判定不可"
+            direction_comment = (
+                "比較する過去データが不足しています。"
+            )
+
+        comment = make_beginner_comment(
+            status,
+            direction,
+            direction_comment,
+        )
+
+        rows.append(
+            {
+                "コード": display_us_code(ticker),
+                "セクター": latest["sector"],
+                "判定": status,
+                "移動方向": direction,
+                "相対強度": float(latest["rs_ratio"]),
+                "モメンタム": float(latest["rs_momentum"]),
+                "基準日": pd.Timestamp(
+                    latest["date"]
+                ).strftime("%Y-%m-%d"),
+                "初心者向け解説": comment,
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+if __name__ == "__main__":
+    main()
