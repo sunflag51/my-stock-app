@@ -6,7 +6,7 @@
 # 1. 選択銘柄の価格チャート
 # 2. セクター・業種の判定
 # 3. GOOG.US、 GOOGL.US 、ISRG.USの予備分類
-# 4. 米国11セクターの騰落率ヒートマップ
+# 4. 米国11セクターの騰落率ヒートマップ（スマホ対応版）
 # 5. セクター相対強度・モメンタム移動図
 # ============================================================
 
@@ -850,19 +850,20 @@ def create_stock_chart(history, display_ticker):
 
 
 def create_sector_heatmap(sector_returns):
-    """セクター騰落率ヒートマップ。"""
+    """セクター騰落率ヒートマップ（スマホ向けスリム表示）。"""
     if sector_returns is None or sector_returns.empty:
         return None
 
     display_df = sector_returns.copy()
 
+    # ラベルを短縮（.USを除去して横幅を節約）
     display_df.index = [
-        (
-            f"{US_SECTOR_ETFS[code]['sector_ja']}"
-            f"（{code}）"
-        )
+        f"{US_SECTOR_ETFS[code]['sector_ja']} ({code.replace('.US', '')})"
         for code in display_df.index
     ]
+
+    # 列名も短縮
+    display_df.columns = [col.replace("営業日", "日") for col in display_df.columns]
 
     text_values = display_df.map(
         lambda value: (
@@ -879,16 +880,14 @@ def create_sector_heatmap(sector_returns):
             y=display_df.index,
             text=text_values.values,
             texttemplate="%{text}",
-            textfont={"size": 12},
+            textfont={"size": 11},
             colorscale=[
                 [0.0, "#b2182b"],
                 [0.5, "#f7f7f7"],
                 [1.0, "#2166ac"]
             ],
             zmid=0,
-            colorbar=dict(
-                title="騰落率（%）"
-            ),
+            showscale=False,
             hovertemplate=(
                 "セクター：%{y}<br>"
                 "期間：%{x}<br>"
@@ -899,14 +898,16 @@ def create_sector_heatmap(sector_returns):
     )
 
     fig.update_layout(
-        title="米国11セクターの期間別騰落率",
-        height=580,
+        title="セクター別 騰落率ヒートマップ",
+        height=520,
         margin=dict(
-            l=20,
-            r=20,
-            t=60,
-            b=20
-        )
+            l=10,
+            r=10,
+            t=40,
+            b=10
+        ),
+        xaxis=dict(tickfont=dict(size=11)),
+        yaxis=dict(tickfont=dict(size=11), autorange="reversed")
     )
 
     return fig
@@ -1430,68 +1431,87 @@ with tab2:
 
 with tab3:
     if sector_returns.empty:
-        st.error(
-            "セクターETFの価格データを取得できませんでした。"
-        )
-
+        st.error("セクターETFの価格データを取得できませんでした。")
     else:
-        heatmap = create_sector_heatmap(
-            sector_returns
+        view_mode = st.radio(
+            "表示形式",
+            options=["期間別ランキング", "全期間マトリクス表", "ヒートマップ画像"],
+            horizontal=True,
+            label_visibility="collapsed"
         )
-
-        if heatmap is not None:
-            st.plotly_chart(
-                heatmap,
-                use_container_width=True
-            )
 
         table = sector_returns.copy()
+        table.columns = [col.replace("営業日", "日") for col in table.columns]
+        table["セクター"] = [
+            f"{US_SECTOR_ETFS[code]['sector_ja']} ({code.replace('.US', '')})"
+            for code in table.index
+        ]
 
-        table.insert(
-            0,
-            "セクター",
-            [
-                US_SECTOR_ETFS[code]["sector_ja"]
-                for code in table.index
-            ]
-        )
+        if view_mode == "期間別ランキング":
+            target_period = st.selectbox(
+                "ソート基準の期間",
+                options=["5日", "21日", "63日", "126日"],
+                index=1
+            )
+            
+            ranking_df = table[["セクター", target_period]].sort_values(
+                by=target_period,
+                ascending=False
+            ).reset_index(drop=True)
+            
+            styled_ranking = ranking_df.style.format(
+                {target_period: "{:+.2f}%"},
+                na_rep="取得不可"
+            ).background_gradient(
+                subset=[target_period],
+                cmap="RdBu",
+                axis=0
+            )
+            
+            st.dataframe(
+                styled_ranking,
+                use_container_width=True,
+                hide_index=True
+            )
 
-        table.index.name = "ETF"
+        elif view_mode == "全期間マトリクス表":
+            cols = ["セクター"] + [col for col in table.columns if col != "セクター"]
+            matrix_df = table[cols].reset_index(drop=True)
 
-        styled_table = table.style.format(
-            {
-                column: "{:+.2f}%"
-                for column in [
-                    "5営業日",
-                    "21営業日",
-                    "63営業日",
-                    "126営業日"
-                ]
-                if column in table.columns
-            },
-            na_rep="取得不可"
-        ).background_gradient(
-            subset=[
-                column
-                for column in [
-                    "5営業日",
-                    "21営業日",
-                    "63営業日",
-                    "126営業日"
-                ]
-                if column in table.columns
-            ],
-            cmap="RdBu",
-            axis=0
-        )
+            styled_table = matrix_df.style.format(
+                {
+                    col: "{:+.2f}%"
+                    for col in ["5日", "21日", "63日", "126日"]
+                    if col in matrix_df.columns
+                },
+                na_rep="取得不可"
+            ).background_gradient(
+                subset=[
+                    col
+                    for col in ["5日", "21日", "63日", "126日"]
+                    if col in matrix_df.columns
+                ],
+                cmap="RdBu",
+                axis=0
+            )
 
-        st.dataframe(
-            styled_table,
-            use_container_width=True
-        )
+            st.dataframe(
+                styled_table,
+                use_container_width=True,
+                hide_index=True
+            )
+
+        else:
+            heatmap = create_sector_heatmap(sector_returns)
+            if heatmap is not None:
+                st.plotly_chart(
+                    heatmap,
+                    use_container_width=True,
+                    config={"displayModeBar": False}
+                )
 
         st.caption(
-            "青色・赤色は期間内騰落率の違いを視覚化したものです。"
+            "青色はプラス、赤色はマイナスの騰落率を示します。"
             "特定セクターの売買判断を示すものではありません。"
         )
 
