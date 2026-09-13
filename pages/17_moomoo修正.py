@@ -93,12 +93,12 @@ st.caption(
 # =========================================================
 def load_ticker_list() -> list[str]:
     return [
-        " GOOG.US  (アルファベット)",
-        " AAPL.US  (アップル)",
-        " KO.US  (コカ・コーラ)",
-        " V.US  (ビザ)",
-        " ISRG.US  (インテュイティブ・サージカル)",
-        " COST.US  (コストコ)",
+        "GOOG.US (アルファベット)",
+        "AAPL.US (アップル)",
+        "KO.US (コカ・コーラ)",
+        "V.US (ビザ)",
+        "ISRG.US (インテュイティブ・サージカル)",
+        "COST.US (コストコ)",
         "7974.T (任天堂)",
         "7203.T (トヨタ自動車)",
     ]
@@ -114,7 +114,12 @@ def normalize_symbol(symbol: str) -> tuple[str, str]:
     if not isinstance(symbol, str) or not symbol.strip():
         return default_provider, default_display
 
-    raw_symbol = symbol.split(" ")[0].strip().upper()
+    # 先頭・末尾の空白を除去したうえで空白区切りの先頭要素を取得
+    cleaned_parts = symbol.strip().split()
+    if not cleaned_parts:
+        return default_provider, default_display
+
+    raw_symbol = cleaned_parts[0].strip().upper()
 
     if raw_symbol in {"", "登録なし", "NONE", "NAN"}:
         return default_provider, default_display
@@ -126,7 +131,7 @@ def normalize_symbol(symbol: str) -> tuple[str, str]:
         if re.fullmatch(r"[A-Z][A-Z0-9.\-^=]*", provider_symbol):
             return provider_symbol, raw_symbol
 
-    # 日本株
+    # 日本株（4桁数字または4桁.T）
     if re.fullmatch(r"\d{4}", raw_symbol):
         japan_symbol = f"{raw_symbol}.T"
         return japan_symbol, japan_symbol
@@ -134,11 +139,11 @@ def normalize_symbol(symbol: str) -> tuple[str, str]:
     if re.fullmatch(r"\d{4}\.T", raw_symbol):
         return raw_symbol, raw_symbol
 
-    # 米国株
+    # 米国株（サフィックスなしで直接ティッカーが入力された場合）
     if re.fullmatch(r"[A-Z][A-Z0-9.\-]*", raw_symbol):
         return raw_symbol, f"{raw_symbol}.US"
 
-    # その他のyfinanceコードは加工せず利用
+    # その他のコード
     logger.warning("未分類の銘柄コードです: %s", raw_symbol)
     return raw_symbol, raw_symbol
 
@@ -1403,7 +1408,6 @@ def create_learning_candlestick_chart(
         if not learning_tip:
             learning_tip = generate_learning_tip(row)
             
-        # Plotlyのホバーテキスト内で改行させるために <br> や \n を使用
         hover_texts.append(
             f"<b>{index:%Y-%m-%d}</b><br>"
             f"終値: {row['Close']:,.2f}{unit}　"
