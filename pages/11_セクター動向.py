@@ -474,7 +474,7 @@ def calculate_rrg(
         )
 
         relative_momentum = relative_strength.pct_change(
-            momentum_lookback,
+            periods=momentum_lookback,
             fill_method=None,
         )
 
@@ -655,29 +655,25 @@ def render_rrg_chart(
         (
             x_min + (100.0 - x_min) * 0.05,
             y_max - (y_max - 100.0) * 0.08,
-            "改善
-<span style='font-size:11px'>弱いが勢いは回復</span>",
+            "改善<br><span style='font-size:11px'>弱いが勢いは回復</span>",
             "#2563EB",
         ),
         (
             100.0 + (x_max - 100.0) * 0.05,
             y_max - (y_max - 100.0) * 0.08,
-            "主導
-<span style='font-size:11px'>強く勢いも上向き</span>",
+            "主導<br><span style='font-size:11px'>強く勢いも上向き</span>",
             "#16A34A",
         ),
         (
             100.0 + (x_max - 100.0) * 0.05,
             y_min + (100.0 - y_min) * 0.08,
-            "鈍化
-<span style='font-size:11px'>強いが勢いは低下</span>",
+            "鈍化<br><span style='font-size:11px'>強いが勢いは低下</span>",
             "#D97706",
         ),
         (
             x_min + (100.0 - x_min) * 0.05,
             y_min + (100.0 - y_min) * 0.08,
-            "劣後
-<span style='font-size:11px'>弱く勢いも低下</span>",
+            "劣後<br><span style='font-size:11px'>弱く勢いも低下</span>",
             "#DC2626",
         ),
     ]
@@ -754,19 +750,13 @@ def render_rrg_chart(
             point_date = pd.Timestamp(row["date"]).strftime("%Y-%m-%d")
 
             hover_texts.append(
-                f"<b>{escape(sector_name)}</b>"
-                f"
-コード: {display_us_code(ticker)}"
-                f"
-日付: {point_date}"
-                f"
-判定: <b>{point_status}</b>"
-                f"
-相対強度: {float(row['rs_ratio']):.3f}"
-                f"
-モメンタム: {float(row['rs_momentum']):.3f}"
-                f"
-{RRG_STATUS_INFO[point_status]['short']}"
+                f"<b>{escape(sector_name)}</b><br>"
+                f"コード: {display_us_code(ticker)}<br>"
+                f"日付: {point_date}<br>"
+                f"判定: <b>{point_status}</b><br>"
+                f"相対強度: {float(row['rs_ratio']):.3f}<br>"
+                f"モメンタム: {float(row['rs_momentum']):.3f}<br>"
+                f"{RRG_STATUS_INFO[point_status]['short']}"
             )
 
         marker_sizes = [
@@ -1141,15 +1131,12 @@ def render_heatmap(prices):
             zmin=-color_limit,
             zmax=color_limit,
             colorbar={
-                "title": "騰落率
-（%）",
+                "title": "騰落率<br>（%）",
             },
             hovertemplate=(
-                "<b>%{y}</b>"
-                "
-期間: %{x}"
-                "
-騰落率: %{z:.2f}%"
+                "<b>%{y}</b><br>"
+                "期間: %{x}<br>"
+                "騰落率: %{z:.2f}%"
                 "<extra></extra>"
             ),
         )
