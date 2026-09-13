@@ -71,22 +71,22 @@ US_SECTOR_ETFS = {
         "sector_en": "Communication Services",
         "sector_ja": "コミュニケーション・サービス"
     },
-    " XLY.US ": {
+    "XLY.US": {
         "yahoo": "XLY",
         "sector_en": "Consumer Discretionary",
         "sector_ja": "一般消費財"
     },
-    " XLP.US ": {
+    "XLP.US": {
         "yahoo": "XLP",
         "sector_en": "Consumer Staples",
         "sector_ja": "生活必需品"
     },
-    " XLE.US ": {
+    "XLE.US": {
         "yahoo": "XLE",
         "sector_en": "Energy",
         "sector_ja": "エネルギー"
     },
-    " XLF.US ": {
+    "XLF.US": {
         "yahoo": "XLF",
         "sector_en": "Financials",
         "sector_ja": "金融"
@@ -96,27 +96,27 @@ US_SECTOR_ETFS = {
         "sector_en": "Health Care",
         "sector_ja": "ヘルスケア"
     },
-    " XLI.US ": {
+    "XLI.US": {
         "yahoo": "XLI",
         "sector_en": "Industrials",
         "sector_ja": "資本財・産業"
     },
-    " XLB.US ": {
+    "XLB.US": {
         "yahoo": "XLB",
         "sector_en": "Materials",
         "sector_ja": "素材"
     },
-    " XLRE.US ": {
+    "XLRE.US": {
         "yahoo": "XLRE",
         "sector_en": "Real Estate",
         "sector_ja": "不動産"
     },
-    " XLK.US ": {
+    "XLK.US": {
         "yahoo": "XLK",
         "sector_en": "Information Technology",
         "sector_ja": "情報技術"
     },
-    " XLU.US ": {
+    "XLU.US": {
         "yahoo": "XLU",
         "sector_en": "Utilities",
         "sector_ja": "公益事業"
@@ -348,7 +348,7 @@ def get_sector_price_table(period="1y"):
         for code, data in US_SECTOR_ETFS.items()
     }
 
-    symbols[" SPY.US "] = "SPY"
+    symbols["SPY.US"] = "SPY"
 
     for display_code, yahoo_code in symbols.items():
         try:
@@ -864,7 +864,7 @@ def create_sector_heatmap(sector_returns):
         for code in display_df.index
     ]
 
-    text_values = display_df.applymap(
+    text_values = display_df.map(
         lambda value: (
             ""
             if pd.isna(value)
@@ -890,10 +890,8 @@ def create_sector_heatmap(sector_returns):
                 title="騰落率（%）"
             ),
             hovertemplate=(
-                "セクター：%{y}
-"
-                "期間：%{x}
-"
+                "セクター：%{y}<br>"
+                "期間：%{x}<br>"
                 "騰落率：%{z:.2f}%"
                 "<extra></extra>"
             )
@@ -1035,12 +1033,9 @@ def create_relative_rotation_chart(
                     for date in weekly_points.index
                 ],
                 hovertemplate=(
-                    f"{sector_label}
-"
-                    "日付：%{text}
-"
-                    "相対強度：%{x:.2f}
-"
+                    f"{sector_label}<br>"
+                    "日付：%{text}<br>"
+                    "相対強度：%{x:.2f}<br>"
                     "相対モメンタム：%{y:.2f}"
                     "<extra></extra>"
                 )
