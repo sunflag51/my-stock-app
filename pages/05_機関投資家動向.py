@@ -82,9 +82,11 @@ st.markdown(
 def safe_float(value, default=np.nan):
     """数値変換。変換できない場合はdefaultを返す。"""
     try:
-        value = float(value)
-        if np.isfinite(value):
-            return value
+        if pd.isna(value):
+            return default
+        val = float(value)
+        if np.isfinite(val):
+            return val
         return default
     except (TypeError, ValueError):
         return default
@@ -273,12 +275,18 @@ def load_google_sheet_options(sheet_link):
         return []
 
     csv_url = sheet_link.split("/edit")[0] + "/export?format=csv"
-    source = pd.read_csv(csv_url, header=None)
+    try:
+        source = pd.read_csv(csv_url, header=None)
+    except Exception:
+        return []
 
     options = []
 
     for _, row in source.iterrows():
         if len(row) < 2:
+            continue
+            
+        if pd.isna(row.iloc[0]) or pd.isna(row.iloc[1]):
             continue
 
         name = str(row.iloc[0]).strip()
@@ -307,10 +315,13 @@ def calculate_indicators(source_df):
     high_low_range = (df["High"] - df["Low"]).replace(0, np.nan)
 
     # Money Flow Multiplier
-    mfm = (
-        ((df["Close"] - df["Low"]) - (df["High"] - df["Close"]))
-        / high_low_range
-    ).fillna(0.0)
+    # ゼロ除算を避けるため、high_low_rangeが0またはNaNの行は0とする
+    mfm = np.where(
+        pd.isna(high_low_range) | (high_low_range == 0),
+        0.0,
+        ((df["Close"] - df["Low"]) - (df["High"] - df["Close"])) / high_low_range
+    )
+    mfm = pd.Series(mfm, index=df.index).fillna(0.0)
 
     # Money Flow Volume
     mfv = mfm * df["Volume"].fillna(0)
@@ -528,7 +539,7 @@ def calculate_supply_demand_score(df):
     ma20 = safe_float(df["MA20"].iloc[-1])
     ma50 = safe_float(df["MA50"].iloc[-1])
 
-    if pd.isna(ma20) or pd.isna(ma50):
+    if pd.isna(ma20) or pd.isna(ma50) or pd.isna(current_price):
         trend_score = 0
         trend_text = "移動平均を計算できません"
     elif current_price >= ma20 and ma20 >= ma50:
@@ -631,19 +642,24 @@ def calculate_max_pain(calls, puts):
 
 def calculate_atm_iv(calls, puts, current_price, width=0.10):
     """現在値±10%をATM近傍としてIV中央値を計算。"""
+    if pd.isna(current_price) or current_price <= 0:
+        return np.nan, np.nan
+
     lower = current_price * (1 - width)
     upper = current_price * (1 + width)
 
-    call_atm = calls[
-        calls["strike"].between(lower, upper)
-    ]["impliedVolatility"].replace([np.inf, -np.inf], np.nan).dropna()
+    call_iv = np.nan
+    put_iv = np.nan
 
-    put_atm = puts[
-        puts["strike"].between(lower, upper)
-    ]["impliedVolatility"].replace([np.inf, -np.inf], np.nan).dropna()
+    if not calls.empty:
+        call_atm = calls[calls["strike"].between(lower, upper)]["impliedVolatility"].replace([np.inf, -np.inf], np.nan).dropna()
+        if not call_atm.empty:
+            call_iv = safe_float(call_atm.median())
 
-    call_iv = safe_float(call_atm.median()) if not call_atm.empty else np.nan
-    put_iv = safe_float(put_atm.median()) if not put_atm.empty else np.nan
+    if not puts.empty:
+        put_atm = puts[puts["strike"].between(lower, upper)]["impliedVolatility"].replace([np.inf, -np.inf], np.nan).dropna()
+        if not put_atm.empty:
+            put_iv = safe_float(put_atm.median())
 
     return call_iv, put_iv
 
@@ -830,9 +846,8 @@ def create_volume_profile_chart(profile, current_price, poc_mid):
                 [profile["Low"], profile["High"]]
             ),
             hovertemplate=(
-                "価格帯: %{customdata[0]:.2f}～%{customdata[1]:.2f}"
-                "
-推定出来高: %{x:,.0f}<extra></extra>"
+                "価格帯: %{customdata[0]:.2f}～%{customdata[1]:.2f}<br>"
+                "推定出来高: %{x:,.0f}<extra></extra>"
             ),
         )
     )
@@ -875,7 +890,7 @@ def create_option_oi_chart(calls, puts, current_price, max_pain):
     )
 
     # 現在値周辺に絞って見やすくする
-    if current_price > 0:
+    if not pd.isna(current_price) and current_price > 0:
         lower = current_price * 0.70
         upper = current_price * 1.30
         filtered = all_data[all_data["strike"].between(lower, upper)].copy()
@@ -907,19 +922,19 @@ def create_option_oi_chart(calls, puts, current_price, max_pain):
             opacity=0.75,
             customdata=put_data["openInterest"],
             hovertemplate=(
-                "Strike: %{x:.2f}
-"
+                "Strike: %{x:.2f}<br>"
                 "Put OI: %{customdata:,.0f}<extra></extra>"
             ),
         )
     )
 
-    fig.add_vline(
-        x=current_price,
-        line_color="#111827",
-        line_width=2,
-        annotation_text="現在値",
-    )
+    if not pd.isna(current_price) and current_price > 0:
+        fig.add_vline(
+            x=current_price,
+            line_color="#111827",
+            line_width=2,
+            annotation_text="現在値",
+        )
 
     if not pd.isna(max_pain):
         fig.add_vline(
@@ -949,7 +964,7 @@ def create_iv_chart(calls, puts, current_price):
     call_iv = calls.dropna(subset=["strike", "impliedVolatility"])
     put_iv = puts.dropna(subset=["strike", "impliedVolatility"])
 
-    if current_price > 0:
+    if not pd.isna(current_price) and current_price > 0:
         lower = current_price * 0.70
         upper = current_price * 1.30
 
@@ -987,12 +1002,13 @@ def create_iv_chart(calls, puts, current_price):
         )
     )
 
-    fig.add_vline(
-        x=current_price,
-        line_color="#111827",
-        line_width=2,
-        annotation_text="現在値",
-    )
+    if not pd.isna(current_price) and current_price > 0:
+        fig.add_vline(
+            x=current_price,
+            line_color="#111827",
+            line_width=2,
+            annotation_text="現在値",
+        )
 
     fig.update_layout(
         title="インプライド・ボラティリティ・スキュー",
