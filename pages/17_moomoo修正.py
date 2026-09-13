@@ -687,7 +687,6 @@ def build_signals(
     )
 
     # パターン3：陽線ハンマー
-    # 「陽線確認後に入る」という戦略方針に合わせて陰線は許可しない
     result["Today_Hammer"] = (
         result["Touched_Lower_Recent"]
         & result["Closed_Inside_Band"]
@@ -1382,11 +1381,17 @@ def create_learning_candlestick_chart(
     chart_data: pd.DataFrame,
     display_symbol: str,
     mid_period: int,
+    display_bars: int,
     is_japan: bool = False,
 ) -> go.Figure:
-    plot_df = chart_data.tail(150).copy()
+    
+    # 表示期間の適用（0の場合はすべて表示）
+    if display_bars > 0:
+        plot_df = chart_data.tail(display_bars).copy()
+    else:
+        plot_df = chart_data.copy()
+        
     unit = "円" if is_japan else "ドル"
-
     hover_texts = []
 
     for index, row in plot_df.iterrows():
@@ -1518,6 +1523,7 @@ def create_learning_candlestick_chart(
 def render_lightweight_chart_safe(
     data: pd.DataFrame,
     display_symbol: str,
+    display_bars: int,
     unique_key: str = "lw_chart",
 ) -> None:
     if not HAS_LW_CHARTS:
@@ -1540,7 +1546,11 @@ def render_lightweight_chart_safe(
     chart_data = chart_data.drop_duplicates(
         subset=["time"],
         keep="last",
-    ).tail(150)
+    )
+    
+    # 表示期間の適用（0の場合はすべて表示）
+    if display_bars > 0:
+        chart_data = chart_data.tail(display_bars)
 
     candles = []
 
@@ -1987,6 +1997,27 @@ def render_sidebar() -> dict:
     st.sidebar.caption(
         "時間軸は日足です。バックテストも日足前提で実行します。"
     )
+    
+    # ======= ここから追加：チャート表示設定 =======
+    st.sidebar.divider()
+    st.sidebar.subheader("📈 チャート設定")
+    
+    chart_display_range = st.sidebar.selectbox(
+        "チャート表示期間",
+        options=["半年", "1年", "2年", "3年", "すべて"],
+        index=1,
+        help="チャートに描画するローソク足の期間を指定します（1年≒約250営業日）。"
+    )
+    
+    chart_bars_map = {
+        "半年": 125,
+        "1年": 250,
+        "2年": 500,
+        "3年": 750,
+        "すべて": 0,
+    }
+    chart_display_bars = chart_bars_map[chart_display_range]
+    # ============================================
 
     st.sidebar.divider()
     st.sidebar.subheader("📊 指標設定")
@@ -2122,6 +2153,7 @@ def render_sidebar() -> dict:
         "selected_symbol": selected_symbol,
         "period": period_map[period_label],
         "interval": "1d",
+        "chart_display_bars": chart_display_bars, # 追加
         "bb_period": int(bb_period),
         "bb_sigma": float(bb_sigma),
         "mid_period": int(mid_period),
@@ -2275,9 +2307,12 @@ def render_chart_tab(
     signal_data: pd.DataFrame,
     display_symbol: str,
     mid_period: int,
+    display_bars: int,
     is_japan: bool,
 ) -> None:
     st.subheader("📈 価格・シグナルチャート")
+    
+    st.caption("※サイドバーの「チャート設定」から表示期間を変更できます。")
 
     chart_type = st.radio(
         "チャート形式",
@@ -2293,6 +2328,7 @@ def render_chart_tab(
             chart_data=signal_data,
             display_symbol=display_symbol,
             mid_period=mid_period,
+            display_bars=display_bars,
             is_japan=is_japan,
         )
 
@@ -2309,6 +2345,7 @@ def render_chart_tab(
         render_lightweight_chart_safe(
             data=signal_data,
             display_symbol=display_symbol,
+            display_bars=display_bars,
             unique_key=f"lightweight_{display_symbol}",
         )
 
@@ -2878,6 +2915,7 @@ def main() -> None:
             signal_data=signal_data,
             display_symbol=display_symbol,
             mid_period=settings["mid_period"],
+            display_bars=settings["chart_display_bars"],
             is_japan=is_japan,
         )
 
