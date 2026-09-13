@@ -1076,6 +1076,14 @@ def render_heatmap(prices):
         st.warning("騰落率を計算できるデータがありません。")
         return
 
+    # 表示形式の切り替えスイッチ
+    view_mode = st.radio(
+        "表示形式",
+        options=["期間別ランキング", "全期間マトリクス表", "ヒートマップ画像"],
+        horizontal=True,
+        label_visibility="collapsed"
+    )
+
     period_columns = [
         "1週間",
         "1か月",
@@ -1084,87 +1092,134 @@ def render_heatmap(prices):
         "1年",
     ]
 
-    z_values = returns_df[period_columns].to_numpy(dtype=float)
-
-    text_values = []
-
-    for row in z_values:
-        text_values.append(
-            [
-                "データ不足" if pd.isna(value) else f"{value:+.1f}%"
-                for value in row
-            ]
-        )
-
-    y_labels = [
-        f"{sector}（{display_us_code(ticker)}）"
-        for sector, ticker in zip(
-            returns_df["sector"],
-            returns_df["ticker"],
-        )
+    # 表示用データフレームの作成とラベル短縮
+    display_df = returns_df.copy()
+    display_df["セクター"] = [
+        f"{SECTOR_SHORT_NAMES.get(t, s)} ({t})"
+        for t, s in zip(display_df["ticker"], display_df["sector"])
     ]
 
-    finite_values = z_values[np.isfinite(z_values)]
-
-    if finite_values.size > 0:
-        color_limit = max(
-            float(np.nanpercentile(np.abs(finite_values), 90)),
-            1.0,
+    if view_mode == "期間別ランキング":
+        target_period = st.selectbox(
+            "ソート基準の期間",
+            options=period_columns,
+            index=1
         )
+        
+        ranking_df = display_df[["セクター", target_period]].sort_values(
+            by=target_period,
+            ascending=False
+        ).reset_index(drop=True)
+        
+        styled_ranking = ranking_df.style.format(
+            {target_period: "{:+.2f}%"},
+            na_rep="データ不足"
+        ).background_gradient(
+            subset=[target_period],
+            cmap="RdBu",
+            axis=0
+        )
+        
+        st.dataframe(
+            styled_ranking,
+            use_container_width=True,
+            hide_index=True
+        )
+
+    elif view_mode == "全期間マトリクス表":
+        cols = ["セクター"] + period_columns
+        matrix_df = display_df[cols].reset_index(drop=True)
+
+        styled_table = matrix_df.style.format(
+            {col: "{:+.2f}%" for col in period_columns},
+            na_rep="データ不足"
+        ).background_gradient(
+            subset=period_columns,
+            cmap="RdBu",
+            axis=0
+        )
+
+        st.dataframe(
+            styled_table,
+            use_container_width=True,
+            hide_index=True
+        )
+
     else:
-        color_limit = 1.0
+        # ヒートマップ画像の描画
+        z_values = returns_df[period_columns].to_numpy(dtype=float)
 
-    fig = go.Figure(
-        data=go.Heatmap(
-            z=z_values,
-            x=period_columns,
-            y=y_labels,
-            text=text_values,
-            texttemplate="%{text}",
-            textfont={"size": 12},
-            colorscale=[
-                [0.0, "#B91C1C"],
-                [0.5, "#F8FAFC"],
-                [1.0, "#15803D"],
-            ],
-            zmid=0,
-            zmin=-color_limit,
-            zmax=color_limit,
-            colorbar={
-                "title": "騰落率<br>（%）",
-            },
-            hovertemplate=(
-                "<b>%{y}</b><br>"
-                "期間: %{x}<br>"
-                "騰落率: %{z:.2f}%"
-                "<extra></extra>"
-            ),
+        text_values = []
+        for row in z_values:
+            text_values.append(
+                [
+                    "データ不足" if pd.isna(value) else f"{value:+.1f}%"
+                    for value in row
+                ]
+            )
+
+        y_labels = display_df["セクター"].tolist()
+
+        finite_values = z_values[np.isfinite(z_values)]
+        if finite_values.size > 0:
+            color_limit = max(
+                float(np.nanpercentile(np.abs(finite_values), 90)),
+                1.0,
+            )
+        else:
+            color_limit = 1.0
+
+        fig = go.Figure(
+            data=go.Heatmap(
+                z=z_values,
+                x=period_columns,
+                y=y_labels,
+                text=text_values,
+                texttemplate="%{text}",
+                textfont={"size": 11},  # スマホ向けに文字サイズを縮小
+                colorscale=[
+                    [0.0, "#B91C1C"],
+                    [0.5, "#F8FAFC"],
+                    [1.0, "#15803D"],
+                ],
+                zmid=0,
+                zmin=-color_limit,
+                zmax=color_limit,
+                showscale=False,  # 横幅確保のためカラーバーを非表示
+                hovertemplate=(
+                    "<b>%{y}</b><br>"
+                    "期間: %{x}<br>"
+                    "騰落率: %{z:.2f}%"
+                    "<extra></extra>"
+                ),
+            )
         )
-    )
 
-    fig.update_layout(
-        title={
-            "text": "セクター別騰落率ヒートマップ",
-            "x": 0.5,
-        },
-        height=620,
-        template="plotly_white",
-        margin={
-            "l": 190,
-            "r": 60,
-            "t": 70,
-            "b": 40,
-        },
-    )
+        fig.update_layout(
+            title={
+                "text": "セクター別騰落率ヒートマップ",
+                "x": 0.5,
+            },
+            height=550,
+            template="plotly_white",
+            margin={
+                "l": 10,  # 左マージンを極小化（スマホ幅対応）
+                "r": 10,
+                "t": 50,
+                "b": 10,
+            },
+            xaxis={"tickfont": {"size": 11}},
+            yaxis={"tickfont": {"size": 11}, "autorange": "reversed"}
+        )
 
-    st.plotly_chart(
-        fig,
-        use_container_width=True,
-        config={"displaylogo": False},
-    )
+        st.plotly_chart(
+            fig,
+            use_container_width=True,
+            config={"displayModeBar": False}
+        )
 
     st.caption(
-        "緑は対象期間の上昇、赤は下落を示します。"
+        "緑色は対象期間の上昇、赤色は下落を示します。"
         "RRGの相対判定とは異なり、このヒートマップは各ETF自体の騰落率です。"
     )
 
