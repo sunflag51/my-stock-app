@@ -321,7 +321,16 @@ def create_display_dataframe(dataframe):
             
     return display
 
+
+# ------------------------------------------------------------------
+# 修正箇所：Excel出力機能のエラー（openpyxl未インストール）を回避する
+# ------------------------------------------------------------------
 def get_excel_download(screened, all_companies, errors_df, config):
+    try:
+        import openpyxl  # openpyxlがインストールされているかテスト
+    except ImportError:
+        return None      # インストールされていない場合はNoneを返す（クラッシュさせない）
+
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         screened.to_excel(writer, sheet_name="条件通過銘柄", index=False)
@@ -401,8 +410,14 @@ def main():
             csv_data = screened.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
             col1.download_button(label="📄 通過銘柄をCSVでダウンロード", data=csv_data, file_name="sp500_screened_results.csv", mime="text/csv")
             
+            # ------------------------------------------------------------------
+            # Excel出力機能のエラーを回避するためのUI側の変更
+            # ------------------------------------------------------------------
             excel_data = get_excel_download(screened, all_companies, pd.DataFrame(errors), config)
-            col2.download_button(label="📊 詳細データをExcelでダウンロード", data=excel_data, file_name="sp500_complete_screening.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            if excel_data is not None:
+                col2.download_button(label="📊 詳細データをExcelでダウンロード", data=excel_data, file_name="sp500_complete_screening.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            else:
+                col2.warning("※Excel出力機能を使うには、GitHubの `requirements.txt` に `openpyxl` を追加してください。CSVはダウンロード可能です。")
             
         if errors:
             with st.expander("⚠️ 取得エラー一覧"):
