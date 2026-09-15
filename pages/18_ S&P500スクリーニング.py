@@ -19,7 +19,12 @@ def get_sp500_constituents():
     S&P500構成銘柄の一覧を取得。
     Yahoo FinanceではBRK.Bのような銘柄をBRK-B形式で指定する。
     """
-    table = pd.read_html(SP500_URL)[0]
+    # HTTP 403 Forbidden エラー回避のため User-Agent を設定
+    storage_options = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    
+    table = pd.read_html(SP500_URL, storage_options=storage_options)[0]
 
     table = table[["Symbol", "Security", "GICS Sector"]].copy()
     table["YahooSymbol"] = table["Symbol"].str.replace(".", "-", regex=False)
