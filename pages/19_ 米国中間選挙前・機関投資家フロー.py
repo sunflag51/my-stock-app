@@ -788,21 +788,12 @@ fig3.add_trace(
     col=2
 )
 
+# 【修正箇所】HTMLの<br>タグを使用してテキストを1行で記述
 signal_text = (
-    f"<b>主力資金</b>
-{flow_label}
-"
-    f"
-<b>SPY</b>
-{spy_label}
-"
-    f"
-<b>ボラティリティ</b>
-{vix_label}
-"
-    f"
-<b>総合判定</b>
-{overall_label}"
+    f"<b>主力資金</b><br>{flow_label}<br><br>"
+    f"<b>SPY</b><br>{spy_label}<br><br>"
+    f"<b>ボラティリティ</b><br>{vix_label}<br><br>"
+    f"<b>総合判定</b><br>{overall_label}"
 )
 
 fig3.add_annotation(
