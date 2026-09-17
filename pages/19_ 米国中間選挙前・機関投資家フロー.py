@@ -1,5 +1,5 @@
 # app.py
-# 米国中間選挙前・機関投資家フロー監視ダッシュボード
+# 米国中間選挙前・機関投資家フロー監視ダッシュボード（ライトテーマ強制版）
 
 from datetime import date, datetime
 import warnings
@@ -14,7 +14,7 @@ import yfinance as yf
 warnings.filterwarnings("ignore")
 
 # =========================================================
-# 1. 基本設定
+# 1. 基本設定（ライトテーマ用のカラーパレット）
 # =========================================================
 
 st.set_page_config(
@@ -23,28 +23,43 @@ st.set_page_config(
     layout="wide"
 )
 
-BG = "#1a1a2e"
-PANEL = "#242442"
-TEXT = "#f4f4f4"
-GRID = "#3a3a55"
-GREEN = "#2ecc71"
-RED = "#ff5c5c"
-BLUE = "#58a6ff"
-ORANGE = "#ff9f43"
-YELLOW = "#f1c40f"
+# 背景を白にし、文字やアクセントカラーを白背景に映える色に変更
+BG = "#ffffff"
+PANEL = "#f8f9fa"
+TEXT = "#1f2937"
+GRID = "#e5e7eb"
+GREEN = "#10b981"
+RED = "#ef4444"
+BLUE = "#3b82f6"
+ORANGE = "#f97316"
+YELLOW = "#f59e0b"
 
+# Streamlitのシステムテーマを強制的に上書きするための強力なCSS
 st.markdown(
     f"""
     <style>
-    .stApp {{
-        background-color: {BG};
-        color: {TEXT};
+    /* メイン背景とヘッダーを強制的に白にする */
+    [data-testid="stAppViewContainer"], [data-testid="stHeader"] {{
+        background-color: {BG} !important;
     }}
+    
+    /* サイドバー背景 */
+    [data-testid="stSidebar"] {{
+        background-color: {PANEL} !important;
+    }}
+    
+    /* KPIパネル部分 */
     div[data-testid="metric-container"] {{
-        background-color: {PANEL};
-        border: 1px solid #3a3a55;
-        padding: 14px;
-        border-radius: 10px;
+        background-color: {PANEL} !important;
+        border: 1px solid {GRID} !important;
+        padding: 14px !important;
+        border-radius: 10px !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
+    }}
+    
+    /* 全ての文字色を強制的に黒系にする */
+    h1, h2, h3, h4, h5, h6, p, span, div, label, li {{
+        color: {TEXT} !important;
     }}
     </style>
     """,
@@ -134,8 +149,8 @@ DEFAULT_FLOW = pd.DataFrame({
 # 3. 補助関数
 # =========================================================
 
-def set_dark_layout(fig, title, height=500):
-    """Plotlyチャートを共通のダークテーマに設定する。"""
+def set_light_layout(fig, title, height=500):
+    """Plotlyチャートを共通のライトテーマに設定する。"""
     fig.update_layout(
         title=title,
         height=height,
@@ -175,7 +190,6 @@ def download_price(symbol, start, end):
         if df is None or df.empty:
             return pd.DataFrame()
 
-        # yfinanceのバージョンによってMultiIndexになる場合への対応
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 
@@ -203,8 +217,6 @@ def make_fallback_vixy():
     """VIX/VIXY取得失敗時の簡易フォールバックデータ。"""
     dates = pd.bdate_range("2026-08-03", "2026-09-16")
     values = np.linspace(20.35, 17.67, len(dates))
-
-    # 単調な直線になりすぎないよう、表示用の小さな変動を加える
     wiggle = np.sin(np.arange(len(dates)) / 2.2) * 0.35
     values = values + wiggle
     values[-1] = 17.67
@@ -229,8 +241,7 @@ def add_indicators(df):
 
 def normalize_year(df, year):
     """
-    指定年の価格を最初の取引日=100に正規化し、
-    月末値へ変換する。
+    指定年の価格を最初の取引日=100に正規化し、月末値へ変換する。
     """
     if df.empty:
         return pd.DataFrame()
@@ -346,7 +357,6 @@ if spy_daily.empty:
 else:
     using_spy_fallback = False
 
-# VIXを優先。失敗した場合はVIXYを代理指標として使用
 vix_daily = download_price(
     "^VIX",
     start=(pd.Timestamp(TODAY) - pd.Timedelta(days=120)).strftime("%Y-%m-%d"),
@@ -388,7 +398,6 @@ if previous_main > 0:
 else:
     main_drop_pct = np.nan
 
-# 主力資金
 if latest_main < 0:
     flow_level = 2
     flow_label = "🔴 主力資金が純流出"
@@ -404,13 +413,11 @@ elif (
         f"最新値は{latest_main:+.2f}Bドル。"
         f"前月比で約{main_drop_pct:.1f}%減少しています。"
     )
-
 else:
     flow_level = 0
     flow_label = "🟢 主力資金は安定"
     flow_explanation = f"最新値は{latest_main:+.2f}Bドルです。"
 
-# SPYトレンド
 latest_spy_close = float(spy_daily["close"].iloc[-1])
 spy_ma = spy_daily["close"].rolling(spy_ma_days).mean().iloc[-1]
 
@@ -433,7 +440,6 @@ else:
     spy_level = 0
     spy_label = "🟢 SPYトレンドは維持"
 
-# VIXトレンド
 latest_vix = float(vix_daily["close"].iloc[-1])
 vix_ma = vix_daily["close"].rolling(vix_ma_days).mean().iloc[-1]
 
@@ -579,19 +585,13 @@ fig1.update_xaxes(
 )
 fig1.update_yaxes(title="年初=100")
 
-set_dark_layout(
+set_light_layout(
     fig1,
     "中間選挙年 SPYパフォーマンス比較（年初=100）",
     520
 )
 
 st.plotly_chart(fig1, use_container_width=True)
-
-st.caption(
-    "中間選挙年でも値動きは一様ではありません。"
-    "選挙要因だけでなく、金利、インフレ、景気、企業業績も"
-    "同時に確認する必要があります。"
-)
 
 
 # =========================================================
@@ -612,7 +612,7 @@ fig2.add_trace(
         x=flow["date"],
         y=flow["mid_small_net_in"],
         name="中小口純流入",
-        marker_color="rgba(88,166,255,0.42)"
+        marker_color="rgba(59, 130, 246, 0.3)" # ライトブルー透過
     ),
     secondary_y=False
 )
@@ -633,7 +633,7 @@ fig2.add_trace(
         y=flow["spy_close"],
         name="SPY終値",
         mode="lines+markers",
-        line=dict(color="#ffffff", width=3)
+        line=dict(color="#1f2937", width=3) # ダークグレー
     ),
     secondary_y=True
 )
@@ -641,7 +641,7 @@ fig2.add_trace(
 fig2.add_hline(
     y=0,
     line_dash="dash",
-    line_color="#bbbbbb",
+    line_color="#d1d5db",
     secondary_y=False
 )
 
@@ -653,9 +653,9 @@ fig2.add_annotation(
     arrowhead=2,
     ax=-95,
     ay=-75,
-    bgcolor="#5b3d00",
-    bordercolor=YELLOW,
-    font=dict(color="white")
+    bgcolor="#fee2e2",
+    bordercolor=RED,
+    font=dict(color=RED)
 )
 
 fig2.update_yaxes(
@@ -668,18 +668,13 @@ fig2.update_yaxes(
 )
 
 fig2.update_layout(barmode="group")
-set_dark_layout(
+set_light_layout(
     fig2,
     "2026年 SPY主力資金フロー vs 株価推移",
     540
 )
 
 st.plotly_chart(fig2, use_container_width=True)
-
-st.caption(
-    "主力純流入は機関投資家の行動を直接証明するものではなく、"
-    "大口注文を基にした代理指標です。"
-)
 
 
 # =========================================================
@@ -729,7 +724,7 @@ if "ma20" in recent_spy.columns:
             y=recent_spy["ma20"],
             mode="lines",
             name="20日移動平均",
-            line=dict(color=YELLOW, width=1, dash="dash")
+            line=dict(color=BLUE, width=1.5, dash="dash")
         ),
         row=1,
         col=1
@@ -755,7 +750,7 @@ fig3.add_trace(
 fig3.add_hline(
     y=0,
     line_dash="dash",
-    line_color="#aaaaaa",
+    line_color="#d1d5db",
     row=1,
     col=2
 )
@@ -788,7 +783,6 @@ fig3.add_trace(
     col=2
 )
 
-# 【修正箇所】HTMLの<br>タグを使用してテキストを1行で記述
 signal_text = (
     f"<b>主力資金</b><br>{flow_label}<br><br>"
     f"<b>SPY</b><br>{spy_label}<br><br>"
@@ -827,7 +821,7 @@ fig3.update_yaxes(
     col=1
 )
 
-set_dark_layout(
+set_light_layout(
     fig3,
     f"中間選挙前 監視ダッシュボード（{TODAY:%Y年%m月%d日}時点）",
     760
