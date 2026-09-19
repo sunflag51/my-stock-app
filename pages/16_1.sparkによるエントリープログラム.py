@@ -324,6 +324,30 @@ def add_indicators(
     data["Lower_Slope_3"] = data["BB_Lower"].pct_change(3) * 100
     data["Recent_Low"] = data["Low"].rolling(swing_lookback).min()
 
+    # =========================================================
+    # 機関投資家（スマートマネー・アルゴリズム）検出指標
+    # =========================================================
+    # 1. 出来高倍率（対20日平均比）: 1.5倍〜2.0倍以上は大口の仕込みシグナル
+    data["Volume_Ratio"] = (data["Volume"] / data["Volume_MA20"].replace(0, np.nan)).fillna(1.0)
+    data["Inst_Volume_Surge"] = data["Volume_Ratio"] >= 1.5
+
+    # 2. 直近スイング安値（前日までの安値）
+    data["Prior_Swing_Low"] = data["Low"].shift(1).rolling(swing_lookback).min()
+
+    # 3. 流動性スイープ（Liquidity Sweep / ストップ狩り）検知
+    # 日中に前日までのスイング安値を下抜けて個人の損切りを巻き込み、終値でその安値以上かつBB下限以上に復帰
+    data["Liquidity_Sweep"] = (
+        (data["Low"] < data["Prior_Swing_Low"])
+        & (data["Close"] > data["Prior_Swing_Low"])
+        & (data["Close"] > data["BB_Lower"])
+        & (data["Close"] > data["Open"])
+    )
+
+    # 4. ボラティリティ収縮（スクイーズ判定）
+    # 直近60日間のバンド幅最小値付近にある状態
+    rolling_min_width = data["BB_Width_Pct"].rolling(60).min()
+    data["Is_Squeeze"] = data["BB_Width_Pct"] <= (rolling_min_width * 1.25)
+
     return data
 
 # =========================================================
@@ -429,6 +453,15 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
         & (result["Score"] >= score_threshold)
     )
 
+    # =========================================================
+    # 機関投資家（アルゴリズム）合致シグナル
+    # =========================================================
+    # 条件：基本シグナル合格 ＋ (大口出来高サージ 1.5倍以上 または 流動性スイープ反発)
+    result["Institutional_Signal"] = (
+        result["Entry_Signal"]
+        & (result["Inst_Volume_Surge"] | result["Liquidity_Sweep"])
+    )
+
     # 8. アドバイス文生成
     def generate_learning_tip(row):
         warnings = []
@@ -464,6 +497,9 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
 
         if row["Entry_Signal"]:
             positives.append("★【条件成立】下限タッチ・接触を脱し、終値でバンド内への完全復帰（陽線）を確認。1R損切りを設定して検証可")
+
+        if row.get("Institutional_Signal", False):
+            positives.append("🏛️【機関投資家シグナル合致】大口の出来高急増またはストップ狩り（流動性スイープ）反発を確認")
 
         text_parts = []
         if warnings:
@@ -567,7 +603,7 @@ def calculate_stop_price(entry_price: float, signal_row: pd.Series, method: str,
     return max(0.0001, float(stop))
 
 # =========================================================
-# バックテスト
+# バックテスト（汎用）
 # =========================================================
 def run_backtest(
     data: pd.DataFrame,
@@ -577,6 +613,7 @@ def run_backtest(
     maximum_holding_bars: int,
     slippage_bps: float,
     cost_bps: float,
+    signal_col: str = "Entry_Signal",
 ) -> pd.DataFrame:
     trades = []
     if len(data) < 3:
@@ -586,7 +623,7 @@ def run_backtest(
     while index_number < len(data) - 1:
         signal_row = data.iloc[index_number]
 
-        if not bool(signal_row["Entry_Signal"]):
+        if not bool(signal_row.get(signal_col, False)):
             index_number += 1
             continue
 
@@ -676,6 +713,8 @@ def run_backtest(
             "決済理由": exit_reason,
             "保有本数": (exit_number - entry_number + 1),
             "シグナル点数": float(signal_row["Score"]),
+            "機関出来高サージ": bool(signal_row.get("Inst_Volume_Surge", False)),
+            "流動性スイープ": bool(signal_row.get("Liquidity_Sweep", False)),
         })
 
         index_number = exit_number + 1
@@ -932,7 +971,8 @@ is_japan_stock = display_symbol.endswith(".T")
 currency_unit = "円" if is_japan_stock else "ドル"
 
 st.sidebar.markdown("---")
-period = st.sidebar.selectbox("データ期間", ["1y", "2y", "5y", "10y"], index=2)
+# 過去3年間の検証に対応できるよう "3y" を追加（デフォルトインデックス調整）
+period = st.sidebar.selectbox("データ期間", ["1y", "2y", "3y", "5y", "10y"], index=2)
 interval = st.sidebar.selectbox("時間足", ["1d", "1wk"], index=0)
 
 mid_trend_period = st.sidebar.selectbox("中期トレンド判定線（SMA）", options=[20, 25, 50, 75, 100], index=2)
@@ -979,9 +1019,15 @@ status, status_message, conditions = evaluate_target_bar(
 )
 
 # =========================================================
-# タブ表示
+# タブ表示（⑤ 機関投資家アルゴ・中期検証タブを追加）
 # =========================================================
-tab1, tab2, tab3, tab4 = st.tabs(["① 条件判定・チャート・カルテ", "② 計画と保有管理", "③ 過去データ検証", "④ 使い方・注意点"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "① 条件判定・チャート・カルテ",
+    "② 計画と保有管理",
+    "③ 過去データ検証",
+    "④ 使い方・注意点",
+    "⑤ 🏛️ 機関投資家アルゴ・中期検証（最大180日）"
+])
 
 with tab1:
     st.subheader(f"📊 {display_symbol} 条件判定・学習カルテ")
@@ -1192,6 +1238,7 @@ with tab3:
         maximum_holding_bars=int(bt_max_bars),
         slippage_bps=float(bt_cost_bps) / 2,
         cost_bps=float(bt_cost_bps) / 2,
+        signal_col="Entry_Signal",
     )
 
     trades_20 = run_backtest(
@@ -1202,6 +1249,7 @@ with tab3:
         maximum_holding_bars=int(bt_max_bars),
         slippage_bps=float(bt_cost_bps) / 2,
         cost_bps=float(bt_cost_bps) / 2,
+        signal_col="Entry_Signal",
     )
 
     summary_15 = summarize_backtest(trades_15, 1.5)
@@ -1256,3 +1304,164 @@ with tab4:
       勝率が50%前後であっても、利益（+1.5R〜+2R）が損失（-1R）を上回る設計にすることで、長期的に安定した運用を目指します。
     """)
 
+with tab5:
+    st.subheader(f"🏛️ 機関投資家アルゴリズム分析＆中期検証（最大180日・{display_symbol}）")
+    st.caption(
+        "ウォール街の機関投資家・クオンツアルゴリズムが仕掛ける「流動性スイープ（安値ストップ狩り）」や「異常出来高の吸い上げ（ブロック買い）」を検知し、"
+        "最長180営業日の中期スイングでリスクを最小化しながら大きな波を捉える検証環境です。"
+    )
+
+    # ---------------------------------------------------------
+    # 1. アルゴリズム検出ステータス（選択日基準）
+    # ---------------------------------------------------------
+    st.markdown("#### 1. 機関投資家アルゴリズム・シグナル診断")
+    c_inst1, c_inst2, c_inst3, c_inst4 = st.columns(4)
+
+    is_sweep = bool(target_bar.get("Liquidity_Sweep", False))
+    vol_ratio = float(target_bar.get("Volume_Ratio", 1.0))
+    is_surge = bool(target_bar.get("Inst_Volume_Surge", False))
+    is_sqz = bool(target_bar.get("Is_Squeeze", False))
+    inst_sig = bool(target_bar.get("Institutional_Signal", False))
+
+    c_inst1.metric(
+        "流動性スイープ（ストップ狩り）",
+        "検知 ⚡" if is_sweep else "なし",
+        "安値割れからの急反発復帰" if is_sweep else "正常レンジ内"
+    )
+    c_inst2.metric(
+        "機関出来高サージ（対20日比）",
+        f"{vol_ratio:.2f} 倍",
+        "大口の仕込み確定 🏛️" if is_surge else "平常水準"
+    )
+    c_inst3.metric(
+        "ボラティリティ収縮（スクイーズ）",
+        "収縮中 🎯" if is_sqz else "拡散中",
+        "エネルギー蓄積フェーズ" if is_sqz else "通常レンジ"
+    )
+    c_inst4.metric(
+        "機関アルゴ合致判定",
+        "合致 ✅" if inst_sig else "待機",
+        "リスク最小化の好機" if inst_sig else "条件待ち"
+    )
+
+    if inst_sig:
+        st.success(
+            f"🎯 **【機関投資家アルゴリズム合致】**（{target_date_str}）: "
+            "個人投資家の損切りが集中する直近安値を日中で下抜けた後に強力に巻き戻した（流動性スイープ）、"
+            f"または20日平均の {vol_ratio:.2f} 倍という機関投資家特有の出来高急増を伴うバンド内完全復帰を確認しました。"
+            "ストップ狩り直後の底堅い水準のため、直近安値の直下に損切りを置くことで下値リスクを極小化できる優位性の高い局面です。"
+        )
+    else:
+        st.info(
+            f"ℹ️ **【診断状況】**（{target_date_str}）: "
+            "現在、機関投資家による大規模なストップ狩り反発や異常な出来高急増シグナルは検知されていません。"
+            "通常のBB反発条件、または機関投資家アルゴリズムの成立を待ちます。"
+        )
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------
+    # 2. 中期（最大180日）バックテスト設定
+    # ---------------------------------------------------------
+    st.markdown("#### 2. 中期（最大180日）バックテストシミュレーション")
+    st.caption("最長180営業日（約6〜9ヶ月）保有し、機関アルゴリズムに乗って大きなトレンドを捉える検証です。")
+
+    inst_col1, inst_col2, inst_col3, inst_col4 = st.columns(4)
+    with inst_col1:
+        inst_stop_method = st.selectbox("損切り決定方式", ["より安全な方（低い方）", "ATR基準", "直近安値基準"], index=0, key="inst_stop")
+    with inst_col2:
+        inst_atr_mult = st.slider("ATRボラティリティ余白", min_value=1.5, max_value=3.5, value=2.0, step=0.1, key="inst_atr")
+    with inst_col3:
+        inst_max_holding = st.slider("最大保有営業日数（満期）", min_value=30, max_value=180, value=120, step=10, key="inst_max_holding")
+    with inst_col4:
+        inst_filter_type = st.radio("エントリー対象", ["通常シグナル全般", "機関アルゴ合致のみ（厳格）"], index=0, key="inst_filter")
+
+    target_signal_col = "Institutional_Signal" if "機関アルゴ" in inst_filter_type else "Entry_Signal"
+
+    # 中期保有のため、ワイドなリスクリワード（1:2.0, 1:3.0, 1:4.0）でテスト
+    trades_mid_20 = run_backtest(
+        data=usable_data,
+        reward_r=2.0,
+        stop_method=inst_stop_method,
+        atr_multiplier=inst_atr_mult,
+        maximum_holding_bars=int(inst_max_holding),
+        slippage_bps=5.0,
+        cost_bps=5.0,
+        signal_col=target_signal_col,
+    )
+
+    trades_mid_30 = run_backtest(
+        data=usable_data,
+        reward_r=3.0,
+        stop_method=inst_stop_method,
+        atr_multiplier=inst_atr_mult,
+        maximum_holding_bars=int(inst_max_holding),
+        slippage_bps=5.0,
+        cost_bps=5.0,
+        signal_col=target_signal_col,
+    )
+
+    trades_mid_40 = run_backtest(
+        data=usable_data,
+        reward_r=4.0,
+        stop_method=inst_stop_method,
+        atr_multiplier=inst_atr_mult,
+        maximum_holding_bars=int(inst_max_holding),
+        slippage_bps=5.0,
+        cost_bps=5.0,
+        signal_col=target_signal_col,
+    )
+
+    sum_20 = summarize_backtest(trades_mid_20, 2.0)
+    sum_30 = summarize_backtest(trades_mid_30, 3.0)
+    sum_40 = summarize_backtest(trades_mid_40, 4.0)
+    inst_summary_df = pd.DataFrame([sum_20, sum_30, sum_40])
+
+    st.markdown("##### 📊 中期保有（最長180日）パフォーマンス比較")
+    display_df_safe(inst_summary_df)
+
+    # 累積R比較チャート
+    fig_inst_equity = go.Figure()
+    if not trades_mid_20.empty:
+        fig_inst_equity.add_trace(go.Scatter(x=trades_mid_20["決済日"], y=trades_mid_20["結果R"].cumsum(), mode="lines+markers", name="RR 1:2.0 (中期標準)"))
+    if not trades_mid_30.empty:
+        fig_inst_equity.add_trace(go.Scatter(x=trades_mid_30["決済日"], y=trades_mid_30["結果R"].cumsum(), mode="lines+markers", name="RR 1:3.0 (伸長狙い)"))
+    if not trades_mid_40.empty:
+        fig_inst_equity.add_trace(go.Scatter(x=trades_mid_40["決済日"], y=trades_mid_40["結果R"].cumsum(), mode="lines+markers", name="RR 1:4.0 (トレンド追従)"))
+
+    fig_inst_equity.add_hline(y=0, line_color="gray", line_dash="dot")
+    fig_inst_equity.update_layout(
+        title=f"📈 【{display_symbol}】中期保有時の累積損益推移（累積R）",
+        xaxis_title="決済日", yaxis_title="累積R",
+        height=480, dragmode="pan", xaxis=dict(fixedrange=False), yaxis=dict(fixedrange=False), legend=dict(orientation="h")
+    )
+    st.plotly_chart(fig_inst_equity, use_container_width=True)
+
+    # トレード履歴テーブル
+    st.markdown("##### 📝 中期トレード全履歴（RR 1:3.0）")
+    if not trades_mid_30.empty:
+        display_inst_trades = trades_mid_30.copy()
+        display_inst_trades["エントリー日"] = display_inst_trades["エントリー日"].dt.strftime("%Y-%m-%d")
+        display_inst_trades["決済日"] = display_inst_trades["決済日"].dt.strftime("%Y-%m-%d")
+        display_inst_trades["シグナル日"] = display_inst_trades["シグナル日"].dt.strftime("%Y-%m-%d")
+        display_inst_trades["結果R"] = display_inst_trades["結果R"].map(lambda x: f"{x:+.2f} R")
+        display_inst_trades["機関出来高サージ"] = display_inst_trades["機関出来高サージ"].map(lambda x: "あり ✅" if x else "-")
+        display_inst_trades["流動性スイープ"] = display_inst_trades["流動性スイープ"].map(lambda x: "あり ⚡" if x else "-")
+        display_df_safe(display_inst_trades)
+    else:
+        st.info("指定された検証期間・条件において、該当するトレードはありませんでした。")
+
+    st.markdown("---")
+    # ---------------------------------------------------------
+    # 3. 機関投資家アルゴリズム攻略・リスク最小化の鉄則解説
+    # ---------------------------------------------------------
+    st.markdown("#### 3. 機関投資家の天才アルゴリズムに負けないリスク最小化ルール")
+    st.markdown("""
+    * **1. ストップ狩り（Liquidity Sweep）直後のエントリーが最も安全な理由**:
+      多くの個人投資家は「目立つ直近安値のすぐ下」に損切りを置きます。機関投資家のアルゴリズムは、大量の買いポジションを約定させるために意図的に株価を一度安値下に沈め、個人の損切り売りをすべて買い吸収します。
+      この**「安値割れからの即座のV字復帰（終値がBB内側）」を確認した直後にエントリーすることで、すでにストップ狩りが完了した強固な底値でポジションを持てます**。
+    * **2. 最大180日保有におけるリスク管理**:
+      長期・中期トレンド（日足・週足）を狙う場合、日々のノイズで刈られないよう**損切り幅はATR×2.0以上の十分な余白**を取ります。その分、1株あたりリスク（$ Risk）が広がるため、タブ②で計算される**「推奨株数」を適切に減らし、全体の損失額を1R（総資金の1%）に厳格固定**します。
+    * **3. トレンド形成時の利益最大化（非対称リターン）**:
+      ストップ狩りを経て上昇基調に乗った場合、機関投資家の買い支えにより株価は数ヶ月単位で上昇トレンドを維持しやすくなります。**+2.0R〜+3.0R以上の利益目標を設定し、負けを1Rに抑えて勝ちを大きく伸ばすこと（損小利大）で、今後の相場でも数学的に資金を守り増やすことが可能**になります。
+    """)
