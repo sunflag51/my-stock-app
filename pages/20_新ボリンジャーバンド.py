@@ -73,13 +73,10 @@ st.caption(
 )
 
 # =========================================================
-# 【追加機能】Googleスプレッドシートの読み込み
+# Googleスプレッドシートの読み込み
 # =========================================================
 @st.cache_data(ttl=600, show_spinner=False)
 def load_google_sheet_options(sheet_link: str) -> list[str]:
-    """
-    Googleスプレッドシートの先頭2列を、企業名・銘柄コードとして読み込む。
-    """
     if not sheet_link or "/edit" not in sheet_link:
         return []
 
@@ -185,7 +182,6 @@ def normalize_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
         (data["Low"] <= data[["Open", "Close", "High"]].min(axis=1))
     )
     data = data.loc[valid_prices].copy()
-
     data["Volume"] = data["Volume"].fillna(0).clip(lower=0)
 
     if not isinstance(data.index, pd.DatetimeIndex):
@@ -269,7 +265,7 @@ def add_indicators(raw_data: pd.DataFrame, bb_period: int, bb_sigma: float, atr_
     data["BB_Width_Change_5"] = data["BB_Width_Pct"].pct_change(periods=5, fill_method=None) * 100
     data["BB_Middle_Slope_5"] = data["BB_Middle"].pct_change(periods=5, fill_method=None) * 100
 
-    # 下ヒゲ
+    # 下ヒゲ比率
     candle_range = (data["High"] - data["Low"]).where(lambda value: value > 0)
     real_body_bottom = data[["Open", "Close"]].min(axis=1)
     lower_shadow = (real_body_bottom - data["Low"]).clip(lower=0)
@@ -396,7 +392,109 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     return result
 
 # =========================================================
-# バックテスト
+# 特定日の条件評価（判定画面用ロジック）
+# =========================================================
+def format_optional_percent(value) -> str:
+    if pd.isna(value):
+        return "未計算"
+    return f"{float(value):+.1f}%"
+
+def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int, is_japan: bool = False):
+    del mid_period
+    unit = "円" if is_japan else "ドル"
+
+    close_value = pd.to_numeric(bar.get("Close"), errors="coerce")
+    lower_value = pd.to_numeric(bar.get("BB_Lower"), errors="coerce")
+
+    if np.isfinite(lower_value) and np.isfinite(close_value):
+        difference_from_lower = close_value - lower_value
+        difference_text = f"{difference_from_lower:+,.2f}{unit}"
+    else:
+        difference_text = "未計算"
+
+    volume = pd.to_numeric(bar.get("Volume"), errors="coerce")
+    volume_ma = pd.to_numeric(bar.get("Volume_MA20"), errors="coerce")
+
+    if np.isfinite(volume) and np.isfinite(volume_ma) and volume_ma > 0:
+        volume_percent_text = f"{volume / volume_ma * 100:.0f}%"
+    else:
+        volume_percent_text = "未計算"
+
+    if not bool(bar.get("Indicator_Ready", False)):
+        status = "指標未計算"
+        message = "SMA200、ATR、BBなどの必要な指標が揃っていないため、この足は判定対象外です。"
+    elif not bool(bar.get("Closed_Inside_Band", False)):
+        status = "BB内復帰未確認"
+        message = "終値がBB下限から所定の余裕幅を伴う復帰基準を満たしていません。"
+    elif not bool(bar.get("Is_Bullish", False)):
+        status = "陰線・見送り"
+        message = "当日の足が陰線のため、陽線による反発確認を満たしていません。"
+    elif not bool(bar.get("Pass_SMA200", False)):
+        status = "200日線条件不合格"
+        message = "終値が200日移動平均線を下回っています。"
+    elif not bool(bar.get("Mandatory_Filter_Pass", False)):
+        status = "必須条件不合格"
+        message = "バンド幅、中央線の傾きなど、いずれかの必須条件が不合格です。"
+    elif not bool(bar.get("Touched_Lower_Recent", False)):
+        status = "待機"
+        message = "直近3本以内にBB下限テストがありません。"
+    elif not bool(bar.get("Rebound", False)):
+        status = "反発未確認"
+        message = "所定の反発パターンを確認できていません。"
+    elif pd.isna(bar.get("Score")) or float(bar["Score"]) < score_threshold:
+        status = "スコア不足"
+        message = "必須条件は通過しましたが、補助スコアが不足しています。"
+    else:
+        status = "条件成立候補"
+        message = "BB下限テスト後の陽線復帰とスコア条件を確認しました。バックテストでは翌営業日始値でエントリーします。"
+
+    conditions = {
+        "必要な指標がすべて計算済み": bool(bar.get("Indicator_Ready", False)),
+        f"終値がBB内復帰基準より上（BB下限との差: {difference_text}）": bool(bar.get("Closed_Inside_Band", False)),
+        "直近3本以内にBB下限テストあり": bool(bar.get("Touched_Lower_Recent", False)),
+        "当日の足が陽線": bool(bar.get("Is_Bullish", False)),
+        "200日線以上": bool(bar.get("Pass_SMA200", False)),
+        f"バンド幅条件を通過（5本変化率: {format_optional_percent(bar.get('BB_Width_Change_5'))}）": bool(bar.get("Pass_No_Expansion", False)),
+        f"BB中央線の傾きが基準以上（実績: {format_optional_percent(bar.get('BB_Middle_Slope_5'))}）": bool(bar.get("Pass_Middle_Slope", False)),
+        "所定の反発パターンを確認": bool(bar.get("Rebound", False)),
+        "RSIが25以上かつ改善": bool(bar.get("RSI_Improving", False)),
+        "MACDヒストグラムが改善": bool(bar.get("MACD_Improving", False)),
+        f"出来高が20本平均以上（実績: {volume_percent_text}）": bool(bar.get("Volume_Expansion", False)),
+        "BB下限が急落していない": bool(bar.get("Lower_Not_Collapsing", False)),
+        f"スコアが基準以上（満点: {MAX_SCORE:g}）": (pd.notna(bar.get("Score")) and float(bar["Score"]) >= score_threshold),
+    }
+
+    return status, message, conditions
+
+def status_message_box(status: str, message: str) -> None:
+    if status == "条件成立候補":
+        st.success(f"### {status}\n\n{message}")
+    elif status in {"待機", "スコア不足", "反発未確認", "BB内復帰未確認"}:
+        st.warning(f"### {status}\n\n{message}")
+    else:
+        st.error(f"### {status}\n\n{message}")
+
+def create_condition_table(conditions: dict) -> pd.DataFrame:
+    rows = [{"判定": "✅ 合格" if bool(passed) else "❌ 不合格", "確認項目": k} for k, passed in conditions.items()]
+    return pd.DataFrame(rows)
+
+# =========================================================
+# UI補助関数
+# =========================================================
+def format_metric_value(value, decimals: int = 2, suffix: str = "") -> str:
+    v = pd.to_numeric(value, errors="coerce")
+    if pd.isna(v): return "－"
+    if np.isposinf(v): return "∞"
+    if np.isneginf(v): return "-∞"
+    return f"{float(v):,.{decimals}f}{suffix}"
+
+def format_price(value, is_japan: bool) -> str:
+    v = pd.to_numeric(value, errors="coerce")
+    if pd.isna(v): return "未計算"
+    return f"{float(v):,.2f}{'円' if is_japan else 'ドル'}"
+
+# =========================================================
+# バックテストロジック
 # =========================================================
 def calculate_stop_price(entry_price: float, signal_row: pd.Series, method: str, atr_multiplier: float) -> Optional[float]:
     if not np.isfinite(entry_price) or entry_price <= 0: return None
@@ -494,27 +592,11 @@ def summarize_backtest(trades: pd.DataFrame, reward_r: float) -> dict:
     }
 
 # =========================================================
-# UI描画群
-# =========================================================
-def format_metric_value(value, decimals: int = 2, suffix: str = "") -> str:
-    v = pd.to_numeric(value, errors="coerce")
-    if pd.isna(v): return "－"
-    if np.isposinf(v): return "∞"
-    if np.isneginf(v): return "-∞"
-    return f"{float(v):,.{decimals}f}{suffix}"
-
-def format_price(value, is_japan: bool) -> str:
-    v = pd.to_numeric(value, errors="coerce")
-    if pd.isna(v): return "未計算"
-    return f"{float(v):,.2f}{'円' if is_japan else 'ドル'}"
-
-# =========================================================
 # サイドバー
 # =========================================================
 def render_sidebar() -> dict:
     st.sidebar.header("⚙️ 分析設定")
 
-    # ----- 追加：スプレッドシート連携機能 -----
     base_options = [
         "GOOG.US｜アルファベット",
         "AAPL.US｜アップル",
@@ -538,14 +620,12 @@ def render_sidebar() -> dict:
             st.sidebar.caption(f"スプレッドシートを読み込めませんでした。詳細: {exc}")
 
     all_options = list(dict.fromkeys(base_options + sheet_options + ["その他（直接入力）"]))
-
     selected_option = st.sidebar.selectbox("分析対象", all_options, index=0)
 
     if selected_option.startswith("その他"):
         raw_symbol = st.sidebar.text_input("銘柄コード", value="MSFT.US", help="例：NVDA.US、7203.JP")
     else:
         raw_symbol = selected_option.split("｜")[0].strip()
-    # ------------------------------------------
 
     st.sidebar.divider()
     st.sidebar.subheader("📥 データ・チャート設定")
@@ -618,40 +698,88 @@ def main() -> None:
 
     judgement_tab, chart_tab, backtest_tab = st.tabs(["🔍 判定画面", "📈 チャート", "🧪 バックテスト比較"])
 
-    # 判定画面
+    # -----------------------------------------------------
+    # 【完全復元】🔍 判定画面
+    # -----------------------------------------------------
     with judgement_tab:
-        dates = list(signal_data.index)
-        sel_date = st.selectbox("判定対象日", dates, index=len(dates)-1, format_func=lambda x: x.strftime("%Y-%m-%d"))
-        t_bar = signal_data.loc[sel_date]
-        if isinstance(t_bar, pd.DataFrame): t_bar = t_bar.iloc[-1]
-        
-        st.markdown(t_bar.get("Learning_Tip", "メッセージなし"), unsafe_allow_html=True)
-        st.dataframe(t_bar[["Close", "BB_Lower", "SMA200", "RSI", "ATR", "Score"]].to_frame().T)
+        st.subheader("🔍 指定日の条件判定")
 
-    # チャート画面
+        dates = list(signal_data.index)
+        sel_date = st.selectbox(
+            "判定対象日",
+            dates,
+            index=len(dates) - 1,
+            format_func=lambda x: pd.Timestamp(x).strftime("%Y-%m-%d"),
+            help="最新行が取引時間中の未確定日足である場合、終値ベースの判定は確定していません。"
+        )
+
+        target_bar = signal_data.loc[sel_date]
+        if isinstance(target_bar, pd.DataFrame):
+            target_bar = target_bar.iloc[-1]
+
+        # 判定ステータスと詳細条件を取得
+        status, message, conditions = evaluate_target_bar(
+            bar=target_bar,
+            score_threshold=settings["score_threshold"],
+            mid_period=settings["mid_period"],
+            is_japan=is_japan,
+        )
+
+        # 1. 状態メッセージボックス
+        status_message_box(status=status, message=message)
+
+        # 2. 6連メトリクス表示
+        m_cols = st.columns(6)
+        m_cols[0].metric("終値", format_price(target_bar.get("Close"), is_japan))
+        m_cols[1].metric("BB下限", format_price(target_bar.get("BB_Lower"), is_japan))
+        m_cols[2].metric("200日SMA", format_price(target_bar.get("SMA200"), is_japan))
+        m_cols[3].metric("RSI", format_metric_value(target_bar.get("RSI"), decimals=1))
+        m_cols[4].metric("ATR", format_metric_value(target_bar.get("ATR"), decimals=2))
+        m_cols[5].metric("スコア", f"{format_metric_value(target_bar.get('Score'), 1)} / {MAX_SCORE:g}")
+
+        # 3. 全条件の合否テーブル
+        st.markdown("#### 条件別チェック")
+        condition_table = create_condition_table(conditions)
+        st.dataframe(condition_table, hide_index=True, use_container_width=True)
+
+        # 4. 学習メッセージ（アコーディオン）
+        with st.expander("この日の学習メッセージ", expanded=True):
+            learning_tip = target_bar.get("Learning_Tip", "")
+            if not learning_tip:
+                learning_tip = generate_learning_tip(target_bar)
+            st.markdown(learning_tip, unsafe_allow_html=True)
+
+        if sel_date == dates[-1]:
+            st.info("最新行を表示しています。市場の取引時間によってはこの日足が未確定の場合があります。")
+
+    # -----------------------------------------------------
+    # 📈 チャート画面
+    # -----------------------------------------------------
     with chart_tab:
         plot_df = signal_data.tail(settings["chart_display_bars"]) if settings["chart_display_bars"] > 0 else signal_data
         fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df["Open"], high=plot_df["High"], low=plot_df["Low"], close=plot_df["Close"]))
+        fig.add_trace(go.Candlestick(x=plot_df.index, open=plot_df["Open"], high=plot_df["High"], low=plot_df["Low"], close=plot_df["Close"], name="ローソク足"))
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Upper"], line=dict(color="rgba(220,70,70,0.5)"), name="BB上限"))
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Lower"], line=dict(color="rgba(41,98,255,0.8)"), name="BB下限"))
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["SMA200"], line=dict(color="rgba(255,152,0,0.9)"), name="200日SMA"))
         
         sigs = plot_df[plot_df["Entry_Signal"].fillna(False)]
         if not sigs.empty:
-            fig.add_trace(go.Scatter(x=sigs.index, y=sigs["Low"]*0.99, mode="markers", marker=dict(symbol="triangle-up", size=14, color="#00C853"), name="シグナル"))
+            fig.add_trace(go.Scatter(x=sigs.index, y=sigs["Low"] * 0.99, mode="markers", marker=dict(symbol="triangle-up", size=14, color="#00C853"), name="シグナル"))
         
-        fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white")
+        fig.update_layout(height=520, xaxis_rangeslider_visible=False, template="plotly_white")
         st.plotly_chart(fig, use_container_width=True)
 
-    # バックテスト画面
+    # -----------------------------------------------------
+    # 🧪 バックテスト画面
+    # -----------------------------------------------------
     with backtest_tab:
         if st.button("バックテストを実行", type="primary"):
             t15 = run_backtest(signal_data, 1.5, settings["stop_method"], settings["atr_multiplier"], settings["maximum_holding_bars"], settings["slippage_bps"], settings["cost_bps"])
             t20 = run_backtest(signal_data, 2.0, settings["stop_method"], settings["atr_multiplier"], settings["maximum_holding_bars"], settings["slippage_bps"], settings["cost_bps"])
             s15, s20 = summarize_backtest(t15, 1.5), summarize_backtest(t20, 2.0)
             
-            st.dataframe(pd.DataFrame([s15, s20])[["RR設定", "取引回数", "勝率", "平均R", "利益係数", "累積R", "最大ドローダウンR"]])
+            st.dataframe(pd.DataFrame([s15, s20])[["RR設定", "取引回数", "勝率", "平均R", "利益係数", "累積R", "最大ドローダウンR"]], use_container_width=True)
             
             efig = go.Figure()
             if not t15.empty: efig.add_trace(go.Scatter(x=t15["決済日"], y=t15["結果R"].cumsum(), name="RR 1:1.5"))
