@@ -1,23 +1,13 @@
 from datetime import date, datetime
-import json
 import math
 import os
 import re
-import urllib.request
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
-
-# =========================================================
-# 【初期設定】お使いのURLをここに貼り付けておくと自動で読み込まれます
-# =========================================================
-DEFAULT_SPREADSHEET_URL = ""  # 例: "https://docs.google.com/spreadsheets/d/xxxx/edit"
-DEFAULT_GAS_URL = (
-    ""  # 例: "https://script.google.com/macros/s/xxxx/exec" (GASウェブアプリURL)
-)
 
 # =========================================================
 # Lightweight Chartsの安全な読み込み
@@ -31,6 +21,17 @@ except ImportError:
     pass
 
 # =========================================================
+# Google Sheets接続ライブラリの読み込み
+# =========================================================
+HAS_GSHEETS = False
+try:
+    from streamlit_gsheets import GSheetsConnection
+
+    HAS_GSHEETS = True
+except ImportError:
+    pass
+
+# =========================================================
 # ページ設定
 # =========================================================
 st.set_page_config(
@@ -39,25 +40,7 @@ st.set_page_config(
     layout="wide",
 )
 
-# 【追加】文字が「...」で隠れるのを防ぎ、きれいに折り返すスタイル設定
-st.markdown(
-    """
-    <style>
-    [data-testid="stMetricValue"] {
-        white-space: normal !important;
-        word-break: break-word !important;
-        font-size: clamp(1.05rem, 2.0vw, 1.6rem) !important;
-    }
-    [data-testid="stMetricDelta"] {
-        white-space: normal !important;
-        word-break: break-word !important;
-    }
-    </style>
-""",
-    unsafe_allow_html=True,
-)
-
-st.subheader("🛡️ ボリンジャーバンド反発確認・R管理＆学習システム")
+st.title("🛡️ ボリンジャーバンド反発確認・R管理＆学習システム")
 st.caption(
     "BB下限のタッチや接触中ではエントリーせず、終値でバンド内への完全復帰（陽線）を確認してから入る、"
     "1R損切り・リスクリワード・保有管理・過去検証・学習用解説を一体化した実践学習用アプリです。"
@@ -65,7 +48,7 @@ st.caption(
 
 
 # =========================================================
-# 銘柄リスト取得 & スプレッドシート連携 (A列:名前, B列:コード対応)
+# 銘柄リスト取得（デフォルト & スプレッドシート連携）
 # =========================================================
 def load_default_ticker_list() -> list:
     return [
@@ -81,102 +64,54 @@ def load_default_ticker_list() -> list:
 
 
 def extract_spreadsheet_id(url: str) -> str:
+    """GoogleスプレッドシートのURLからIDを抽出"""
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
     return match.group(1) if match else ""
 
 
 def load_ticker_list_from_sheet(sheet_url: str) -> list:
-    """Googleスプレッドシートから銘柄を取得（A列:会社名, B列:コード に完全対応）"""
+    """Googleスプレッドシートの公開URLから銘柄リストを読み込む"""
     if not sheet_url or not sheet_url.strip():
         return load_default_ticker_list()
 
     sheet_id = extract_spreadsheet_id(sheet_url)
     if not sheet_id:
         st.sidebar.warning(
-            "⚠️ スプレッドシートURLの形式が正しくありません。デフォルト銘柄を表示します。"
+            "⚠️ スプレッドシートのURL形式が正しくありません。デフォルト銘柄を表示します。"
         )
         return load_default_ticker_list()
 
+    # gid（シートID）が含まれていれば指定
     gid_match = re.search(r"[#&?]gid=([0-9]+)", sheet_url)
     gid_param = f"&gid={gid_match.group(1)}" if gid_match else ""
     csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_param}"
 
     try:
-        df_raw = pd.read_csv(csv_url, header=None, dtype=str)
-        if df_raw.empty:
+        df_sheet = pd.read_csv(csv_url)
+        if df_sheet.empty:
             return load_default_ticker_list()
 
-        parsed_tickers = []
-        for _, row in df_raw.iterrows():
-            vals = [
-                str(v).strip()
-                for v in row.values
-                if pd.notna(v) and str(v).strip()
-            ]
-            if not vals:
-                continue
-
-            name_val = ""
-            ticker_val = ""
-
-            if len(vals) >= 2:
-                v0, v1 = vals[0], vals[1]
-                if re.search(r"\.T|\.US|\b\d{4}\b|^[A-Za-z]{1,6}$", v1):
-                    ticker_val = v1
-                    name_val = v0
-                elif re.search(r"\.T|\.US|\b\d{4}\b|^[A-Za-z]{1,6}$", v0):
-                    ticker_val = v0
-                    name_val = v1
-                else:
-                    if any(
-                        h in v0
-                        for h in ["会社名", "銘柄名", "名前", "NAME"]
-                    ) or any(
-                        h in v1
-                        for h in ["コード", "ティッカー", "TICKER", "SYMBOL"]
-                    ):
-                        continue
-                    name_val, ticker_val = v0, v1
-            else:
-                v0 = vals[0]
-                if any(
-                    h in v0
-                    for h in [
-                        "会社名",
-                        "銘柄名",
-                        "コード",
-                        "ティッカー",
-                        "TICKER",
-                    ]
-                ):
-                    continue
-                ticker_val = v0
-
-            ticker_clean = ticker_val.upper().strip()
-            if ticker_clean in [
-                "TICKER",
-                "SYMBOL",
-                "CODE",
-                "コード",
+        # 銘柄列を特定（Ticker, Symbol, 銘柄, コード等に対応）
+        target_col = None
+        for col in df_sheet.columns:
+            c_str = str(col).strip().lower()
+            if c_str in [
+                "ticker",
+                "tickers",
+                "symbol",
+                "symbols",
+                "銘柄",
                 "銘柄コード",
+                "コード",
             ]:
-                continue
+                target_col = col
+                break
 
-            if re.fullmatch(r"\d{4}", ticker_clean):
-                ticker_clean = f"{ticker_clean}.T"
+        if target_col is None:
+            target_col = df_sheet.columns[0]
 
-            if ticker_clean:
-                if name_val and name_val != ticker_clean:
-                    parsed_tickers.append(f"{ticker_clean} ({name_val})")
-                else:
-                    parsed_tickers.append(ticker_clean)
-
-        seen = set()
-        clean_tickers = []
-        for item in parsed_tickers:
-            if item not in seen:
-                seen.add(item)
-                clean_tickers.append(item)
+        tickers = df_sheet[target_col].dropna().astype(str).tolist()
+        clean_tickers = [t.strip() for t in tickers if t.strip()]
 
         if clean_tickers:
             st.sidebar.success(
@@ -185,50 +120,11 @@ def load_ticker_list_from_sheet(sheet_url: str) -> list:
             return clean_tickers
         else:
             return load_default_ticker_list()
-    except Exception:
+    except Exception as e:
         st.sidebar.warning(
             "⚠️ スプレッドシートの読み込みに失敗しました（共有設定が「リンクを知っている全員が閲覧可」になっているかご確認ください）。デフォルト銘柄を表示します。"
         )
         return load_default_ticker_list()
-
-
-def send_to_gas(gas_url: str, payload: dict) -> tuple[bool, str]:
-    """GASウェブアプリへデータを送信（スプレッドシートへの直接書き込み）"""
-    if not gas_url or not gas_url.startswith("http"):
-        return False, "GASウェブアプリのURLが未設定または無効です。"
-
-    try:
-        req_data = json.dumps(payload).encode("utf-8")
-        req = urllib.request.Request(
-            gas_url,
-            data=req_data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10) as response:
-            res_body = response.read().decode("utf-8")
-            res_json = json.loads(res_body)
-            if res_json.get("result") == "success":
-                return (
-                    True,
-                    res_json.get(
-                        "message", "スプレッドシートへの書き込みに成功しました！"
-                    ),
-                )
-            else:
-                return (
-                    False,
-                    f"GASエラー: {res_json.get('message', '不明なエラー')}",
-                )
-    except Exception as e:
-        return False, f"通信エラー: {e}"
-
-
-def safe_rerun():
-    if hasattr(st, "rerun"):
-        st.rerun()
-    elif hasattr(st, "experimental_rerun"):
-        st.experimental_rerun()
 
 
 # =========================================================
@@ -236,14 +132,14 @@ def safe_rerun():
 # =========================================================
 def normalize_symbol(symbol: str):
     if not symbol or not isinstance(symbol, str):
-        return "GOOG", "GOOG"
+        return "GOOG.US", "GOOG"
 
     raw_symbol = symbol.split(" ")[0].strip().upper()
     if not raw_symbol or raw_symbol in ["登録なし", "NONE", "NAN"]:
-        return "GOOG", "GOOG"
+        return "GOOG.US", "GOOG"
 
     if raw_symbol.endswith(".US"):
-        return raw_symbol[:-3], raw_symbol[:-3]
+        return raw_symbol, raw_symbol[:-3]
 
     if re.fullmatch(r"\d{4}", raw_symbol):
         return f"{raw_symbol}.T", f"{raw_symbol}.T"
@@ -252,7 +148,7 @@ def normalize_symbol(symbol: str):
         return raw_symbol, raw_symbol
 
     if re.fullmatch(r"[A-Z][A-Z0-9\-]*", raw_symbol):
-        return raw_symbol, raw_symbol
+        return f"{raw_symbol}.US", raw_symbol
 
     return raw_symbol, raw_symbol
 
@@ -952,7 +848,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
 # =========================================================
 def create_learning_candlestick_chart(
     chart_data: pd.DataFrame,
-    display_title: str,
+    display_symbol: str,
     mid_period: int,
     is_japan: bool = False,
 ):
@@ -987,7 +883,7 @@ def create_learning_candlestick_chart(
             high=plot_df["High"],
             low=plot_df["Low"],
             close=plot_df["Close"],
-            name=display_title,
+            name=display_symbol,
             text=hover_texts,
             hoverinfo="text",
             increasing_line_color="#26a69a",
@@ -1059,7 +955,7 @@ def create_learning_candlestick_chart(
         )
 
     fig.update_layout(
-        title=f"📊 【{display_title}】学習用チャート（ローソク足にカーソルを乗せると分析解説が出ます）",
+        title=f"📊 【{display_symbol}】学習用チャート（ローソク足にカーソルを乗せると分析解説が出ます）",
         xaxis_title="日付",
         yaxis_title=f"株価 ({unit})",
         xaxis_rangeslider_visible=False,
@@ -1240,63 +1136,18 @@ def render_lightweight_chart_safe(
 # =========================================================
 st.sidebar.header("銘柄・指標設定")
 
-# スプレッドシート & GAS設定
-with st.sidebar.expander("📑 スプレッドシート & 銘柄書込設定", expanded=True):
+# スプレッドシート連携設定
+with st.sidebar.expander("📑 スプレッドシート連携設定", expanded=True):
     sheet_url_input = st.text_input(
-        "スプレッドシートURL (読込用)",
-        value=DEFAULT_SPREADSHEET_URL,
+        "スプレッドシートURL",
+        value="",
         placeholder="https://docs.google.com/spreadsheets/d/...",
-        help="Googleスプレッドシートの共有リンク（閲覧可）を入力してください。",
+        help="Googleスプレッドシートの共有リンクを入力してください（「リンクを知っている全員が閲覧可」に設定）。",
     )
-
-    gas_url_input = st.text_input(
-        "GASウェブアプリURL (書込用)",
-        value=DEFAULT_GAS_URL,
-        placeholder="https://script.google.com/macros/s/.../exec",
-        help="GASでデプロイしたウェブアプリURLを入力してください。",
-    )
-
-    st.markdown("---")
-    st.markdown("##### ➕ 新しい銘柄をスプレッドシートに追加")
-    new_name_input = st.text_input(
-        "会社名・銘柄名 (A列)", placeholder="例: カプコン, エヌビディア"
-    )
-    new_ticker_input = st.text_input(
-        "銘柄コード (B列)", placeholder="例: 9697.T, NVDA"
-    )
-
-    if st.button("➕ スプレッドシートに追加して保存"):
-        if not new_ticker_input.strip():
-            st.warning("「銘柄コード (B列)」を入力してください。")
-        elif not gas_url_input.strip():
-            st.warning("「GASウェブアプリURL (書込用)」が入力されていません。")
-        else:
-            ticker_to_add = new_ticker_input.strip().upper()
-            name_to_add = new_name_input.strip() or ticker_to_add
-            with st.spinner(f"【{ticker_to_add}】をスプレッドシートに書き込み中..."):
-                success, msg = send_to_gas(
-                    gas_url=gas_url_input.strip(),
-                    payload={
-                        "action": "add_ticker",
-                        "ticker": ticker_to_add,
-                        "name": name_to_add,
-                    },
-                )
-                if success:
-                    st.success(
-                        f"✅ {ticker_to_add} ({name_to_add})"
-                        " をスプレッドシートに追加しました！"
-                    )
-                    st.cache_data.clear()
-                    safe_rerun()
-                else:
-                    st.error(f"❌ 書き込み失敗: {msg}")
-
     if st.button("🔄 銘柄リストを再読込"):
         st.cache_data.clear()
-        safe_rerun()
 
-# 銘柄リスト取得
+# 銘柄リスト取得（スプレッドシートURLがあればそこから取得、なければデフォルト）
 if sheet_url_input.strip():
     all_options = load_ticker_list_from_sheet(sheet_url_input.strip())
 else:
@@ -1328,17 +1179,12 @@ if market_choice == "米国株":
     )
 else:
     target_stocks = jp_stocks
-    cap_index = next(
-        (idx for idx, s in enumerate(target_stocks) if "9697" in s), 0
-    )
     selected_option = st.sidebar.selectbox(
-        "日本株リスト", target_stocks, index=cap_index
+        "日本株リスト", target_stocks, index=0
     )
 
-display_symbol = selected_option
-_, provider_symbol = normalize_symbol(selected_option)
-
-is_japan_stock = provider_symbol.endswith(".T")
+display_symbol, provider_symbol = normalize_symbol(selected_option)
+is_japan_stock = display_symbol.endswith(".T")
 currency_unit = "円" if is_japan_stock else "ドル"
 
 st.sidebar.markdown("---")
@@ -1420,7 +1266,7 @@ with tab1:
             "分析する日付の基準",
             ["最新日（直近足）", "過去の日付を指定"],
             horizontal=True,
-            key=f"date_mode_{provider_symbol}",
+            key=f"date_mode_{display_symbol}",
         )
     with date_col2:
         if date_mode == "最新日（直近足）":
@@ -1439,7 +1285,7 @@ with tab1:
                 "分析したい日付を選択してください",
                 options=recent_date_list,
                 index=default_idx,
-                key=f"target_date_select_{provider_symbol}",
+                key=f"target_date_select_{display_symbol}",
             )
             st.info(
                 f"📅 現在 過去の **【{target_date_str}】**"
@@ -1456,4 +1302,411 @@ with tab1:
 
     status, status_message, conditions = evaluate_target_bar(
         target_bar,
-        float(score_threshold
+        float(score_threshold),
+        int(mid_trend_period),
+        is_japan_stock,
+    )
+
+    close_val = float(target_bar["Close"])
+    bb_lower_val = float(target_bar["BB_Lower"])
+    diff_lower_val = close_val - bb_lower_val
+    dist_lower_pct = (
+        (close_val / bb_lower_val - 1) * 100 if bb_lower_val > 0 else 0.0
+    )
+
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("終値", f"{close_val:,.2f} {currency_unit}")
+    m2.metric("BB下限", f"{bb_lower_val:,.2f} {currency_unit}")
+    m3.metric(
+        "BB下限との差",
+        f"{diff_lower_val:+,.2f} {currency_unit}",
+        "下限より上が完全復帰",
+    )
+    m4.metric(
+        "当日の足型",
+        "陽線（買い）" if target_bar["Is_Bullish"] else "陰線（売り）",
+        "反発には陽線が必須",
+    )
+    m5.metric("条件スコア", f"{target_bar['Score']:.1f} / 11点")
+
+    if "完全復帰" in status:
+        st.success(f"判定（{target_date_str}）：{status}")
+    elif (
+        "接触" in status
+        or "不合格" in status
+        or "陰線" in status
+        or status in ["落下中・監視", "弱い反発"]
+    ):
+        st.warning(f"判定（{target_date_str}）：{status}")
+    else:
+        st.info(f"判定（{target_date_str}）：{status}")
+
+    st.write(status_message)
+    st.progress(min(max(float(target_bar["Score"]) / 11, 0.0), 1.0))
+
+    st.markdown("#### 【上の表示】合否確認テーブル")
+    condition_table = pd.DataFrame([
+        {
+            "確認項目": name,
+            f"判定（{target_date_str}）": (
+                "✅ 成立・合格" if result else "❌ 未成立・警告"
+            ),
+        }
+        for name, result in conditions.items()
+    ])
+    display_df_safe(condition_table, use_container_width=True)
+
+    st.markdown("---")
+    chart_view = st.radio(
+        "📈 表示するチャートの種類を選択してください",
+        [
+            (
+                "📊 インタラクティブ学習チャート（Plotly：ホバー解説・50日線・200日線）"
+            ),
+            (
+                "📈 TradingView風チャート（Lightweight"
+                " Charts：サクサク拡大縮小）"
+            ),
+        ],
+        horizontal=True,
+        key=f"chart_choice_{display_symbol}",
+    )
+
+    if "Plotly" in chart_view:
+        fig = create_learning_candlestick_chart(
+            usable_data,
+            display_symbol,
+            int(mid_trend_period),
+            is_japan_stock,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.caption(
+            "マウスのホイールで拡大縮小、ドラッグで時間軸の移動が可能です。"
+        )
+        render_lightweight_chart_safe(
+            usable_data, display_symbol, unique_key=f"lw_chart_{display_symbol}"
+        )
+
+with tab2:
+    st.subheader("🛡️ エントリー計画と1R保有・リスク管理シミュレーター")
+    st.caption(
+        "事前の損切り価格と1R（許容損失額）に基づき、購入株数と目標利確価格を算出します。"
+    )
+
+    col_plan1, col_plan2 = st.columns([1, 1])
+
+    with col_plan1:
+        st.markdown("##### 1. 資金・エントリー設定")
+        account_funds = st.number_input(
+            "運用資金総額",
+            value=1000000.0 if is_japan_stock else 10000.0,
+            step=10000.0 if is_japan_stock else 500.0,
+        )
+        risk_pct = st.number_input(
+            "1トレードあたりの許容リスク（％）",
+            value=1.0,
+            step=0.1,
+            help=(
+                "資金に対する最大損失許容率です（一般的には1%〜2%程度）。"
+            ),
+        )
+        max_loss_budget = account_funds * (risk_pct / 100.0)
+        st.info(
+            f"💡 1回のトレードで許容できる最大損失額（1R）: **{max_loss_budget:,.0f}"
+            f" {currency_unit}**"
+        )
+
+        current_entry_price = st.number_input(
+            "想定エントリー株価",
+            value=float(target_bar["Close"]),
+            step=1.0 if is_japan_stock else 0.1,
+        )
+
+        stop_method_choice = st.selectbox(
+            "損切り価格の決定方式",
+            ["ATR基準", "直近安値基準", "より安全な方（低い方）"],
+            index=0,
+        )
+        atr_mult_input = st.slider(
+            "ATR乗数（ボラティリティ余白）",
+            min_value=1.0,
+            max_value=3.0,
+            value=1.5,
+            step=0.1,
+        )
+
+    with col_plan2:
+        st.markdown("##### 2. 損切り・利確目標・適正株数")
+        calculated_stop = calculate_stop_price(
+            entry_price=current_entry_price,
+            signal_row=target_bar,
+            method=stop_method_choice,
+            atr_multiplier=atr_mult_input,
+        )
+
+        risk_per_share = current_entry_price - calculated_stop
+        if risk_per_share <= 0:
+            st.error(
+                "損切り価格がエントリー価格以上になっています。設定を見直してください。"
+            )
+        else:
+            suggested_shares = math.floor(max_loss_budget / risk_per_share)
+            if is_japan_stock:
+                suggested_lots = suggested_shares // 100
+                display_shares_note = (
+                    f"{suggested_shares:,} 株 (単元株換算: 約 {suggested_lots}"
+                    " 単元)"
+                )
+            else:
+                display_shares_note = f"{suggested_shares:,} 株"
+
+            target_15 = current_entry_price + risk_per_share * 1.5
+            target_20 = current_entry_price + risk_per_share * 2.0
+            target_30 = current_entry_price + risk_per_share * 3.0
+
+            st.metric(
+                "損切り価格 (1R)",
+                f"{calculated_stop:,.2f} {currency_unit}",
+                f"-{risk_per_share:,.2f} {currency_unit} / 株",
+            )
+            st.metric("推奨エントリー株数", display_shares_note)
+
+            plan_summary = pd.DataFrame([
+                {
+                    "項目": "1株あたりリスク (1R)",
+                    "価格/金額": f"{risk_per_share:,.2f} {currency_unit}",
+                    "リスクリワード": "-1.0 R",
+                },
+                {
+                    "項目": "利確目標 1 (手堅い)",
+                    "価格/金額": f"{target_15:,.2f} {currency_unit}",
+                    "リスクリワード": "+1.5 R",
+                },
+                {
+                    "項目": "利確目標 2 (標準)",
+                    "価格/金額": f"{target_20:,.2f} {currency_unit}",
+                    "リスクリワード": "+2.0 R",
+                },
+                {
+                    "項目": "利確目標 3 (伸長狙い)",
+                    "価格/金額": f"{target_30:,.2f} {currency_unit}",
+                    "リスクリワード": "+3.0 R",
+                },
+            ])
+            display_df_safe(plan_summary)
+
+            st.success(
+                f"✅ **トレード計画の要約**: 株価"
+                f" {current_entry_price:,.2f}{currency_unit} でエントリーした場合、"
+                f"{calculated_stop:,.2f}{currency_unit} で損切りを設定します。"
+                f"目標株価は +1.5R: {target_15:,.2f}{currency_unit} / +2.0R:"
+                f" {target_20:,.2f}{currency_unit} です。"
+            )
+
+    # -----------------------------------------------------
+    # スプレッドシートへの計画書き込み機能
+    # -----------------------------------------------------
+    st.markdown("---")
+    st.markdown("##### 📝 スプレッドシートへ計画を記録・書き込み")
+
+    record_data = {
+        "記録日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "銘柄": display_symbol,
+        "分析基準日": target_date_str,
+        "判定状況": status,
+        "想定エントリー価格": current_entry_price,
+        "損切り価格": calculated_stop,
+        "推奨株数": (
+            suggested_shares
+            if "suggested_shares" in locals() and risk_per_share > 0
+            else 0
+        ),
+        "許容損失額(1R)": max_loss_budget,
+        "目標(+1.5R)": (
+            target_15 if "target_15" in locals() and risk_per_share > 0 else 0
+        ),
+        "目標(+2.0R)": (
+            target_20 if "target_20" in locals() and risk_per_share > 0 else 0
+        ),
+        "目標(+3.0R)": (
+            target_30 if "target_30" in locals() and risk_per_share > 0 else 0
+        ),
+    }
+
+    record_df = pd.DataFrame([record_data])
+    st.caption("記録対象のデータプレビュー:")
+    display_df_safe(record_df, use_container_width=True)
+
+    col_btn1, col_btn2 = st.columns([1, 1])
+
+    with col_btn1:
+        if st.button(
+            "📋 スプレッドシートに記録（書き込み）", key="write_sheet_btn"
+        ):
+            if not sheet_url_input.strip():
+                st.warning(
+                    "⚠️ サイドバーの「スプレッドシート連携設定」にURLが入力されていません。"
+                )
+            else:
+                written_success = False
+                # StreamlitのGSheetsConnectionが設定されている場合の書き込み
+                if HAS_GSHEETS:
+                    try:
+                        conn = st.connection("gsheets", type=GSheetsConnection)
+                        existing_data = conn.read(
+                            spreadsheet=sheet_url_input,
+                            worksheet="TradePlans",
+                            ttl=0,
+                        )
+                        updated_data = pd.concat(
+                            [existing_data, record_df], ignore_index=True
+                        )
+                        conn.update(
+                            spreadsheet=sheet_url_input,
+                            worksheet="TradePlans",
+                            data=updated_data,
+                        )
+                        st.success(
+                            "✅ スプレッドシート（シート名: TradePlans）に書き込みました！"
+                        )
+                        written_success = True
+                    except Exception as e:
+                        pass
+
+                if not written_success:
+                    st.info(
+                        "💡 **書き込みメモ**: 直接書き込みにはStreamlit"
+                        " Cloud側の認証連携（Secrets）が必要です。\n"
+                        "手動で転記する場合は、右の「CSVダウンロード」または下の1行コピーテキストをご活用ください。"
+                    )
+                    tsv_line = "\t".join(str(v) for v in record_data.values())
+                    st.code(
+                        tsv_line,
+                        language="text",
+                    )
+                    st.caption(
+                        "※ 上の行をコピーしてスプレッドシートに直接ペースト（Ctrl+V）できます。"
+                    )
+
+    with col_btn2:
+        csv_data = record_df.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            label="💾 トレード計画をCSVとして保存",
+            data=csv_data,
+            file_name=f"trade_plan_{display_symbol}_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            key="download_csv_btn",
+        )
+
+with tab3:
+    st.subheader("📈 過去データ検証（バックテスト）")
+    st.caption(
+        "過去の相場で「下限タッチ排除＋終値でのバンド内完全復帰（陽線）」の厳格ルールに従って取引した場合の統計パフォーマンスです。"
+    )
+
+    bt_col1, bt_col2, bt_col3, bt_col4 = st.columns(4)
+    with bt_col1:
+        bt_stop_method = st.selectbox(
+            "検証用 損切り方式",
+            ["ATR基準", "直近安値基準", "より安全な方（低い方）"],
+            index=0,
+            key="bt_stop",
+        )
+    with bt_col2:
+        bt_atr_mult = st.number_input(
+            "検証用 ATR乗数", value=1.5, step=0.1, key="bt_atr"
+        )
+    with bt_col3:
+        bt_max_bars = st.number_input(
+            "最大保有本数（タイムアウト）", value=20, step=1, key="bt_bars"
+        )
+    with bt_col4:
+        bt_cost_bps = st.number_input(
+            "想定コスト＋スリッページ (bps)",
+            value=10.0,
+            step=5.0,
+            key="bt_cost",
+        )
+
+    trades_15 = run_backtest(
+        data=usable_data,
+        reward_r=1.5,
+        stop_method=bt_stop_method,
+        atr_multiplier=bt_atr_mult,
+        maximum_holding_bars=int(bt_max_bars),
+        slippage_bps=float(bt_cost_bps) / 2,
+        cost_bps=float(bt_cost_bps) / 2,
+    )
+
+    trades_20 = run_backtest(
+        data=usable_data,
+        reward_r=2.0,
+        stop_method=bt_stop_method,
+        atr_multiplier=bt_atr_mult,
+        maximum_holding_bars=int(bt_max_bars),
+        slippage_bps=float(bt_cost_bps) / 2,
+        cost_bps=float(bt_cost_bps) / 2,
+    )
+
+    summary_15 = summarize_backtest(trades_15, 1.5)
+    summary_20 = summarize_backtest(trades_20, 2.0)
+    summary_df = pd.DataFrame([summary_15, summary_20])
+
+    st.markdown("##### 📊 バックテスト成績サマリー")
+    display_df_safe(summary_df)
+
+    st.markdown("##### 📈 累積R（損益曲線）推移")
+    equity_fig = create_equity_chart(trades_15, trades_20)
+    st.plotly_chart(equity_fig, use_container_width=True)
+
+    st.markdown("##### 📝 直近のトレード履歴（RR 1:2）")
+    if not trades_20.empty:
+        display_trades = trades_20.tail(15).copy()
+        display_trades["エントリー日"] = display_trades[
+            "エントリー日"
+        ].dt.strftime("%Y-%m-%d")
+        display_trades["決済日"] = display_trades["決済日"].dt.strftime(
+            "%Y-%m-%d"
+        )
+        display_trades["シグナル日"] = display_trades[
+            "シグナル日"
+        ].dt.strftime("%Y-%m-%d")
+        display_trades["結果R"] = display_trades["結果R"].map(
+            lambda x: f"{x:+.2f} R"
+        )
+        display_df_safe(display_trades)
+    else:
+        st.info(
+            "過去検証期間内に条件を満たしたトレードはありませんでした。"
+        )
+
+with tab4:
+    st.subheader("📖 本システムの設計思想と実践ルール解説")
+    st.markdown("""
+    ### 1. なぜ「下限タッチ中」や「終値接触」ではエントリーしてはいけないのか？
+    * **バンドウォーク・下落継続の罠**:
+      安値がボリンジャーバンド下限（-2σ）にタッチした段階や、終値が下限ライン上にある段階では、まだ下落トレンドが止まった確証はありません。そのままバンドが外側に開き、下限に沿って急落し続けるリスクがあります。
+    * **本システムの鉄則（終値での完全復帰）**:
+      * **下限接触中のエントリー完全禁止**: 終値がBB下限以下（ライン上や下抜け中）にある足では、絶対に買いシグナルを出しません。
+      * **バンド内への完全復帰を確認**: 売り圧力を買い手が押し返し、**終値が明確にBB下限より上（バンド内側）へ戻り、かつ陽線で引けたこと** を確認して初めてエントリーを判定します。
+
+    ---
+
+    ### 2. 反発エントリーの必須確認事項
+    1. **下限テスト後のバンド内完全復帰（陽線が必須）**:
+       * 直近（当日〜前々日）に安値で下限をテストした後、**当日の終値がBB下限を上回ってバンド内に復帰し、さらに始値より高い「陽線」** で引けていることをエントリーの必須条件とします。
+    2. **大局トレンド（200日移動平均線）**:
+       * 200日SMAの上にある局面を対象とします。長期下落相場での逆張りは避け、上昇トレンド中の健全な押し目完了足に絞り込みます。
+    3. **バンド幅の安定性**:
+       * バンド急拡大時は原則警戒しますが、当日に強力な反発陽線（買い優勢の確定足）が出ている場合は押し目完了とみなしてエントリーを許可します。
+
+    ---
+
+    ### 3. 「1R（リスク固定）」資金管理の重要性
+    * **1Rとは**: 1回の取引で「もし損切りになったらいくら失うか」という許容損失額を1単位（1R）と定義します。
+    * **株数の調整**:
+      エントリー価格と損切り価格の幅が広いときは株数を減らし、幅が狭いときは株数を増やすことで、**どの銘柄・どのトレードでも損切り時の損失額を一定（例: 資金の1%）に固定**します。
+    * **リスクリワード 1:1.5 〜 1:2**:
+      勝率が50%前後であっても、利益（+1.5R〜+2R）が損失（-1R）を上回る設計にすることで、長期的に安定した運用を目指します。
+    """)
