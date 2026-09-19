@@ -13,7 +13,6 @@ import yfinance as yf
 
 # =========================================================
 # 【初期設定】お使いのURLをここに貼り付けておくと自動で読み込まれます
-# （空欄のままでもアプリ起動後に画面から入力できます）
 # =========================================================
 DEFAULT_SPREADSHEET_URL = ""  # 例: "https://docs.google.com/spreadsheets/d/xxxx/edit"
 DEFAULT_GAS_URL = (
@@ -48,7 +47,7 @@ st.caption(
 
 
 # =========================================================
-# 銘柄リスト取得 & スプレッドシート連携 (GAS対応)
+# 銘柄リスト取得 & スプレッドシート連携 (A列:名前, B列:コード対応)
 # =========================================================
 def load_default_ticker_list() -> list:
     return [
@@ -69,7 +68,7 @@ def extract_spreadsheet_id(url: str) -> str:
 
 
 def load_ticker_list_from_sheet(sheet_url: str) -> list:
-    """Googleスプレッドシートの公開CSV URLから銘柄リストを取得"""
+    """Googleスプレッドシートから銘柄を取得（A列:会社名, B列:コード に完全対応）"""
     if not sheet_url or not sheet_url.strip():
         return load_default_ticker_list()
 
@@ -85,30 +84,87 @@ def load_ticker_list_from_sheet(sheet_url: str) -> list:
     csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_param}"
 
     try:
-        df_sheet = pd.read_csv(csv_url)
-        if df_sheet.empty:
+        # ヘッダーの有無に影響されないよう全行を取得
+        df_raw = pd.read_csv(csv_url, header=None, dtype=str)
+        if df_raw.empty:
             return load_default_ticker_list()
 
-        target_col = None
-        for col in df_sheet.columns:
-            c_str = str(col).strip().lower()
-            if c_str in [
-                "ticker",
-                "tickers",
-                "symbol",
-                "symbols",
-                "銘柄",
-                "銘柄コード",
+        parsed_tickers = []
+        for _, row in df_raw.iterrows():
+            vals = [
+                str(v).strip()
+                for v in row.values
+                if pd.notna(v) and str(v).strip()
+            ]
+            if not vals:
+                continue
+
+            name_val = ""
+            ticker_val = ""
+
+            if len(vals) >= 2:
+                v0, v1 = vals[0], vals[1]
+                # B列がコードらしい（数字4桁、.T、アルファベット等）場合
+                if re.search(r"\.T|\.US|\b\d{4}\b|^[A-Za-z]{1,6}$", v1):
+                    ticker_val = v1
+                    name_val = v0
+                elif re.search(r"\.T|\.US|\b\d{4}\b|^[A-Za-z]{1,6}$", v0):
+                    ticker_val = v0
+                    name_val = v1
+                else:
+                    # ヘッダー行（例: 会社名, コード）の判定
+                    if any(
+                        h in v0
+                        for h in ["会社名", "銘柄名", "名前", "NAME"]
+                    ) or any(
+                        h in v1
+                        for h in ["コード", "ティッカー", "TICKER", "SYMBOL"]
+                    ):
+                        continue
+                    name_val, ticker_val = v0, v1
+            else:
+                v0 = vals[0]
+                if any(
+                    h in v0
+                    for h in [
+                        "会社名",
+                        "銘柄名",
+                        "コード",
+                        "ティッカー",
+                        "TICKER",
+                    ]
+                ):
+                    continue
+                ticker_val = v0
+
+            ticker_clean = ticker_val.upper().strip()
+            # 見出し行などを除外
+            if ticker_clean in [
+                "TICKER",
+                "SYMBOL",
+                "CODE",
                 "コード",
+                "銘柄コード",
             ]:
-                target_col = col
-                break
+                continue
 
-        if target_col is None:
-            target_col = df_sheet.columns[0]
+            # 4桁数字のみの場合は .T を自動補完
+            if re.fullmatch(r"\d{4}", ticker_clean):
+                ticker_clean = f"{ticker_clean}.T"
 
-        tickers = df_sheet[target_col].dropna().astype(str).tolist()
-        clean_tickers = [t.strip() for t in tickers if t.strip()]
+            if ticker_clean:
+                if name_val and name_val != ticker_clean:
+                    parsed_tickers.append(f"{ticker_clean} ({name_val})")
+                else:
+                    parsed_tickers.append(ticker_clean)
+
+        # 重複を排除しつつ順序を保持
+        seen = set()
+        clean_tickers = []
+        for item in parsed_tickers:
+            if item not in seen:
+                seen.add(item)
+                clean_tickers.append(item)
 
         if clean_tickers:
             st.sidebar.success(
@@ -157,7 +213,6 @@ def send_to_gas(gas_url: str, payload: dict) -> tuple[bool, str]:
 
 
 def safe_rerun():
-    """Streamlit画面の安全な再読み込み"""
     if hasattr(st, "rerun"):
         st.rerun()
     elif hasattr(st, "experimental_rerun"):
@@ -1191,25 +1246,34 @@ with st.sidebar.expander("📑 スプレッドシート & 銘柄書込設定", e
 
     st.markdown("---")
     st.markdown("##### ➕ 新しい銘柄をスプレッドシートに追加")
+    new_name_input = st.text_input(
+        "会社名・銘柄名 (A列)", placeholder="例: カプコン, エヌビディア"
+    )
     new_ticker_input = st.text_input(
-        "追加したい銘柄コード", placeholder="例: NVDA, TSLA, 6758.T"
+        "銘柄コード (B列)", placeholder="例: 9697.T, NVDA"
     )
 
     if st.button("➕ スプレッドシートに追加して保存"):
         if not new_ticker_input.strip():
-            st.warning("追加する銘柄コードを入力してください。")
+            st.warning("「銘柄コード (B列)」を入力してください。")
         elif not gas_url_input.strip():
             st.warning("「GASウェブアプリURL (書込用)」が入力されていません。")
         else:
             ticker_to_add = new_ticker_input.strip().upper()
+            name_to_add = new_name_input.strip() or ticker_to_add
             with st.spinner(f"【{ticker_to_add}】をスプレッドシートに書き込み中..."):
                 success, msg = send_to_gas(
                     gas_url=gas_url_input.strip(),
-                    payload={"action": "add_ticker", "ticker": ticker_to_add},
+                    payload={
+                        "action": "add_ticker",
+                        "ticker": ticker_to_add,
+                        "name": name_to_add,
+                    },
                 )
                 if success:
                     st.success(
-                        f"✅ {ticker_to_add} をスプレッドシートに追加しました！"
+                        f"✅ {ticker_to_add} ({name_to_add})"
+                        " をスプレッドシートに追加しました！"
                     )
                     st.cache_data.clear()
                     safe_rerun()
@@ -1252,8 +1316,12 @@ if market_choice == "米国株":
     )
 else:
     target_stocks = jp_stocks
+    # カプコンがあれば優先選択
+    cap_index = next(
+        (idx for idx, s in enumerate(target_stocks) if "9697" in s), 0
+    )
     selected_option = st.sidebar.selectbox(
-        "日本株リスト", target_stocks, index=0
+        "日本株リスト", target_stocks, index=cap_index
     )
 
 display_symbol, provider_symbol = normalize_symbol(selected_option)
