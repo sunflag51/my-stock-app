@@ -106,46 +106,52 @@ def load_google_sheet_options(sheet_link: str) -> list[str]:
     return options
 
 # =========================================================
-# 銘柄コード変換
+# 銘柄コード・名称変換（修正箇所）
 # =========================================================
 def normalize_symbol(symbol: str) -> tuple[str, str]:
     default_provider = "GOOG"
-    default_display = "GOOG.US"
+    default_display = "GOOG.US｜アルファベット"
 
     if not isinstance(symbol, str) or not symbol.strip():
         return default_provider, default_display
 
     cleaned_parts = symbol.strip().split("｜")
-    raw_symbol = cleaned_parts[0].strip().split()[0].upper()
+    raw_symbol = cleaned_parts[0].strip().upper()
+    company_name = cleaned_parts[1].strip() if len(cleaned_parts) > 1 else ""
 
     if raw_symbol in {"", "登録なし", "NONE", "NAN"}:
         return default_provider, default_display
 
+    provider_symbol = raw_symbol
+    display_code = raw_symbol
+
     if raw_symbol.endswith(".US"):
         provider_symbol = raw_symbol[:-3]
-        if re.fullmatch(r"[A-Z][A-Z0-9.\-^=]*", provider_symbol):
-            return provider_symbol, raw_symbol
-
-    if raw_symbol.endswith(".JP"):
-        return raw_symbol[:-3] + ".T", raw_symbol[:-3] + ".T"
-        
-    if raw_symbol.endswith(".HK"):
+    elif raw_symbol.endswith(".JP"):
+        provider_symbol = raw_symbol[:-3] + ".T"
+        display_code = provider_symbol
+    elif raw_symbol.endswith(".HK"):
         base = raw_symbol[:-3]
         if base.isdigit():
             base = base[-4:].zfill(4)
-        return base + ".HK", base + ".HK"
+        provider_symbol = base + ".HK"
+        display_code = provider_symbol
+    elif re.fullmatch(r"\d{4}", raw_symbol):
+        provider_symbol = f"{raw_symbol}.T"
+        display_code = provider_symbol
+    elif re.fullmatch(r"\d{4}\.T", raw_symbol):
+        provider_symbol = raw_symbol
+        display_code = raw_symbol
+    elif re.fullmatch(r"[A-Z][A-Z0-9.\-]*", raw_symbol) and not raw_symbol.endswith(".US"):
+        provider_symbol = raw_symbol
+        display_code = f"{raw_symbol}.US"
 
-    if re.fullmatch(r"\d{4}", raw_symbol):
-        japan_symbol = f"{raw_symbol}.T"
-        return japan_symbol, japan_symbol
+    if company_name:
+        display_symbol = f"{display_code}｜{company_name}"
+    else:
+        display_symbol = display_code
 
-    if re.fullmatch(r"\d{4}\.T", raw_symbol):
-        return raw_symbol, raw_symbol
-
-    if re.fullmatch(r"[A-Z][A-Z0-9.\-]*", raw_symbol):
-        return raw_symbol, f"{raw_symbol}.US"
-
-    return raw_symbol, raw_symbol
+    return provider_symbol, display_symbol
 
 # =========================================================
 # yfinance列の正規化
@@ -392,7 +398,7 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     return result
 
 # =========================================================
-# 特定日の条件評価（判定画面用ロジック）
+# 特定日の条件評価（判定画面用）
 # =========================================================
 def format_optional_percent(value) -> str:
     if pd.isna(value):
@@ -622,10 +628,11 @@ def render_sidebar() -> dict:
     all_options = list(dict.fromkeys(base_options + sheet_options + ["その他（直接入力）"]))
     selected_option = st.sidebar.selectbox("分析対象", all_options, index=0)
 
+    # 修正：ここで split() して名前を消さず、文字列のまま渡す
     if selected_option.startswith("その他"):
         raw_symbol = st.sidebar.text_input("銘柄コード", value="MSFT.US", help="例：NVDA.US、7203.JP")
     else:
-        raw_symbol = selected_option.split("｜")[0].strip()
+        raw_symbol = selected_option
 
     st.sidebar.divider()
     st.sidebar.subheader("📥 データ・チャート設定")
@@ -674,7 +681,9 @@ def render_sidebar() -> dict:
 def main() -> None:
     settings = render_sidebar()
     provider_symbol, display_symbol = normalize_symbol(settings["selected_symbol"])
-    is_japan = display_symbol.endswith(".T")
+    
+    # 修正：名前が付いていても日本株判定が機能するように、provider_symbolで判定する
+    is_japan = provider_symbol.endswith(".T")
 
     st.markdown(f"### 分析対象：`{display_symbol}`")
 
@@ -699,11 +708,10 @@ def main() -> None:
     judgement_tab, chart_tab, backtest_tab = st.tabs(["🔍 判定画面", "📈 チャート", "🧪 バックテスト比較"])
 
     # -----------------------------------------------------
-    # 【完全復元】🔍 判定画面
+    # 🔍 判定画面（詳細版を完全復旧）
     # -----------------------------------------------------
     with judgement_tab:
         st.subheader("🔍 指定日の条件判定")
-
         dates = list(signal_data.index)
         sel_date = st.selectbox(
             "判定対象日",
@@ -717,7 +725,6 @@ def main() -> None:
         if isinstance(target_bar, pd.DataFrame):
             target_bar = target_bar.iloc[-1]
 
-        # 判定ステータスと詳細条件を取得
         status, message, conditions = evaluate_target_bar(
             bar=target_bar,
             score_threshold=settings["score_threshold"],
@@ -725,10 +732,8 @@ def main() -> None:
             is_japan=is_japan,
         )
 
-        # 1. 状態メッセージボックス
         status_message_box(status=status, message=message)
 
-        # 2. 6連メトリクス表示
         m_cols = st.columns(6)
         m_cols[0].metric("終値", format_price(target_bar.get("Close"), is_japan))
         m_cols[1].metric("BB下限", format_price(target_bar.get("BB_Lower"), is_japan))
@@ -737,12 +742,10 @@ def main() -> None:
         m_cols[4].metric("ATR", format_metric_value(target_bar.get("ATR"), decimals=2))
         m_cols[5].metric("スコア", f"{format_metric_value(target_bar.get('Score'), 1)} / {MAX_SCORE:g}")
 
-        # 3. 全条件の合否テーブル
         st.markdown("#### 条件別チェック")
         condition_table = create_condition_table(conditions)
         st.dataframe(condition_table, hide_index=True, use_container_width=True)
 
-        # 4. 学習メッセージ（アコーディオン）
         with st.expander("この日の学習メッセージ", expanded=True):
             learning_tip = target_bar.get("Learning_Tip", "")
             if not learning_tip:
