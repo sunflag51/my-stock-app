@@ -1,13 +1,24 @@
 from datetime import date, datetime
+import json
 import math
 import os
 import re
+import urllib.request
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 import yfinance as yf
+
+# =========================================================
+# 【初期設定】お使いのURLをここに貼り付けておくと自動で読み込まれます
+# （空欄のままでもアプリ起動後に画面から入力できます）
+# =========================================================
+DEFAULT_SPREADSHEET_URL = ""  # 例: "https://docs.google.com/spreadsheets/d/xxxx/edit"
+DEFAULT_GAS_URL = (
+    ""  # 例: "https://script.google.com/macros/s/xxxx/exec" (GASウェブアプリURL)
+)
 
 # =========================================================
 # Lightweight Chartsの安全な読み込み
@@ -17,17 +28,6 @@ try:
     from streamlit_lightweight_charts import renderLightweightCharts
 
     HAS_LW_CHARTS = True
-except ImportError:
-    pass
-
-# =========================================================
-# Google Sheets接続ライブラリの読み込み
-# =========================================================
-HAS_GSHEETS = False
-try:
-    from streamlit_gsheets import GSheetsConnection
-
-    HAS_GSHEETS = True
 except ImportError:
     pass
 
@@ -48,7 +48,7 @@ st.caption(
 
 
 # =========================================================
-# 銘柄リスト取得（デフォルト & スプレッドシート連携）
+# 銘柄リスト取得 & スプレッドシート連携 (GAS対応)
 # =========================================================
 def load_default_ticker_list() -> list:
     return [
@@ -64,24 +64,22 @@ def load_default_ticker_list() -> list:
 
 
 def extract_spreadsheet_id(url: str) -> str:
-    """GoogleスプレッドシートのURLからIDを抽出"""
     match = re.search(r"/spreadsheets/d/([a-zA-Z0-9-_]+)", url)
     return match.group(1) if match else ""
 
 
 def load_ticker_list_from_sheet(sheet_url: str) -> list:
-    """Googleスプレッドシートの公開URLから銘柄リストを読み込む"""
+    """Googleスプレッドシートの公開CSV URLから銘柄リストを取得"""
     if not sheet_url or not sheet_url.strip():
         return load_default_ticker_list()
 
     sheet_id = extract_spreadsheet_id(sheet_url)
     if not sheet_id:
         st.sidebar.warning(
-            "⚠️ スプレッドシートのURL形式が正しくありません。デフォルト銘柄を表示します。"
+            "⚠️ スプレッドシートURLの形式が正しくありません。デフォルト銘柄を表示します。"
         )
         return load_default_ticker_list()
 
-    # gid（シートID）が含まれていれば指定
     gid_match = re.search(r"[#&?]gid=([0-9]+)", sheet_url)
     gid_param = f"&gid={gid_match.group(1)}" if gid_match else ""
     csv_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv{gid_param}"
@@ -91,7 +89,6 @@ def load_ticker_list_from_sheet(sheet_url: str) -> list:
         if df_sheet.empty:
             return load_default_ticker_list()
 
-        # 銘柄列を特定（Ticker, Symbol, 銘柄, コード等に対応）
         target_col = None
         for col in df_sheet.columns:
             c_str = str(col).strip().lower()
@@ -120,11 +117,51 @@ def load_ticker_list_from_sheet(sheet_url: str) -> list:
             return clean_tickers
         else:
             return load_default_ticker_list()
-    except Exception as e:
+    except Exception:
         st.sidebar.warning(
             "⚠️ スプレッドシートの読み込みに失敗しました（共有設定が「リンクを知っている全員が閲覧可」になっているかご確認ください）。デフォルト銘柄を表示します。"
         )
         return load_default_ticker_list()
+
+
+def send_to_gas(gas_url: str, payload: dict) -> tuple[bool, str]:
+    """GASウェブアプリへデータを送信（スプレッドシートへの直接書き込み）"""
+    if not gas_url or not gas_url.startswith("http"):
+        return False, "GASウェブアプリのURLが未設定または無効です。"
+
+    try:
+        req_data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(
+            gas_url,
+            data=req_data,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as response:
+            res_body = response.read().decode("utf-8")
+            res_json = json.loads(res_body)
+            if res_json.get("result") == "success":
+                return (
+                    True,
+                    res_json.get(
+                        "message", "スプレッドシートへの書き込みに成功しました！"
+                    ),
+                )
+            else:
+                return (
+                    False,
+                    f"GASエラー: {res_json.get('message', '不明なエラー')}",
+                )
+    except Exception as e:
+        return False, f"通信エラー: {e}"
+
+
+def safe_rerun():
+    """Streamlit画面の安全な再読み込み"""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
 
 
 # =========================================================
@@ -1136,18 +1173,54 @@ def render_lightweight_chart_safe(
 # =========================================================
 st.sidebar.header("銘柄・指標設定")
 
-# スプレッドシート連携設定
-with st.sidebar.expander("📑 スプレッドシート連携設定", expanded=True):
+# スプレッドシート & GAS設定
+with st.sidebar.expander("📑 スプレッドシート & 銘柄書込設定", expanded=True):
     sheet_url_input = st.text_input(
-        "スプレッドシートURL",
-        value="",
+        "スプレッドシートURL (読込用)",
+        value=DEFAULT_SPREADSHEET_URL,
         placeholder="https://docs.google.com/spreadsheets/d/...",
-        help="Googleスプレッドシートの共有リンクを入力してください（「リンクを知っている全員が閲覧可」に設定）。",
+        help="Googleスプレッドシートの共有リンク（閲覧可）を入力してください。",
     )
+
+    gas_url_input = st.text_input(
+        "GASウェブアプリURL (書込用)",
+        value=DEFAULT_GAS_URL,
+        placeholder="https://script.google.com/macros/s/.../exec",
+        help="GASでデプロイしたウェブアプリURLを入力してください。",
+    )
+
+    st.markdown("---")
+    st.markdown("##### ➕ 新しい銘柄をスプレッドシートに追加")
+    new_ticker_input = st.text_input(
+        "追加したい銘柄コード", placeholder="例: NVDA, TSLA, 6758.T"
+    )
+
+    if st.button("➕ スプレッドシートに追加して保存"):
+        if not new_ticker_input.strip():
+            st.warning("追加する銘柄コードを入力してください。")
+        elif not gas_url_input.strip():
+            st.warning("「GASウェブアプリURL (書込用)」が入力されていません。")
+        else:
+            ticker_to_add = new_ticker_input.strip().upper()
+            with st.spinner(f"【{ticker_to_add}】をスプレッドシートに書き込み中..."):
+                success, msg = send_to_gas(
+                    gas_url=gas_url_input.strip(),
+                    payload={"action": "add_ticker", "ticker": ticker_to_add},
+                )
+                if success:
+                    st.success(
+                        f"✅ {ticker_to_add} をスプレッドシートに追加しました！"
+                    )
+                    st.cache_data.clear()
+                    safe_rerun()
+                else:
+                    st.error(f"❌ 書き込み失敗: {msg}")
+
     if st.button("🔄 銘柄リストを再読込"):
         st.cache_data.clear()
+        safe_rerun()
 
-# 銘柄リスト取得（スプレッドシートURLがあればそこから取得、なければデフォルト）
+# 銘柄リスト取得
 if sheet_url_input.strip():
     all_options = load_ticker_list_from_sheet(sheet_url_input.strip())
 else:
@@ -1505,33 +1578,41 @@ with tab2:
             )
 
     # -----------------------------------------------------
-    # スプレッドシートへの計画書き込み機能
+    # スプレッドシートへの計画書き込み機能 (GAS連携)
     # -----------------------------------------------------
     st.markdown("---")
     st.markdown("##### 📝 スプレッドシートへ計画を記録・書き込み")
 
-    record_data = {
-        "記録日時": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "銘柄": display_symbol,
-        "分析基準日": target_date_str,
-        "判定状況": status,
-        "想定エントリー価格": current_entry_price,
-        "損切り価格": calculated_stop,
-        "推奨株数": (
+    record_row = [
+        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        display_symbol,
+        target_date_str,
+        status,
+        current_entry_price,
+        calculated_stop,
+        (
             suggested_shares
             if "suggested_shares" in locals() and risk_per_share > 0
             else 0
         ),
-        "許容損失額(1R)": max_loss_budget,
-        "目標(+1.5R)": (
-            target_15 if "target_15" in locals() and risk_per_share > 0 else 0
-        ),
-        "目標(+2.0R)": (
-            target_20 if "target_20" in locals() and risk_per_share > 0 else 0
-        ),
-        "目標(+3.0R)": (
-            target_30 if "target_30" in locals() and risk_per_share > 0 else 0
-        ),
+        max_loss_budget,
+        target_15 if "target_15" in locals() and risk_per_share > 0 else 0,
+        target_20 if "target_20" in locals() and risk_per_share > 0 else 0,
+        target_30 if "target_30" in locals() and risk_per_share > 0 else 0,
+    ]
+
+    record_data = {
+        "記録日時": record_row[0],
+        "銘柄": record_row[1],
+        "分析基準日": record_row[2],
+        "判定状況": record_row[3],
+        "想定エントリー価格": record_row[4],
+        "損切り価格": record_row[5],
+        "推奨株数": record_row[6],
+        "許容損失額(1R)": record_row[7],
+        "目標(+1.5R)": record_row[8],
+        "目標(+2.0R)": record_row[9],
+        "目標(+3.0R)": record_row[10],
     }
 
     record_df = pd.DataFrame([record_data])
@@ -1544,50 +1625,22 @@ with tab2:
         if st.button(
             "📋 スプレッドシートに記録（書き込み）", key="write_sheet_btn"
         ):
-            if not sheet_url_input.strip():
+            if not gas_url_input.strip():
                 st.warning(
-                    "⚠️ サイドバーの「スプレッドシート連携設定」にURLが入力されていません。"
+                    "⚠️ サイドバーの「GASウェブアプリURL」が入力されていません。"
                 )
             else:
-                written_success = False
-                # StreamlitのGSheetsConnectionが設定されている場合の書き込み
-                if HAS_GSHEETS:
-                    try:
-                        conn = st.connection("gsheets", type=GSheetsConnection)
-                        existing_data = conn.read(
-                            spreadsheet=sheet_url_input,
-                            worksheet="TradePlans",
-                            ttl=0,
-                        )
-                        updated_data = pd.concat(
-                            [existing_data, record_df], ignore_index=True
-                        )
-                        conn.update(
-                            spreadsheet=sheet_url_input,
-                            worksheet="TradePlans",
-                            data=updated_data,
-                        )
+                with st.spinner("スプレッドシートに計画を書き込み中..."):
+                    success, msg = send_to_gas(
+                        gas_url=gas_url_input.strip(),
+                        payload={"action": "add_plan", "row_data": record_row},
+                    )
+                    if success:
                         st.success(
-                            "✅ スプレッドシート（シート名: TradePlans）に書き込みました！"
+                            "✅ スプレッドシート（シート名: TradePlans）に保存しました！"
                         )
-                        written_success = True
-                    except Exception as e:
-                        pass
-
-                if not written_success:
-                    st.info(
-                        "💡 **書き込みメモ**: 直接書き込みにはStreamlit"
-                        " Cloud側の認証連携（Secrets）が必要です。\n"
-                        "手動で転記する場合は、右の「CSVダウンロード」または下の1行コピーテキストをご活用ください。"
-                    )
-                    tsv_line = "\t".join(str(v) for v in record_data.values())
-                    st.code(
-                        tsv_line,
-                        language="text",
-                    )
-                    st.caption(
-                        "※ 上の行をコピーしてスプレッドシートに直接ペースト（Ctrl+V）できます。"
-                    )
+                    else:
+                        st.error(f"❌ {msg}")
 
     with col_btn2:
         csv_data = record_df.to_csv(index=False).encode("utf-8-sig")
