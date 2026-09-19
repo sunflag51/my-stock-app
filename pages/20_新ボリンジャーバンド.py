@@ -106,7 +106,7 @@ def load_google_sheet_options(sheet_link: str) -> list[str]:
     return options
 
 # =========================================================
-# 銘柄コード・名称変換（修正箇所）
+# 銘柄コード・名称変換
 # =========================================================
 def normalize_symbol(symbol: str) -> tuple[str, str]:
     default_provider = "GOOG"
@@ -295,7 +295,7 @@ def add_indicators(raw_data: pd.DataFrame, bb_period: int, bb_sigma: float, atr_
     return data
 
 # =========================================================
-# 学習用メッセージ生成
+# 学習用メッセージ生成（「本」→「営業日」へ修正）
 # =========================================================
 def generate_learning_tip(row: pd.Series) -> str:
     warnings = []
@@ -312,7 +312,7 @@ def generate_learning_tip(row: pd.Series) -> str:
     if not bool(row.get("No_Expansion_Raw", False)):
         width_change = row.get("BB_Width_Change_5")
         width_text = f"{width_change:+.1f}%" if pd.notna(width_change) else "未計算"
-        warnings.append(f"・BB幅が急拡大しています（5本変化率: {width_text}）")
+        warnings.append(f"・BB幅が急拡大しています（直近5営業日の変化率: {width_text}）")
 
     if bool(row.get("Today_Recovery", False)):
         positives.append("・同日にBB下限をテストし、陽線終値で復帰しました")
@@ -398,7 +398,7 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     return result
 
 # =========================================================
-# 特定日の条件評価（判定画面用）
+# 特定日の条件評価（「本」→「営業日」へ修正）
 # =========================================================
 def format_optional_percent(value) -> str:
     if pd.isna(value):
@@ -428,7 +428,7 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
 
     if not bool(bar.get("Indicator_Ready", False)):
         status = "指標未計算"
-        message = "SMA200、ATR、BBなどの必要な指標が揃っていないため、この足は判定対象外です。"
+        message = "SMA200、ATR、BBなどの必要な指標が揃っていないため、この営業日は判定対象外です。"
     elif not bool(bar.get("Closed_Inside_Band", False)):
         status = "BB内復帰未確認"
         message = "終値がBB下限から所定の余裕幅を伴う復帰基準を満たしていません。"
@@ -443,7 +443,7 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
         message = "バンド幅、中央線の傾きなど、いずれかの必須条件が不合格です。"
     elif not bool(bar.get("Touched_Lower_Recent", False)):
         status = "待機"
-        message = "直近3本以内にBB下限テストがありません。"
+        message = "直近3営業日以内にBB下限テストがありません。"
     elif not bool(bar.get("Rebound", False)):
         status = "反発未確認"
         message = "所定の反発パターンを確認できていません。"
@@ -457,15 +457,15 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
     conditions = {
         "必要な指標がすべて計算済み": bool(bar.get("Indicator_Ready", False)),
         f"終値がBB内復帰基準より上（BB下限との差: {difference_text}）": bool(bar.get("Closed_Inside_Band", False)),
-        "直近3本以内にBB下限テストあり": bool(bar.get("Touched_Lower_Recent", False)),
+        "直近3営業日以内にBB下限テストあり": bool(bar.get("Touched_Lower_Recent", False)),
         "当日の足が陽線": bool(bar.get("Is_Bullish", False)),
         "200日線以上": bool(bar.get("Pass_SMA200", False)),
-        f"バンド幅条件を通過（5本変化率: {format_optional_percent(bar.get('BB_Width_Change_5'))}）": bool(bar.get("Pass_No_Expansion", False)),
+        f"バンド幅条件を通過（直近5営業日の変化率: {format_optional_percent(bar.get('BB_Width_Change_5'))}）": bool(bar.get("Pass_No_Expansion", False)),
         f"BB中央線の傾きが基準以上（実績: {format_optional_percent(bar.get('BB_Middle_Slope_5'))}）": bool(bar.get("Pass_Middle_Slope", False)),
         "所定の反発パターンを確認": bool(bar.get("Rebound", False)),
         "RSIが25以上かつ改善": bool(bar.get("RSI_Improving", False)),
         "MACDヒストグラムが改善": bool(bar.get("MACD_Improving", False)),
-        f"出来高が20本平均以上（実績: {volume_percent_text}）": bool(bar.get("Volume_Expansion", False)),
+        f"出来高が20営業日平均以上（実績: {volume_percent_text}）": bool(bar.get("Volume_Expansion", False)),
         "BB下限が急落していない": bool(bar.get("Lower_Not_Collapsing", False)),
         f"スコアが基準以上（満点: {MAX_SCORE:g}）": (pd.notna(bar.get("Score")) and float(bar["Score"]) >= score_threshold),
     }
@@ -500,7 +500,7 @@ def format_price(value, is_japan: bool) -> str:
     return f"{float(v):,.2f}{'円' if is_japan else 'ドル'}"
 
 # =========================================================
-# バックテストロジック
+# バックテストロジック（「保有本数」→「保有日数（営業日）」へ修正）
 # =========================================================
 def calculate_stop_price(entry_price: float, signal_row: pd.Series, method: str, atr_multiplier: float) -> Optional[float]:
     if not np.isfinite(entry_price) or entry_price <= 0: return None
@@ -523,7 +523,7 @@ def calculate_stop_price(entry_price: float, signal_row: pd.Series, method: str,
     return float(stop_price)
 
 def run_backtest(data: pd.DataFrame, reward_r: float, stop_method: str, atr_multiplier: float, maximum_holding_bars: int, slippage_bps: float, cost_bps: float) -> pd.DataFrame:
-    trade_columns = ["シグナル日", "エントリー日", "決済日", "エントリー", "損切り", "価格ベース1R", "利確目標", "RR設定", "決済価格", "売買コスト", "結果R", "決済理由", "保有本数", "シグナル点数"]
+    trade_columns = ["シグナル日", "エントリー日", "決済日", "エントリー", "損切り", "価格ベース1R", "利確目標", "RR設定", "決済価格", "売買コスト", "結果R", "決済理由", "保有日数（営業日）", "シグナル点数"]
     if data is None or data.empty: return pd.DataFrame(columns=trade_columns)
 
     trades = []
@@ -574,7 +574,7 @@ def run_backtest(data: pd.DataFrame, reward_r: float, stop_method: str, atr_mult
             "シグナル日": data.index[index_number], "エントリー日": data.index[entry_number], "決済日": data.index[exit_number],
             "エントリー": entry_price, "損切り": stop_price, "価格ベース1R": initial_risk, "利確目標": target_price,
             "RR設定": reward_r, "決済価格": exit_price, "売買コスト": transaction_cost, "結果R": result_r,
-            "決済理由": exit_reason, "保有本数": exit_number - entry_number + 1, "シグナル点数": float(signal_row.get("Score", np.nan))
+            "決済理由": exit_reason, "保有日数（営業日）": exit_number - entry_number + 1, "シグナル点数": float(signal_row.get("Score", np.nan))
         })
         index_number = exit_number + 1
 
@@ -628,7 +628,6 @@ def render_sidebar() -> dict:
     all_options = list(dict.fromkeys(base_options + sheet_options + ["その他（直接入力）"]))
     selected_option = st.sidebar.selectbox("分析対象", all_options, index=0)
 
-    # 修正：ここで split() して名前を消さず、文字列のまま渡す
     if selected_option.startswith("その他"):
         raw_symbol = st.sidebar.text_input("銘柄コード", value="MSFT.US", help="例：NVDA.US、7203.JP")
     else:
@@ -644,11 +643,11 @@ def render_sidebar() -> dict:
 
     st.sidebar.divider()
     st.sidebar.subheader("📊 指標設定")
-    bb_period = st.sidebar.number_input("BB期間", 2, 100, 20, 1)
+    bb_period = st.sidebar.number_input("BB期間（営業日数）", 2, 100, 20, 1)
     bb_sigma = st.sidebar.number_input("BB標準偏差倍率", 0.5, 5.0, 2.0, 0.1, format="%.1f")
-    mid_period = st.sidebar.number_input("中期SMA期間", 2, 200, 50, 1)
-    atr_period = st.sidebar.number_input("ATR期間", 2, 100, 14, 1)
-    swing_lookback = st.sidebar.number_input("直近安値の参照期間", 2, 100, 10, 1)
+    mid_period = st.sidebar.number_input("中期SMA期間（営業日数）", 2, 200, 50, 1)
+    atr_period = st.sidebar.number_input("ATR期間（営業日数）", 2, 100, 14, 1)
+    swing_lookback = st.sidebar.number_input("直近安値の参照期間（営業日数）", 2, 100, 10, 1)
 
     st.sidebar.divider()
     st.sidebar.subheader("🔍 シグナル設定")
@@ -659,7 +658,7 @@ def render_sidebar() -> dict:
     st.sidebar.subheader("🛡️ バックテスト設定")
     stop_method = st.sidebar.selectbox("損切り方法", ["ATR基準", "直近安値基準", "広い方"], index=2)
     atr_multiplier = st.sidebar.number_input("ATR倍率", 0.1, 10.0, 1.5, 0.1, format="%.1f")
-    maximum_holding_bars = st.sidebar.number_input("最大保有日数", 1, 250, 20, 1)
+    maximum_holding_bars = st.sidebar.number_input("最大保有日数（営業日）", 1, 250, 20, 1, help="日足データ（営業日）の本数で指定します。")
     slippage_bps = st.sidebar.number_input("片道スリッページ（bps）", 0.0, 500.0, 5.0, 1.0, format="%.1f")
     cost_bps = st.sidebar.number_input("片道売買コスト（bps）", 0.0, 500.0, 3.0, 1.0, format="%.1f")
 
@@ -681,8 +680,6 @@ def render_sidebar() -> dict:
 def main() -> None:
     settings = render_sidebar()
     provider_symbol, display_symbol = normalize_symbol(settings["selected_symbol"])
-    
-    # 修正：名前が付いていても日本株判定が機能するように、provider_symbolで判定する
     is_japan = provider_symbol.endswith(".T")
 
     st.markdown(f"### 分析対象：`{display_symbol}`")
@@ -708,7 +705,7 @@ def main() -> None:
     judgement_tab, chart_tab, backtest_tab = st.tabs(["🔍 判定画面", "📈 チャート", "🧪 バックテスト比較"])
 
     # -----------------------------------------------------
-    # 🔍 判定画面（詳細版を完全復旧）
+    # 🔍 判定画面
     # -----------------------------------------------------
     with judgement_tab:
         st.subheader("🔍 指定日の条件判定")
