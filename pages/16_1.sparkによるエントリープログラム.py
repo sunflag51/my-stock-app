@@ -91,11 +91,11 @@ def load_ticker_list_from_sheet(sheet_url: str) -> list:
             ticker_val = ""
 
             if len(vals) >= 2:
-                v0, v1 = vals[0], vals[1]
-                if re.search(r"\.T|\.US| \d{4} |^[A-Za-z]{1,6}$", v1):
+                v0, v1 = vals[0], vals
+                if re.search(r"\.T|\.US|\b\d{4}\b|^[A-Za-z]{1,6}$", v1):
                     ticker_val = v1
                     name_val = v0
-                elif re.search(r"\.T|\.US| \d{4} |^[A-Za-z]{1,6}$", v0):
+                elif re.search(r"\.T|\.US|\b\d{4}\b|^[A-Za-z]{1,6}$", v0):
                     ticker_val = v0
                     name_val = v1
                 else:
@@ -286,6 +286,7 @@ def add_indicators(
     atr_period: int,
     swing_lookback: int,
     mid_period: int,
+    swing_high_lookback: int = 20,
 ) -> pd.DataFrame:
     data = raw_data.copy()
 
@@ -323,30 +324,7 @@ def add_indicators(
     data["Volume_MA20"] = data["Volume"].rolling(20).mean()
     data["Lower_Slope_3"] = data["BB_Lower"].pct_change(3) * 100
     data["Recent_Low"] = data["Low"].rolling(swing_lookback).min()
-
-    # =========================================================
-    # 機関投資家（スマートマネー・アルゴリズム）検出指標
-    # =========================================================
-    # 1. 出来高倍率（対20日平均比）: 1.5倍〜2.0倍以上は大口の仕込みシグナル
-    data["Volume_Ratio"] = (data["Volume"] / data["Volume_MA20"].replace(0, np.nan)).fillna(1.0)
-    data["Inst_Volume_Surge"] = data["Volume_Ratio"] >= 1.5
-
-    # 2. 直近スイング安値（前日までの安値）
-    data["Prior_Swing_Low"] = data["Low"].shift(1).rolling(swing_lookback).min()
-
-    # 3. 流動性スイープ（Liquidity Sweep / ストップ狩り）検知
-    # 日中に前日までのスイング安値を下抜けて個人の損切りを巻き込み、終値でその安値以上かつBB下限以上に復帰
-    data["Liquidity_Sweep"] = (
-        (data["Low"] < data["Prior_Swing_Low"])
-        & (data["Close"] > data["Prior_Swing_Low"])
-        & (data["Close"] > data["BB_Lower"])
-        & (data["Close"] > data["Open"])
-    )
-
-    # 4. ボラティリティ収縮（スクイーズ判定）
-    # 直近60日間のバンド幅最小値付近にある状態
-    rolling_min_width = data["BB_Width_Pct"].rolling(60).min()
-    data["Is_Squeeze"] = data["BB_Width_Pct"] <= (rolling_min_width * 1.25)
+    data["Recent_High"] = data["High"].rolling(swing_high_lookback).max()
 
     return data
 
@@ -366,8 +344,6 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     result["Touched_Lower_Recent"] = result["Touched_Lower_Today"] | result["Touched_Lower_1"] | result["Touched_Lower_2"]
 
     # 3. 【最重要改善】終値でバンド内への完全復帰判定
-    # 下限のタッチや接触中（Close <= BB_Lower）は絶対にエントリーさせない！
-    # 終値がBB下限より明確に上にあること（完全復帰）
     result["Closed_Inside_Band"] = result["Close"] > result["BB_Lower"]
 
     # 4. 陽線判定・下ヒゲ判定
@@ -375,20 +351,17 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     result["Strong_Lower_Shadow"] = result["Lower_Shadow_Pct"] >= 35.0
 
     # 反発パターンの判定
-    # パターン①：同日下限タッチからバンド内へ力強く復帰した陽線
     result["Today_Recovery"] = (
         result["Touched_Lower_Today"]
         & result["Closed_Inside_Band"]
         & result["Is_Bullish"]
     )
-    # パターン②：前日までに下限テストを終え、当日に陽線で力強く反転（ツータッチ反発の確定足）
     result["Today_Bullish"] = (
         result["Touched_Lower_Recent"]
         & result["Closed_Inside_Band"]
         & result["Is_Bullish"]
         & (result["Close"] > result["Close"].shift(1))
     )
-    # パターン③：強力な下ヒゲピンバー（下ヒゲ40%以上かつ終値がバンド内に復帰）
     result["Today_Hammer"] = (
         result["Touched_Lower_Recent"]
         & result["Closed_Inside_Band"]
@@ -399,22 +372,18 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     result["Rebound"] = result["Today_Recovery"] | result["Today_Bullish"] | result["Today_Hammer"]
 
     # 5. 【下落進行・下限接触中ブロック（完全排除）】
-    # ① 終値がBB下限以下（ライン上または外側に接触中：完全復帰していない足）
     cond_touching_or_below = result["Close"] <= result["BB_Lower"]
-    # ② 当日の足が陰線（売り優勢：下落途中での安値追いを排除）
     cond_bearish = result["Close"] <= result["Open"]
-
     result["Is_Bandwalk_Drop"] = cond_touching_or_below | cond_bearish
 
-    # バンド急拡大の評価（40%以下、または強い陽線反転があれば許容）
+    # バンド急拡大の評価
     result["No_Expansion_Raw"] = result["BB_Width_Change_5"].isna() | (result["BB_Width_Change_5"] <= 40.0)
     result["Pass_No_Expansion"] = result["No_Expansion_Raw"] | result["Today_Bullish"] | (result["Strong_Lower_Shadow"] & result["Is_Bullish"])
 
-    # 20日線の傾き（急降下の抑制）
+    # 20日線の傾き
     result["Pass_Middle_Slope"] = result["BB_Middle_Slope_5"].isna() | (result["BB_Middle_Slope_5"] >= -3.5)
 
-    # 必須足切り条件：
-    # 200日線以上 ＋ バンド拡大抑制（陽線反転なら免除） ＋ 【下限接触・陰線でないこと】 ＋ 【終値でバンド内に完全復帰】 ＋ 【当日は陽線または強力ピンバー】
+    # 必須足切り条件
     result["Mandatory_Filter_Pass"] = (
         result["Pass_SMA200"]
         & result["Pass_No_Expansion"]
@@ -432,6 +401,10 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     result["Volume_Expansion"] = (result["Volume_MA20"] > 0) & (result["Volume"] >= result["Volume_MA20"])
     result["Lower_Not_Collapsing"] = result["Lower_Slope_3"] > -3.0
 
+    # 直近高値（天井）までの余白判定（ATRの2倍以上の空間があるか）
+    result["Headroom"] = result["Recent_High"] - result["Close"]
+    result["Pass_Headroom"] = result["Headroom"] >= (result["ATR"] * 2.0)
+
     result["Score"] = (
         result["Closed_Inside_Band"].astype(float) * 2.0
         + result["Rebound"].astype(float) * 2.0
@@ -443,24 +416,16 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
         + result["Pass_Middle_Slope"].astype(float) * 0.5
         + result["Volume_Expansion"].astype(float) * 0.5
         + result["Lower_Not_Collapsing"].astype(float) * 1.0
+        + result["Pass_Headroom"].astype(float) * 1.0
     )
 
-    # 7. エントリーシグナル (通常シグナル)
+    # 7. エントリーシグナル
     result["Entry_Signal"] = (
         result["Mandatory_Filter_Pass"]
         & result["Touched_Lower_Recent"]
         & result["Rebound"]
         & (result["Score"] >= score_threshold)
     )
-
-    # =========================================================
-    # 機関投資家（アルゴリズム）合致シグナル
-    # =========================================================
-    # 8. 機関アルゴ単独シグナル（大口出来高サージ または 流動性スイープ反発）
-    result["Inst_Only_Signal"] = result["Inst_Volume_Surge"] | result["Liquidity_Sweep"]
-
-    # 9. 複合エントリーシグナル（通常シグナル ＋ 機関アルゴ単独 の両方を満たす）
-    result["Institutional_Signal"] = result["Entry_Signal"] & result["Inst_Only_Signal"]
 
     # 8. アドバイス文生成
     def generate_learning_tip(row):
@@ -495,11 +460,13 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
             else:
                 warnings.append("・下限テスト後ですがバンド内への復帰が未完了")
 
-        if row["Entry_Signal"]:
-            positives.append("★【通常条件成立】下限タッチ・接触を脱し、終値でバンド内への完全復帰（陽線）を確認")
+        if not row["Pass_Headroom"]:
+            warnings.append("・【天井近接】直近高値（天井）がすぐ上にあり、利確前に頭を打つリスクに注意")
+        else:
+            positives.append("・【頭上余白】直近高値（天井）まで十分な距離があり、上値が軽い状態")
 
-        if row.get("Institutional_Signal", False):
-            positives.append("🏛️【複合エントリー合致】通常シグナル＋機関投資家の大口出来高サージまたはストップ狩り（流動性スイープ）を確認")
+        if row["Entry_Signal"]:
+            positives.append("★【条件成立】下限タッチ・接触を脱し、終値でバンド内への完全復帰（陽線）を確認。1R損切りを設定して検証可")
 
         text_parts = []
         if warnings:
@@ -554,6 +521,11 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
     bb_slope_str = f"{bar['BB_Middle_Slope_5']:+.1f}%" if pd.notna(bar.get("BB_Middle_Slope_5")) else "0.0%"
     lower_shadow_val = float(bar.get("Lower_Shadow_Pct", 0))
 
+    recent_high_val = float(bar.get("Recent_High", close_val * 1.05))
+    headroom_val = recent_high_val - close_val
+    headroom_pct = (headroom_val / close_val * 100) if close_val > 0 else 0.0
+    pass_headroom_val = bool(bar.get("Pass_Headroom", headroom_val >= bar.get("ATR", 1.0) * 2.0))
+
     conditions = {
         f"【必須】終値でバンド内へ完全復帰（下限より上: +{diff_lower:,.2f}{unit} / タッチ中の買い禁止）": bool(bar.get("Closed_Inside_Band", False)),
         "【必須】直近3日以内にBB下限テストあり（安値が下限以下）": bool(bar.get("Touched_Lower_Recent", False)),
@@ -570,6 +542,7 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
         "MACDが改善（ヒストグラム好転）": bool(bar["MACD_Improving"]),
         f"出来高が20日平均以上（基準: 100%以上 / 実績: {vol_pct:.0f}%）": bool(bar["Volume_Expansion"]),
         "BB下限が急落していない": bool(bar["Lower_Not_Collapsing"]),
+        f"【安全】直近高値（天井: {recent_high_val:,.2f}{unit}）まで十分な余白あり（差: +{headroom_val:,.2f}{unit} / +{headroom_pct:.1f}%）": pass_headroom_val,
     }
 
     return status, message, conditions
@@ -603,7 +576,7 @@ def calculate_stop_price(entry_price: float, signal_row: pd.Series, method: str,
     return max(0.0001, float(stop))
 
 # =========================================================
-# バックテスト（汎用）
+# バックテスト
 # =========================================================
 def run_backtest(
     data: pd.DataFrame,
@@ -613,7 +586,6 @@ def run_backtest(
     maximum_holding_bars: int,
     slippage_bps: float,
     cost_bps: float,
-    signal_col: str = "Entry_Signal",
 ) -> pd.DataFrame:
     trades = []
     if len(data) < 3:
@@ -623,7 +595,7 @@ def run_backtest(
     while index_number < len(data) - 1:
         signal_row = data.iloc[index_number]
 
-        if not bool(signal_row.get(signal_col, False)):
+        if not bool(signal_row["Entry_Signal"]):
             index_number += 1
             continue
 
@@ -713,8 +685,6 @@ def run_backtest(
             "決済理由": exit_reason,
             "保有本数": (exit_number - entry_number + 1),
             "シグナル点数": float(signal_row["Score"]),
-            "機関出来高サージ": bool(signal_row.get("Inst_Volume_Surge", False)),
-            "流動性スイープ": bool(signal_row.get("Liquidity_Sweep", False)),
         })
 
         index_number = exit_number + 1
@@ -780,7 +750,7 @@ def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: 
             f"終値: {row['Close']:,.2f}{unit}  始値: {row['Open']:,.2f}{unit}<br>"
             f"高値: {row['High']:,.2f}{unit}  安値: {row['Low']:,.2f}{unit}<br>"
             "------------------------------------<br>"
-            f"<b>判定スコア:</b> {row['Score']:.1f} / 11 点<br>"
+            f"<b>判定スコア:</b> {row['Score']:.1f} / 12 点<br>"
             f"<b>必須フィルター:</b> {'合格 ✅' if row['Mandatory_Filter_Pass'] else '不合格 ❌'}<br>"
             f"<b>バンド内完全復帰:</b> {'復帰済み（下限より上） ✅' if row['Closed_Inside_Band'] else '下限接触・下抜け中 ❌'}<br>"
             f"<b>当日の足型:</b> {'陽線（買い優勢）' if row['Is_Bullish'] else '陰線（売り優勢・見送り）'}<br>"
@@ -807,6 +777,9 @@ def create_learning_candlestick_chart(chart_data: pd.DataFrame, display_symbol: 
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Upper"], line=dict(color="rgba(220,70,70,0.5)", width=1), name="BB上限(+2σ)", hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Middle"], line=dict(color="rgba(128,128,128,0.7)", width=1.2, dash="dash"), name="BB中央(20SMA)", hoverinfo="skip"))
     fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Lower"], line=dict(color="rgba(41,98,255,0.8)", width=2), name="BB下限(-2σ)", hoverinfo="skip"))
+
+    if "Recent_High" in plot_df.columns and plot_df["Recent_High"].notna().any():
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Recent_High"], line=dict(color="rgba(239,83,80,0.85)", width=1.5, dash="dot"), name="直近高値(天井抵抗線)", hoverinfo="skip"))
 
     if "Mid_SMA" in plot_df.columns and plot_df["Mid_SMA"].notna().any():
         fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["Mid_SMA"], line=dict(color="rgba(156,39,176,0.85)", width=1.8), name=f"{mid_period}日SMA(中期)", hoverinfo="skip"))
@@ -876,6 +849,7 @@ def render_lightweight_chart_safe(
     bb_lower = to_lw_data(chart_data, "BB_Lower")
     mid_sma = to_lw_data(chart_data, "Mid_SMA")
     sma200 = to_lw_data(chart_data, "SMA200")
+    recent_high_lw = to_lw_data(chart_data, "Recent_High")
 
     signal_df = chart_data[chart_data["Entry_Signal"] == True].drop_duplicates(subset=["time"])
     markers = []
@@ -927,6 +901,7 @@ def render_lightweight_chart_safe(
     if bb_lower: series_list.append({"type": "Line", "data": bb_lower, "options": {"color": "rgba(41,98,255,0.8)", "lineWidth": 2, "title": "BB下限"}})
     if mid_sma: series_list.append({"type": "Line", "data": mid_sma, "options": {"color": "rgba(156,39,176,0.8)", "lineWidth": 2, "title": "中期SMA"}})
     if sma200: series_list.append({"type": "Line", "data": sma200, "options": {"color": "rgba(255,152,0,0.8)", "lineWidth": 2, "title": "SMA200"}})
+    if recent_high_lw: series_list.append({"type": "Line", "data": recent_high_lw, "options": {"color": "rgba(239,83,80,0.85)", "lineWidth": 1, "title": "直近高値(天井)"}})
 
     try:
         renderLightweightCharts([{"chart": chartOptions, "series": series_list}], key=unique_key)
@@ -971,8 +946,7 @@ is_japan_stock = display_symbol.endswith(".T")
 currency_unit = "円" if is_japan_stock else "ドル"
 
 st.sidebar.markdown("---")
-# 過去3年間の検証に対応できるよう "3y" を追加（デフォルトインデックス調整）
-period = st.sidebar.selectbox("データ期間", ["1y", "2y", "3y", "5y", "10y"], index=2)
+period = st.sidebar.selectbox("データ期間", ["1y", "2y", "5y", "10y"], index=2)
 interval = st.sidebar.selectbox("時間足", ["1d", "1wk"], index=0)
 
 mid_trend_period = st.sidebar.selectbox("中期トレンド判定線（SMA）", options=[20, 25, 50, 75, 100], index=2)
@@ -981,6 +955,7 @@ bb_period = st.sidebar.number_input("BB期間", value=20)
 bb_sigma = st.sidebar.number_input("BB標準偏差", value=2.0, step=0.1)
 atr_period = st.sidebar.number_input("ATR期間", value=14)
 swing_lookback = st.sidebar.number_input("直近安値の確認本数", value=10)
+swing_high_lookback = st.sidebar.number_input("直近高値（天井）の確認本数", value=20)
 tolerance_pct = st.sidebar.number_input("BB下限接近許容幅（％）", value=1.0, step=0.1)
 score_threshold = st.sidebar.number_input("条件成立点数", value=6.5, step=0.5)
 
@@ -994,7 +969,7 @@ if raw_data.empty:
     st.error(f"❌ {display_symbol} のデータを取得できませんでした。")
     st.stop()
 
-data = add_indicators(raw_data, int(bb_period), float(bb_sigma), int(atr_period), int(swing_lookback), int(mid_trend_period))
+data = add_indicators(raw_data, int(bb_period), float(bb_sigma), int(atr_period), int(swing_lookback), int(mid_trend_period), int(swing_high_lookback))
 data = build_signals(data, float(tolerance_pct), float(score_threshold))
 usable_data = data.dropna(subset=["BB_Lower", "ATR", "Recent_Low"]).copy()
 
@@ -1019,20 +994,14 @@ status, status_message, conditions = evaluate_target_bar(
 )
 
 # =========================================================
-# タブ表示（⑤ 機関投資家アルゴ・中期検証タブを追加）
+# タブ表示
 # =========================================================
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "① 条件判定・チャート・カルテ",
-    "② 計画と保有管理",
-    "③ 過去データ検証",
-    "④ 使い方・注意点",
-    "⑤ 🏛️ 機関投資家アルゴ・中期検証（最大180日）"
-])
+tab1, tab2, tab3, tab4 = st.tabs(["① 条件判定・チャート・カルテ", "② 計画と保有管理", "③ 過去データ検証", "④ 使い方・注意点"])
 
 with tab1:
     st.subheader(f"📊 {display_symbol} 条件判定・学習カルテ")
 
-    date_col1, date_col2 = st.columns([1, 2])
+    date_col1, date_col2 = st.columns()
     with date_col1:
         date_mode = st.radio(
             "分析する日付の基準",
@@ -1074,7 +1043,7 @@ with tab1:
     m2.metric("BB下限", f"{bb_lower_val:,.2f} {currency_unit}")
     m3.metric("BB下限との差", f"{diff_lower_val:+,.2f} {currency_unit}", "下限より上が完全復帰")
     m4.metric("当日の足型", "陽線 🟢" if target_bar["Is_Bullish"] else "陰線 🔴", "反発には陽線が必須")
-    m5.metric("条件スコア", f"{target_bar['Score']:.1f} / 11点")
+    m5.metric("条件スコア", f"{target_bar['Score']:.1f} / 12点")
 
     if "完全復帰" in status:
         st.success(f"判定（{target_date_str}）：{status}")
@@ -1084,7 +1053,7 @@ with tab1:
         st.info(f"判定（{target_date_str}）：{status}")
 
     st.write(status_message)
-    st.progress(min(max(float(target_bar["Score"]) / 11, 0.0), 1.0))
+    st.progress(min(max(float(target_bar["Score"]) / 12, 0.0), 1.0))
 
     st.markdown("#### 【上の表示】合否確認テーブル")
     condition_table = pd.DataFrame([
@@ -1096,7 +1065,7 @@ with tab1:
     st.markdown("---")
     chart_view = st.radio(
         "📈 表示するチャートの種類を選択してください",
-        ["📊 インタラクティブ学習チャート（Plotly：ホバー解説・50日線・200日線）", "📈 TradingView風チャート（Lightweight Charts：サクサク拡大縮小）"],
+        ["📊 インタラクティブ学習チャート（Plotly：ホバー解説・50日線・200日線・直近高値）", "📈 TradingView風チャート（Lightweight Charts：サクサク拡大縮小）"],
         horizontal=True,
         key=f"chart_choice_{display_symbol}",
     )
@@ -1114,7 +1083,7 @@ with tab2:
     st.subheader("🛡️ エントリー計画と1R保有・リスク管理シミュレーター")
     st.caption("事前の損切り価格と1R（許容損失額）に基づき、購入株数と目標利確価格を算出します。")
 
-    col_plan1, col_plan2 = st.columns([1, 1])
+    col_plan1, col_plan2 = st.columns()
 
     with col_plan1:
         st.markdown("##### 1. 資金・エントリー設定")
@@ -1186,6 +1155,12 @@ with tab2:
                 f"目標株価は +1.5R: {target_15:,.2f}{currency_unit} / +2.0R: {target_20:,.2f}{currency_unit} です。"
             )
 
+            current_high_val = float(target_bar.get("Recent_High", current_entry_price * 1.1))
+            if target_20 <= current_high_val:
+                st.info(f"💡 **天井分析（直近高値との距離）**: 利確目標(+2.0R: {target_20:,.2f}{currency_unit})は直近高値(天井: {current_high_val:,.2f}{currency_unit})の手前にあるため、天井に頭を打たずに利確しやすい安全な配置です。")
+            else:
+                st.warning(f"⚠️ **天井分析（直近高値との距離）**: 利確目標(+2.0R: {target_20:,.2f}{currency_unit})が直近高値(天井: {current_high_val:,.2f}{currency_unit})より上にあります。天井付近で跳ね返されるリスクに注意してください。")
+
             st.markdown("---")
             st.markdown("##### 📝 スプレッドシートへこの計画・保有記録を書き込む")
             with st.form("record_position_form"):
@@ -1238,7 +1213,6 @@ with tab3:
         maximum_holding_bars=int(bt_max_bars),
         slippage_bps=float(bt_cost_bps) / 2,
         cost_bps=float(bt_cost_bps) / 2,
-        signal_col="Entry_Signal",
     )
 
     trades_20 = run_backtest(
@@ -1249,7 +1223,6 @@ with tab3:
         maximum_holding_bars=int(bt_max_bars),
         slippage_bps=float(bt_cost_bps) / 2,
         cost_bps=float(bt_cost_bps) / 2,
-        signal_col="Entry_Signal",
     )
 
     summary_15 = summarize_backtest(trades_15, 1.5)
@@ -1302,176 +1275,4 @@ with tab4:
       エントリー価格と損切り価格の幅が広いときは株数を減らし、幅が狭いときは株数を増やすことで、**どの銘柄・どのトレードでも損切り時の損失額を一定（例: 資金の1%）に固定**します。
     * **リスクリワード 1:1.5 〜 1:2**:
       勝率が50%前後であっても、利益（+1.5R〜+2R）が損失（-1R）を上回る設計にすることで、長期的に安定した運用を目指します。
-    """)
-
-with tab5:
-    st.subheader(f"🏛️ 機関投資家アルゴリズム分析＆中期検証（最大180日・{display_symbol}）")
-    st.caption(
-        "ウォール街の機関投資家・クオンツアルゴリズムが仕掛ける「流動性スイープ（安値ストップ狩り）」や「異常出来高の吸い上げ（ブロック買い）」を検知し、"
-        "最長180営業日の中期スイングでリスクを最小化しながら大きな波を捉える検証環境です。"
-    )
-
-    # ---------------------------------------------------------
-    # 1. アルゴリズム検出ステータス（選択日基準）
-    # ---------------------------------------------------------
-    st.markdown("#### 1. 機関投資家アルゴリズム・シグナル診断")
-    c_inst1, c_inst2, c_inst3, c_inst4 = st.columns(4)
-
-    is_sweep = bool(target_bar.get("Liquidity_Sweep", False))
-    vol_ratio = float(target_bar.get("Volume_Ratio", 1.0))
-    is_surge = bool(target_bar.get("Inst_Volume_Surge", False))
-    is_sqz = bool(target_bar.get("Is_Squeeze", False))
-    inst_sig = bool(target_bar.get("Institutional_Signal", False))
-
-    c_inst1.metric(
-        "流動性スイープ（ストップ狩り）",
-        "検知 ⚡" if is_sweep else "なし",
-        "安値割れからの急反発復帰" if is_sweep else "正常レンジ内"
-    )
-    c_inst2.metric(
-        "機関出来高サージ（対20日比）",
-        f"{vol_ratio:.2f} 倍",
-        "大口の仕込み確定 🏛️" if is_surge else "平常水準"
-    )
-    c_inst3.metric(
-        "ボラティリティ収縮（スクイーズ）",
-        "収縮中 🎯" if is_sqz else "拡散中",
-        "エネルギー蓄積フェーズ" if is_sqz else "通常レンジ"
-    )
-    c_inst4.metric(
-        "複合シグナル合致判定",
-        "合致 ✅" if inst_sig else "待機",
-        "通常条件 ＋ 機関アルゴ" if inst_sig else "条件待ち"
-    )
-
-    if inst_sig:
-        st.success(
-            f"🎯 **【複合シグナル合致】**（{target_date_str}）: "
-            "通常のBB反発条件を満たした上で、直近安値を日中で下抜けた後に強力に巻き戻した（流動性スイープ）、"
-            f"または20日平均の {vol_ratio:.2f} 倍という特有の出来高急増を伴うバンド内完全復帰を確認しました。"
-            "ストップ狩り直後の底堅い水準のため、直近安値の直下に損切りを置くことで下値リスクを極小化できる優位性の高い局面です。"
-        )
-    else:
-        st.info(
-            f"ℹ️ **【診断状況】**（{target_date_str}）: "
-            "現在、通常シグナルと機関アルゴリズム（ストップ狩り反発や異常出来高）の複合シグナルは検知されていません。"
-        )
-
-    st.markdown("---")
-
-    # ---------------------------------------------------------
-    # 2. 中期（最大180日）バックテスト設定
-    # ---------------------------------------------------------
-    st.markdown("#### 2. 中期（最大180日）バックテストシミュレーション")
-    st.caption("最長180営業日（約6〜9ヶ月）保有し、大きなトレンドを捉える検証です。")
-
-    inst_col1, inst_col2, inst_col3, inst_col4 = st.columns(4)
-    with inst_col1:
-        inst_stop_method = st.selectbox("損切り決定方式", ["より安全な方（低い方）", "ATR基準", "直近安値基準"], index=0, key="inst_stop")
-    with inst_col2:
-        inst_atr_mult = st.slider("ATRボラティリティ余白", min_value=1.5, max_value=3.5, value=2.0, step=0.1, key="inst_atr")
-    with inst_col3:
-        inst_max_holding = st.slider("最大保有営業日数（満期）", min_value=30, max_value=180, value=120, step=10, key="inst_max_holding")
-    
-    with inst_col4:
-        inst_filter_type = st.radio(
-            "エントリー対象", 
-            ["通常シグナル全般", "機関アルゴ単独", "複合エントリー（通常＋機関アルゴ）"], 
-            index=2, 
-            key="inst_filter"
-        )
-
-    if "複合" in inst_filter_type:
-        target_signal_col = "Institutional_Signal"
-    elif "機関アルゴ単独" in inst_filter_type:
-        target_signal_col = "Inst_Only_Signal"
-    else:
-        target_signal_col = "Entry_Signal"
-
-    # 中期保有のため、ワイドなリスクリワード（1:2.0, 1:3.0, 1:4.0）でテスト
-    trades_mid_20 = run_backtest(
-        data=usable_data,
-        reward_r=2.0,
-        stop_method=inst_stop_method,
-        atr_multiplier=inst_atr_mult,
-        maximum_holding_bars=int(inst_max_holding),
-        slippage_bps=5.0,
-        cost_bps=5.0,
-        signal_col=target_signal_col,
-    )
-
-    trades_mid_30 = run_backtest(
-        data=usable_data,
-        reward_r=3.0,
-        stop_method=inst_stop_method,
-        atr_multiplier=inst_atr_mult,
-        maximum_holding_bars=int(inst_max_holding),
-        slippage_bps=5.0,
-        cost_bps=5.0,
-        signal_col=target_signal_col,
-    )
-
-    trades_mid_40 = run_backtest(
-        data=usable_data,
-        reward_r=4.0,
-        stop_method=inst_stop_method,
-        atr_multiplier=inst_atr_mult,
-        maximum_holding_bars=int(inst_max_holding),
-        slippage_bps=5.0,
-        cost_bps=5.0,
-        signal_col=target_signal_col,
-    )
-
-    sum_20 = summarize_backtest(trades_mid_20, 2.0)
-    sum_30 = summarize_backtest(trades_mid_30, 3.0)
-    sum_40 = summarize_backtest(trades_mid_40, 4.0)
-    inst_summary_df = pd.DataFrame([sum_20, sum_30, sum_40])
-
-    st.markdown(f"##### 📊 中期保有（最長180日）パフォーマンス比較（対象: {inst_filter_type}）")
-    display_df_safe(inst_summary_df)
-
-    # 累積R比較チャート
-    fig_inst_equity = go.Figure()
-    if not trades_mid_20.empty:
-        fig_inst_equity.add_trace(go.Scatter(x=trades_mid_20["決済日"], y=trades_mid_20["結果R"].cumsum(), mode="lines+markers", name="RR 1:2.0 (中期標準)"))
-    if not trades_mid_30.empty:
-        fig_inst_equity.add_trace(go.Scatter(x=trades_mid_30["決済日"], y=trades_mid_30["結果R"].cumsum(), mode="lines+markers", name="RR 1:3.0 (伸長狙い)"))
-    if not trades_mid_40.empty:
-        fig_inst_equity.add_trace(go.Scatter(x=trades_mid_40["決済日"], y=trades_mid_40["結果R"].cumsum(), mode="lines+markers", name="RR 1:4.0 (トレンド追従)"))
-
-    fig_inst_equity.add_hline(y=0, line_color="gray", line_dash="dot")
-    fig_inst_equity.update_layout(
-        title=f"📈 【{display_symbol}】中期保有時の累積損益推移（累積R）",
-        xaxis_title="決済日", yaxis_title="累積R",
-        height=480, dragmode="pan", xaxis=dict(fixedrange=False), yaxis=dict(fixedrange=False), legend=dict(orientation="h")
-    )
-    st.plotly_chart(fig_inst_equity, use_container_width=True)
-
-    # トレード履歴テーブル
-    st.markdown("##### 📝 中期トレード全履歴（RR 1:3.0）")
-    if not trades_mid_30.empty:
-        display_inst_trades = trades_mid_30.copy()
-        display_inst_trades["エントリー日"] = display_inst_trades["エントリー日"].dt.strftime("%Y-%m-%d")
-        display_inst_trades["決済日"] = display_inst_trades["決済日"].dt.strftime("%Y-%m-%d")
-        display_inst_trades["シグナル日"] = display_inst_trades["シグナル日"].dt.strftime("%Y-%m-%d")
-        display_inst_trades["結果R"] = display_inst_trades["結果R"].map(lambda x: f"{x:+.2f} R")
-        display_inst_trades["機関出来高サージ"] = display_inst_trades["機関出来高サージ"].map(lambda x: "あり ✅" if x else "-")
-        display_inst_trades["流動性スイープ"] = display_inst_trades["流動性スイープ"].map(lambda x: "あり ⚡" if x else "-")
-        display_df_safe(display_inst_trades)
-    else:
-        st.info("指定された検証期間・条件において、該当するトレードはありませんでした。")
-
-    st.markdown("---")
-    # ---------------------------------------------------------
-    # 3. 機関投資家アルゴリズム攻略・リスク最小化の鉄則解説
-    # ---------------------------------------------------------
-    st.markdown("#### 3. 機関投資家の天才アルゴリズムに負けないリスク最小化ルール")
-    st.markdown("""
-    * **1. ストップ狩り（Liquidity Sweep）直後のエントリーが最も安全な理由**:
-      多くの個人投資家は「目立つ直近安値のすぐ下」に損切りを置きます。機関投資家のアルゴリズムは、大量の買いポジションを約定させるために意図的に株価を一度安値下に沈め、個人の損切り売りをすべて買い吸収します。
-      この**「安値割れからの即座のV字復帰（終値がBB内側）」を確認した直後にエントリーすることで、すでにストップ狩りが完了した強固な底値でポジションを持てます**。
-    * **2. 最大180日保有におけるリスク管理**:
-      長期・中期トレンド（日足・週足）を狙う場合、日々のノイズで刈られないよう**損切り幅はATR×2.0以上の十分な余白**を取ります。その分、1株あたりリスク（$ Risk）が広がるため、タブ②で計算される**「推奨株数」を適切に減らし、全体の損失額を1R（総資金の1%）に厳格固定**します。
-    * **3. トレンド形成時の利益最大化（非対称リターン）**:
-      ストップ狩りを経て上昇基調に乗った場合、機関投資家の買い支えにより株価は数ヶ月単位で上昇トレンドを維持しやすくなります。**+2.0R〜+3.0R以上の利益目標を設定し、負けを1Rに抑えて勝ちを大きく伸ばすこと（損小利大）で、今後の相場でも数学的に資金を守り増やすことが可能**になります。
     """)
