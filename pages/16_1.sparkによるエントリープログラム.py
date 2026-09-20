@@ -445,7 +445,7 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
         + result["Lower_Not_Collapsing"].astype(float) * 1.0
     )
 
-    # 7. エントリーシグナル
+    # 7. エントリーシグナル (通常シグナル)
     result["Entry_Signal"] = (
         result["Mandatory_Filter_Pass"]
         & result["Touched_Lower_Recent"]
@@ -456,11 +456,11 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
     # =========================================================
     # 機関投資家（アルゴリズム）合致シグナル
     # =========================================================
-    # 条件：基本シグナル合格 ＋ (大口出来高サージ 1.5倍以上 または 流動性スイープ反発)
-    result["Institutional_Signal"] = (
-        result["Entry_Signal"]
-        & (result["Inst_Volume_Surge"] | result["Liquidity_Sweep"])
-    )
+    # 8. 機関アルゴ単独シグナル（大口出来高サージ または 流動性スイープ反発）
+    result["Inst_Only_Signal"] = result["Inst_Volume_Surge"] | result["Liquidity_Sweep"]
+
+    # 9. 複合エントリーシグナル（通常シグナル ＋ 機関アルゴ単独 の両方を満たす）
+    result["Institutional_Signal"] = result["Entry_Signal"] & result["Inst_Only_Signal"]
 
     # 8. アドバイス文生成
     def generate_learning_tip(row):
@@ -496,10 +496,10 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
                 warnings.append("・下限テスト後ですがバンド内への復帰が未完了")
 
         if row["Entry_Signal"]:
-            positives.append("★【条件成立】下限タッチ・接触を脱し、終値でバンド内への完全復帰（陽線）を確認。1R損切りを設定して検証可")
+            positives.append("★【通常条件成立】下限タッチ・接触を脱し、終値でバンド内への完全復帰（陽線）を確認")
 
         if row.get("Institutional_Signal", False):
-            positives.append("🏛️【機関投資家シグナル合致】大口の出来高急増またはストップ狩り（流動性スイープ）反発を確認")
+            positives.append("🏛️【複合エントリー合致】通常シグナル＋機関投資家の大口出来高サージまたはストップ狩り（流動性スイープ）を確認")
 
         text_parts = []
         if warnings:
@@ -1339,23 +1339,22 @@ with tab5:
         "エネルギー蓄積フェーズ" if is_sqz else "通常レンジ"
     )
     c_inst4.metric(
-        "機関アルゴ合致判定",
+        "複合シグナル合致判定",
         "合致 ✅" if inst_sig else "待機",
-        "リスク最小化の好機" if inst_sig else "条件待ち"
+        "通常条件 ＋ 機関アルゴ" if inst_sig else "条件待ち"
     )
 
     if inst_sig:
         st.success(
-            f"🎯 **【機関投資家アルゴリズム合致】**（{target_date_str}）: "
-            "個人投資家の損切りが集中する直近安値を日中で下抜けた後に強力に巻き戻した（流動性スイープ）、"
-            f"または20日平均の {vol_ratio:.2f} 倍という機関投資家特有の出来高急増を伴うバンド内完全復帰を確認しました。"
+            f"🎯 **【複合シグナル合致】**（{target_date_str}）: "
+            "通常のBB反発条件を満たした上で、直近安値を日中で下抜けた後に強力に巻き戻した（流動性スイープ）、"
+            f"または20日平均の {vol_ratio:.2f} 倍という特有の出来高急増を伴うバンド内完全復帰を確認しました。"
             "ストップ狩り直後の底堅い水準のため、直近安値の直下に損切りを置くことで下値リスクを極小化できる優位性の高い局面です。"
         )
     else:
         st.info(
             f"ℹ️ **【診断状況】**（{target_date_str}）: "
-            "現在、機関投資家による大規模なストップ狩り反発や異常な出来高急増シグナルは検知されていません。"
-            "通常のBB反発条件、または機関投資家アルゴリズムの成立を待ちます。"
+            "現在、通常シグナルと機関アルゴリズム（ストップ狩り反発や異常出来高）の複合シグナルは検知されていません。"
         )
 
     st.markdown("---")
@@ -1364,7 +1363,7 @@ with tab5:
     # 2. 中期（最大180日）バックテスト設定
     # ---------------------------------------------------------
     st.markdown("#### 2. 中期（最大180日）バックテストシミュレーション")
-    st.caption("最長180営業日（約6〜9ヶ月）保有し、機関アルゴリズムに乗って大きなトレンドを捉える検証です。")
+    st.caption("最長180営業日（約6〜9ヶ月）保有し、大きなトレンドを捉える検証です。")
 
     inst_col1, inst_col2, inst_col3, inst_col4 = st.columns(4)
     with inst_col1:
@@ -1373,10 +1372,21 @@ with tab5:
         inst_atr_mult = st.slider("ATRボラティリティ余白", min_value=1.5, max_value=3.5, value=2.0, step=0.1, key="inst_atr")
     with inst_col3:
         inst_max_holding = st.slider("最大保有営業日数（満期）", min_value=30, max_value=180, value=120, step=10, key="inst_max_holding")
+    
     with inst_col4:
-        inst_filter_type = st.radio("エントリー対象", ["通常シグナル全般", "機関アルゴ合致のみ（厳格）"], index=0, key="inst_filter")
+        inst_filter_type = st.radio(
+            "エントリー対象", 
+            ["通常シグナル全般", "機関アルゴ単独", "複合エントリー（通常＋機関アルゴ）"], 
+            index=2, 
+            key="inst_filter"
+        )
 
-    target_signal_col = "Institutional_Signal" if "機関アルゴ" in inst_filter_type else "Entry_Signal"
+    if "複合" in inst_filter_type:
+        target_signal_col = "Institutional_Signal"
+    elif "機関アルゴ単独" in inst_filter_type:
+        target_signal_col = "Inst_Only_Signal"
+    else:
+        target_signal_col = "Entry_Signal"
 
     # 中期保有のため、ワイドなリスクリワード（1:2.0, 1:3.0, 1:4.0）でテスト
     trades_mid_20 = run_backtest(
@@ -1417,7 +1427,7 @@ with tab5:
     sum_40 = summarize_backtest(trades_mid_40, 4.0)
     inst_summary_df = pd.DataFrame([sum_20, sum_30, sum_40])
 
-    st.markdown("##### 📊 中期保有（最長180日）パフォーマンス比較")
+    st.markdown(f"##### 📊 中期保有（最長180日）パフォーマンス比較（対象: {inst_filter_type}）")
     display_df_safe(inst_summary_df)
 
     # 累積R比較チャート
