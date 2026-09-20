@@ -1001,7 +1001,7 @@ tab1, tab2, tab3, tab4 = st.tabs(["① 条件判定・チャート・カルテ",
 with tab1:
     st.subheader(f"📊 {display_symbol} 条件判定・学習カルテ")
 
-    date_col1, date_col2 = st.columns()
+    date_col1, date_col2 = st.columns(2)
     with date_col1:
         date_mode = st.radio(
             "分析する日付の基準",
@@ -1083,7 +1083,7 @@ with tab2:
     st.subheader("🛡️ エントリー計画と1R保有・リスク管理シミュレーター")
     st.caption("事前の損切り価格と1R（許容損失額）に基づき、購入株数と目標利確価格を算出します。")
 
-    col_plan1, col_plan2 = st.columns()
+    col_plan1, col_plan2 = st.columns(2)
 
     with col_plan1:
         st.markdown("##### 1. 資金・エントリー設定")
