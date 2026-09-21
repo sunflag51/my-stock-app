@@ -183,6 +183,14 @@ def send_to_gas(gas_url: str, payload: dict) -> tuple[bool, str]:
         return False, f"通信エラー: {e}"
 
 
+def safe_rerun():
+    """Streamlitのバージョン差異を吸収する安全な再実行関数"""
+    if hasattr(st, "rerun"):
+        st.rerun()
+    elif hasattr(st, "experimental_rerun"):
+        st.experimental_rerun()
+
+
 # =========================================================
 # 銘柄コード変換
 # =========================================================
@@ -1697,10 +1705,9 @@ with tab3:
     except (TypeError, Exception):
         st.plotly_chart(equity_fig, use_container_width=True)
 
-    # グラフでクリックされた場合、セッション状態を更新して再実行
-    if clicked_date and clicked_date in all_trade_dates and clicked_date != st.session_state.selected_trade_date:
+    # グラフでクリックされた場合、セッション状態を更新（on_select="rerun"によりそのまま即時反映）
+    if clicked_date and clicked_date in all_trade_dates:
         st.session_state.selected_trade_date = clicked_date
-        safe_rerun()
 
     # トレード履歴ヘッダーと選択操作バー
     st.markdown("##### 📝 トレード履歴（RR 1:2）")
