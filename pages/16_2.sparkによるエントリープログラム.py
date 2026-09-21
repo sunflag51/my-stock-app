@@ -931,7 +931,7 @@ def summarize_backtest(trades: pd.DataFrame, reward_r: float) -> dict:
     }
 
 
-def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, selected_date: str = None):
+def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
     figure = go.Figure()
     if not trades_15.empty:
         cum_15 = trades_15["結果R"].cumsum()
@@ -942,7 +942,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, select
             name="RR 1:1.5",
             customdata=trades_15["決済日"].dt.strftime("%Y-%m-%d"),
             hovertemplate="<b>%{x|%Y-%m-%d} (RR 1:1.5)</b><br>累積R: %{y:+.2f} R<extra></extra>",
-            marker=dict(size=7),
+            marker=dict(size=8),
         ))
     if not trades_20.empty:
         cum_20 = trades_20["結果R"].cumsum()
@@ -953,37 +953,15 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, select
             name="RR 1:2",
             customdata=trades_20["決済日"].dt.strftime("%Y-%m-%d"),
             hovertemplate="<b>%{x|%Y-%m-%d} (RR 1:2)</b><br>累積R: %{y:+.2f} R<extra></extra>",
-            marker=dict(size=7),
+            marker=dict(size=8),
         ))
-
-    # 選択中のトレードがあれば、グラフ上で大きな星型マーカーで強調表示
-    if selected_date:
-        for tr_df in [trades_20, trades_15]:
-            if not tr_df.empty:
-                match = tr_df[tr_df["決済日"].dt.strftime("%Y-%m-%d") == str(selected_date)]
-                if not match.empty:
-                    m_idx = match.index[0]
-                    cum_val = float(tr_df["結果R"].cumsum().loc[m_idx])
-                    figure.add_trace(go.Scatter(
-                        x=[match["決済日"].iloc[0]],
-                        y=[cum_val],
-                        mode="markers+text",
-                        name=f"選択中 ({selected_date})",
-                        text=[f" 選択: {selected_date}"],
-                        textposition="top center",
-                        textfont=dict(size=12, color="#e74c3c"),
-                        marker=dict(size=15, color="#f1c40f", line=dict(color="#e74c3c", width=3), symbol="star"),
-                        hoverinfo="skip",
-                        showlegend=False,
-                    ))
-                    break
 
     figure.add_hline(y=0, line_color="gray", line_dash="dot")
     figure.update_layout(
         title="累積Rの推移（グラフの点をクリックすると、下の表で該当トレードが即座にハイライトされます）",
         xaxis_title="決済日",
         yaxis_title="累積R",
-        height=520,
+        height=500,
         clickmode="event+select",
         xaxis=dict(fixedrange=False),
         yaxis=dict(fixedrange=False),
@@ -1668,23 +1646,12 @@ with tab3:
         """)
 
     st.markdown("##### 📈 累積R（損益曲線）推移")
-    st.caption("💡 **グラフ上の任意の点（マーカー）をクリック** すると、下の表で該当トレードが自動選択・ハイライトされ、詳細情報が即座に表示されます。")
+    st.caption("💡 **グラフ上の任意の点（マーカー）をクリック** すると、下の表で該当トレードが自動選択・ハイライトされ、詳細情報が即座に表示されます（グラフの余白をクリックすると選択解除されます）。")
 
-    # 選択トレードの管理（セッション状態）
-    if "selected_trade_date" not in st.session_state:
-        st.session_state.selected_trade_date = None
+    equity_fig = create_equity_chart(trades_15, trades_20)
 
-    # 全トレードの日付リストを作成
-    active_trades = trades_20 if not trades_20.empty else trades_15
-    all_trade_dates = []
-    if not active_trades.empty:
-        all_trade_dates = active_trades["決済日"].dt.strftime("%Y-%m-%d").tolist()
-
-    # グラフ生成（選択中の日付がある場合は星印ハイライト）
-    equity_fig = create_equity_chart(trades_15, trades_20, selected_date=st.session_state.selected_trade_date)
-
-    # Plotlyイベント取得（on_select="rerun"）
-    clicked_date = None
+    # Plotlyイベント取得（on_select="rerun" によりStreamlitが自動で再実行するため、手動のrerun呼び出しは一切不要）
+    selected_trade_date = None
     try:
         chart_event = st.plotly_chart(
             equity_fig,
@@ -1693,69 +1660,35 @@ with tab3:
             selection_mode=["points"],
             key="equity_chart_interactive"
         )
-        if chart_event and "selection" in chart_event and chart_event["selection"].get("points"):
-            pts = chart_event["selection"]["points"]
-            if len(pts) > 0:
+        if chart_event and "selection" in chart_event:
+            pts = chart_event["selection"].get("points", [])
+            if pts:
                 p = pts[0]
                 raw_x = p.get("customdata") or p.get("x")
                 if raw_x:
                     if isinstance(raw_x, (list, tuple)):
                         raw_x = raw_x[0]
-                    clicked_date = str(raw_x).split("T")[0].split(" ")[0]
+                    selected_trade_date = str(raw_x).split("T")[0].split(" ")[0]
     except (TypeError, Exception):
         st.plotly_chart(equity_fig, use_container_width=True)
 
-    # グラフでクリックされた場合、セッション状態を更新（on_select="rerun"によりそのまま即時反映）
-    if clicked_date and clicked_date in all_trade_dates:
-        st.session_state.selected_trade_date = clicked_date
-
-    # トレード履歴ヘッダーと選択操作バー
+    # トレード履歴ヘッダー
     st.markdown("##### 📝 トレード履歴（RR 1:2）")
 
     if not trades_20.empty:
-        # プルダウンでも選択可能にして操作性を向上
-        sel_col1, sel_col2 = st.columns([3, 1])
-        with sel_col1:
-            options = ["（未選択 - 全件表示）"] + all_trade_dates
-            curr_idx = 0
-            if st.session_state.selected_trade_date in all_trade_dates:
-                curr_idx = all_trade_dates.index(st.session_state.selected_trade_date) + 1
-
-            selected_option = st.selectbox(
-                "🔍 トレード選択（グラフの点をクリック、またはここから日付を選択）：",
-                options=options,
-                index=curr_idx,
-                key="trade_select_box"
-            )
-            if selected_option != "（未選択 - 全件表示）":
-                if st.session_state.selected_trade_date != selected_option:
-                    st.session_state.selected_trade_date = selected_option
-                    safe_rerun()
-            else:
-                if st.session_state.selected_trade_date is not None:
-                    st.session_state.selected_trade_date = None
-                    safe_rerun()
-
-        with sel_col2:
-            st.write("")
-            st.write("")
-            if st.session_state.selected_trade_date is not None:
-                if st.button("✖ 選択解除", use_container_width=True):
-                    st.session_state.selected_trade_date = None
-                    safe_rerun()
-
         # 選択中のトレードがある場合、最上部に目立つ詳細カードを表示
-        current_sel_date = st.session_state.selected_trade_date
-        if current_sel_date and current_sel_date in all_trade_dates:
-            target_trade = trades_20[trades_20["決済日"].dt.strftime("%Y-%m-%d") == current_sel_date].iloc[0]
-            r_val = float(target_trade["結果R"])
-            r_color = "🟢 勝ち" if r_val > 0 else ("🔴 負け" if r_val < 0 else "⚪ 分岐")
-            st.success(
-                f"🎯 **【選択されたトレード詳細】決済日: {current_sel_date} （{r_color}: {r_val:+.2f} R）**\n\n"
-                f"・**シグナル日**: {target_trade['シグナル日'].strftime('%Y-%m-%d')} ／ **エントリー日**: {target_trade['エントリー日'].strftime('%Y-%m-%d')} ／ **保有本数**: {target_trade['保有本数']}本  \n"
-                f"・**エントリー価格**: {target_trade['エントリー']:,.2f} ／ **損切り価格**: {target_trade['損切り']:,.2f} ／ **利確目標**: {target_trade['利確目標']:,.2f}  \n"
-                f"・**決済価格**: {target_trade['決済価格']:,.2f} ／ **決済理由**: **{target_trade['決済理由']}** ／ **シグナル点数**: {target_trade['シグナル点数']:.1f}点"
-            )
+        if selected_trade_date:
+            target_matches = trades_20[trades_20["決済日"].dt.strftime("%Y-%m-%d") == selected_trade_date]
+            if not target_matches.empty:
+                target_trade = target_matches.iloc[0]
+                r_val = float(target_trade["結果R"])
+                r_color = "🟢 勝ち" if r_val > 0 else ("🔴 負け" if r_val < 0 else "⚪ 分岐")
+                st.success(
+                    f"🎯 **【選択されたトレード詳細】決済日: {selected_trade_date} （{r_color}: {r_val:+.2f} R）**\n\n"
+                    f"・**シグナル日**: {target_trade['シグナル日'].strftime('%Y-%m-%d')} ／ **エントリー日**: {target_trade['エントリー日'].strftime('%Y-%m-%d')} ／ **保有本数**: {target_trade['保有本数']}本  \n"
+                    f"・**エントリー価格**: {target_trade['エントリー']:,.2f} ／ **損切り価格**: {target_trade['損切り']:,.2f} ／ **利確目標**: {target_trade['利確目標']:,.2f}  \n"
+                    f"・**決済価格**: {target_trade['決済価格']:,.2f} ／ **決済理由**: **{target_trade['決済理由']}** ／ **シグナル点数**: {target_trade['シグナル点数']:.1f}点"
+                )
 
         # 表示用DataFrameの準備
         display_trades = trades_20.copy()
@@ -1770,7 +1703,7 @@ with tab3:
 
         # 選択状態を示す列を追加（先頭に配置）
         display_trades["選択状態"] = display_trades["決済日Str"].map(
-            lambda x: "👉 【選択中】" if x == current_sel_date else ""
+            lambda x: "👉 【選択中】" if (selected_trade_date and x == selected_trade_date) else ""
         )
 
         # 列の並び替え
@@ -1782,7 +1715,7 @@ with tab3:
 
         # 選択された行がある場合、黄色くハイライト
         def highlight_selected_row(row):
-            if current_sel_date and row["決済日"] == current_sel_date:
+            if selected_trade_date and row["決済日"] == selected_trade_date:
                 return ["background-color: #fff3cd; color: #856404; font-weight: bold; border: 2px solid #ffeeba;"] * len(row)
             return [""] * len(row)
 
