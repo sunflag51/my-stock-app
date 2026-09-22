@@ -1750,6 +1750,7 @@ else:
 
 display_symbol, provider_symbol = normalize_symbol(selected_option)
 is_japan_stock = display_symbol.endswith(".T")
+is_japan = is_japan_stock
 currency_unit = "円" if is_japan_stock else "ドル"
 
 
@@ -2375,7 +2376,7 @@ with tab3:
                 trade=target_trade,
                 display_symbol=display_symbol,
                 mid_period=mid_trend_period,
-                is_japan=is_japan,
+                is_japan=is_japan_stock,
             )
             st.plotly_chart(diag_fig, use_container_width=True, key=f"diag_chart_{t_date}")
 
@@ -2383,7 +2384,7 @@ with tab3:
             analysis_text = generate_trade_analysis_text(
                 data=usable_data,
                 trade=target_trade,
-                is_japan=is_japan,
+                is_japan=is_japan_stock,
             )
             st.info(analysis_text)
         else:
