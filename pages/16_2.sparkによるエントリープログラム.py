@@ -1580,8 +1580,8 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
                 line=dict(width=2, color="white"),
                 opacity=0.9
             ),
-            selected=dict(marker=dict(size=18, color="#ffd700", line=dict(width=3, color="#222"))),
-            unselected=dict(marker=dict(opacity=0.7)),
+            selected=dict(marker=dict(color="#ffd700", opacity=1.0)),
+            unselected=dict(marker=dict(opacity=0.6)),
         ))
 
     # RR 1:2 の描画（折れ線とマーカーを分離）
@@ -1613,8 +1613,8 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
                 line=dict(width=2, color="white"),
                 opacity=0.95
             ),
-            selected=dict(marker=dict(size=19, color="#ffd700", line=dict(width=3, color="#222"))),
-            unselected=dict(marker=dict(opacity=0.7)),
+            selected=dict(marker=dict(color="#ffd700", opacity=1.0)),
+            unselected=dict(marker=dict(opacity=0.6)),
         ))
 
     figure.add_hline(y=0, line_color="gray", line_dash="dot")
