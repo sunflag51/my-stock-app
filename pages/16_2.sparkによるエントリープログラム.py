@@ -2066,7 +2066,7 @@ def generate_trade_analysis_text(
 
 
 
-def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highlight_date: str = None):
+def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highlight_date: str = None, active_rr: str = "2.0"):
     figure = go.Figure()
 
     # RR 1:1.5 の描画（折れ線とマーカーを分離し、クリック判定を100%マーカーに集中）
@@ -2093,7 +2093,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
             customdata=cd_15,
             hovertemplate="<b>%{customdata[1]} (RR 1:1.5)</b><br>累積R: %{y:+.2f} R<br>👉 クリックで詳細を表示<extra></extra>",
             marker=dict(
-                size=13,
+                size=14,
                 color=marker_colors_15,
                 line=dict(width=2, color="white"),
                 opacity=0.9
@@ -2137,7 +2137,8 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
 
     # 現在選択中トレードの視覚的強調リング（金色の発光マーカー）
     if highlight_date:
-        for t_df in [trades_20, trades_15]:
+        target_dfs = [trades_15, trades_20] if active_rr == "1.5" else [trades_20, trades_15]
+        for t_df in target_dfs:
             if not t_df.empty:
                 m_rows = t_df[t_df["決済日"].dt.strftime("%Y-%m-%d") == str(highlight_date)]
                 if not m_rows.empty:
@@ -3445,18 +3446,15 @@ with tab3:
 
 
 
-    active_date = st.session_state.get("chart_clicked_date", None)
-    equity_fig = create_equity_chart(trades_15, trades_20, highlight_date=active_date)
-
-
-
-
-    # セッションステート初期化（マスター管理）
+        # セッションステート初期化（マスター管理）
     if "selected_trade_idx" not in st.session_state:
         st.session_state["selected_trade_idx"] = 0
     if "table_rr_choice" not in st.session_state:
         st.session_state["table_rr_choice"] = "RR 1:2"
 
+    active_rr_val = "1.5" if st.session_state.get("table_rr_choice") == "RR 1:1.5" else "2.0"
+    active_date = st.session_state.get("chart_clicked_date", None)
+    equity_fig = create_equity_chart(trades_15, trades_20, highlight_date=active_date, active_rr=active_rr_val)
 
     try:
         chart_event = st.plotly_chart(
@@ -3466,31 +3464,53 @@ with tab3:
             selection_mode=["points", "box"],
             key="equity_chart_interactive"
         )
-        if chart_event and isinstance(chart_event, dict) and "selection" in chart_event:
-            pts = chart_event["selection"].get("points", [])
+
+        curr_selection = chart_event.get("selection", {}) if (chart_event and isinstance(chart_event, dict)) else {}
+        prev_selection = st.session_state.get("_prev_chart_selection", None)
+
+        # ユーザーが実際にグラフをクリック（新規選択）した時のみ連動処理を実行
+        if curr_selection != prev_selection:
+            st.session_state["_prev_chart_selection"] = curr_selection
+            pts = curr_selection.get("points", [])
             if pts:
                 p = pts[0]
                 cd = p.get("customdata")
                 clicked_rr = None
                 clicked_date = None
-                if cd and isinstance(cd, (list, tuple)) and len(cd) >= 2:
-                    clicked_rr = str(cd[0])
-                    clicked_date = str(cd[1])
-                else:
-                    c_num = p.get("curve_number", 1)
-                    # 奇数番目トレースがマーカー (trace 1: RR 1.5 markers, trace 3: RR 2.0 markers)
-                    clicked_rr = "1.5" if c_num <= 1 else "2.0"
+
+                if cd:
+                    flat_cd = cd
+                    while isinstance(flat_cd, (list, tuple)) and len(flat_cd) > 0 and isinstance(flat_cd[0], (list, tuple)):
+                        flat_cd = flat_cd[0]
+                    if isinstance(flat_cd, (list, tuple)) and len(flat_cd) >= 2:
+                        clicked_rr = str(flat_cd[0])
+                        clicked_date = str(flat_cd[1])
+
+                if not clicked_rr or not clicked_date:
+                    c_num = p.get("curve_number", p.get("curveNumber", None))
+                    if c_num is not None and 0 <= c_num < len(equity_fig.data):
+                        tr_name = equity_fig.data[c_num].name or ""
+                        if "1.5" in tr_name or "1:1.5" in tr_name:
+                            clicked_rr = "1.5"
+                        elif "2" in tr_name or "1:2" in tr_name:
+                            clicked_rr = "2.0"
                     raw_x = p.get("x")
                     if raw_x:
                         clicked_date = str(raw_x).split("T")[0].split(" ")[0]
 
-
+                need_rerun = False
                 if clicked_rr:
                     target_rr_label = "RR 1:1.5" if clicked_rr == "1.5" else "RR 1:2"
-                    st.session_state["table_rr_choice"] = target_rr_label
+                    if st.session_state.get("table_rr_choice") != target_rr_label:
+                        st.session_state["table_rr_choice"] = target_rr_label
+                        need_rerun = True
+
                 if clicked_date:
                     st.session_state["chart_clicked_date"] = clicked_date
                     st.session_state["chart_click_detected"] = True
+
+                if need_rerun:
+                    st.rerun()
     except (TypeError, Exception):
         st.plotly_chart(equity_fig, use_container_width=True)
 
