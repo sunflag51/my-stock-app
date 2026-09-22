@@ -1578,13 +1578,14 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
 
     figure.add_hline(y=0, line_color="gray", line_dash="dot")
     figure.update_layout(
-        title="累積Rの推移（グラフ上のマーカーをクリックすると、下の表で該当トレードが即座にハイライトされます）",
+        title="📈 累積Rの推移（グラフ上のマーカー●をクリック、または下の選択欄からトレードを選択）",
         xaxis_title="決済日",
         yaxis_title="累積R",
         height=520,
         clickmode="event+select",
-        hoverdistance=30,
-        xaxis=dict(fixedrange=False),
+        dragmode=False,
+        hoverdistance=50,
+        xaxis=dict(fixedrange=True),
         yaxis=dict(fixedrange=False),
         legend=dict(orientation="h"),
         hovermode="closest",
@@ -2546,18 +2547,22 @@ with tab3:
     equity_fig = create_equity_chart(trades_15, trades_20)
 
 
-    # 選択イベントの多角的な解析（RR 1:1.5 / RR 1:2 双方を100%確実に特定）
-    selected_rr = None
-    selected_idx = None
-    selected_trade_date = None
+    # セッションステート初期化（選択したトレード情報を確実に保持）
+    if "selected_trade_date" not in st.session_state:
+        st.session_state["selected_trade_date"] = None
+    if "selected_trade_rr" not in st.session_state:
+        st.session_state["selected_trade_rr"] = None
 
+    selected_rr = st.session_state.get("selected_trade_rr", None)
+    selected_trade_date = st.session_state.get("selected_trade_date", None)
+    selected_idx = None
 
     try:
         chart_event = st.plotly_chart(
             equity_fig,
             use_container_width=True,
             on_select="rerun",
-            selection_mode=["points"],
+            selection_mode=["points", "box"],
             key="equity_chart_interactive"
         )
         if chart_event and "selection" in chart_event:
@@ -2570,7 +2575,6 @@ with tab3:
                     selected_trade_date = str(cd[1])
                     selected_idx = int(cd[2])
                 else:
-                    # フォールバック: curve_number と point_index または x から特定
                     c_num = p.get("curve_number", 1)
                     p_idx = p.get("point_index", None)
                     selected_rr = "1.5" if c_num == 0 else "2.0"
@@ -2578,72 +2582,104 @@ with tab3:
                     raw_x = p.get("x")
                     if raw_x:
                         selected_trade_date = str(raw_x).split("T")[0].split(" ")[0]
+                if selected_trade_date:
+                    st.session_state["selected_trade_date"] = selected_trade_date
+                    st.session_state["selected_trade_rr"] = selected_rr
     except (TypeError, Exception):
         st.plotly_chart(equity_fig, use_container_width=True)
 
+    # 表示するトレード設定の切り替え
+    st.markdown("---")
+    st.markdown("##### 🔍 検証対象トレードの選択 ＆ 敗因・勝因アナライザー")
+    st.caption("💡 **上のグラフの点（●）をクリック** するか、**下の選択ボックスからトレードを直接選択** してください。どちらの操作でも即座に個別ローソク足チャートと敗因診断が表示されます。")
 
-    # 表示するトレード履歴の切り替え（デフォルト: クリックされた曲線に合わせる、未選択時はRR 1:2）
-    st.markdown("##### 📝 トレード履歴")
-    default_table_rr = "RR 1:1.5" if selected_rr == "1.5" else "RR 1:2"
-    table_choice = st.radio(
-        "表示対象設定:",
-        ["RR 1:2", "RR 1:1.5"],
-        index=0 if default_table_rr == "RR 1:2" else 1,
-        horizontal=True,
-        key="table_rr_choice"
-    )
-
+    sel_c1, sel_c2 = st.columns([1, 2])
+    with sel_c1:
+        default_table_rr = "RR 1:1.5" if selected_rr == "1.5" else "RR 1:2"
+        table_choice = st.radio(
+            "表示対象設定:",
+            ["RR 1:2", "RR 1:1.5"],
+            index=0 if default_table_rr == "RR 1:2" else 1,
+            horizontal=True,
+            key="table_rr_choice"
+        )
+    with sel_c2:
+        filter_losses_only = st.checkbox("🔴 負けトレード（損切り・期限切れ）のみに絞り込む", value=False, key="filter_losses_only")
 
     current_trades_df = trades_20 if table_choice == "RR 1:2" else trades_15
 
+    target_trade = None
+    if not current_trades_df.empty:
+        # トレード選択用の選択肢リストを作成
+        trade_options = []
+        for idx, r in current_trades_df.iterrows():
+            r_val = float(r["結果R"])
+            if filter_losses_only and r_val >= 0:
+                continue
+            icon = "🟢" if r_val > 0 else ("🔴" if r_val < 0 else "⚪")
+            d_str = r["決済日"].strftime("%Y-%m-%d")
+            reason = str(r["決済理由"])
+            bars = int(r["保有本数"])
+            opt_key = f"{d_str}_{idx}"
+            opt_label = f"{icon} 【決済日: {d_str}】 結果: {r_val:+.2f}R ({reason}) | 保有: {bars}本"
+            trade_options.append((opt_label, opt_key, r))
+
+        # グラフクリックから連動したデフォルトインデックスの特定
+        default_opt_idx = 0
+        current_sel_date = st.session_state.get("selected_trade_date", None)
+        if current_sel_date:
+            for i, (lbl, k, r) in enumerate(trade_options):
+                if r["決済日"].strftime("%Y-%m-%d") == current_sel_date:
+                    default_opt_idx = i
+                    break
+
+        if trade_options:
+            selected_option_tuple = st.selectbox(
+                "📋 検証するトレードを選択（グラフクリックでも自動で切り替わります）:",
+                trade_options,
+                index=default_opt_idx,
+                format_func=lambda x: x[0],
+                key=f"trade_selectbox_{table_choice}_{filter_losses_only}"
+            )
+            target_trade = selected_option_tuple[2]
+            st.session_state["selected_trade_date"] = target_trade["決済日"].strftime("%Y-%m-%d")
+        else:
+            st.info("条件に一致するトレードがありませんでした。")
+
+    if target_trade is not None:
+        r_val = float(target_trade["結果R"])
+        r_color = "🟢 勝ち" if r_val > 0 else ("🔴 負け" if r_val < 0 else "⚪ 分岐")
+        t_date = target_trade["決済日"].strftime("%Y-%m-%d")
+        st.success(
+            f"🎯 **【選択されたトレード詳細】決済日: {t_date}（RR 1:{target_trade['RR設定']:g} ／ {r_color}: {r_val:+.2f} R）**\n\n"
+            f"・**シグナル日**: {target_trade['シグナル日'].strftime('%Y-%m-%d')} ／ **エントリー日**: {target_trade['エントリー日'].strftime('%Y-%m-%d')} ／ **保有本数**: {target_trade['保有本数']}本  \n"
+            f"・**エントリー価格**: {target_trade['エントリー']:,.2f} ／ **損切り価格**: {target_trade['損切り']:,.2f} ／ **利確目標**: {target_trade['利確目標']:,.2f}  \n"
+            f"・**決済価格**: {target_trade['決済価格']:,.2f} ／ **決済理由**: **{target_trade['決済理由']}** ／ **シグナル点数**: {target_trade['シグナル点数']:.1f}点"
+        )
+
+        # 個別トレードのローソク足チャート描画（保有期間・損切り・利確ライン可視化）
+        diag_fig = create_trade_diagnostic_chart(
+            data=usable_data,
+            trade=target_trade,
+            display_symbol=display_symbol,
+            mid_period=mid_trend_period,
+            is_japan=is_japan_stock,
+        )
+        st.plotly_chart(diag_fig, use_container_width=True, key=f"diag_chart_{t_date}_{target_trade['RR設定']}")
+
+        # 敗因・勝因の詳細分析と対策アドバイス
+        analysis_text = generate_trade_analysis_text(
+            data=usable_data,
+            trade=target_trade,
+            is_japan=is_japan_stock,
+        )
+        st.info(analysis_text)
+    else:
+        st.info("💡 **上の累積Rグラフのマーカー（●）をクリック** するか、**選択ボックスからトレードを選択** すると、ここに「ローソク足チャート」と「負け理由・対策分析」が表示されます。")
+
+    st.markdown("##### 📝 全トレード履歴一覧")
 
     if not current_trades_df.empty:
-        # 該当トレードの特定（インデックスまたは決済日）
-        target_trade = None
-        if selected_rr is not None:
-            source_df = trades_15 if selected_rr == "1.5" else trades_20
-            if selected_idx is not None and 0 <= selected_idx < len(source_df):
-                target_trade = source_df.iloc[selected_idx]
-            elif selected_trade_date:
-                matches = source_df[source_df["決済日"].dt.strftime("%Y-%m-%d") == selected_trade_date]
-                if not matches.empty:
-                    target_trade = matches.iloc[0]
-
-
-        # ① 選択されたトレード詳細カード＆個別検証チャート＆敗因・勝因アナライザー
-        if target_trade is not None:
-            r_val = float(target_trade["結果R"])
-            r_color = "🟢 勝ち" if r_val > 0 else ("🔴 負け" if r_val < 0 else "⚪ 分岐")
-            t_date = target_trade["決済日"].strftime("%Y-%m-%d")
-            st.success(
-                f"🎯 **【選択されたトレード詳細】決済日: {t_date}（RR 1:{target_trade['RR設定']:g} ／ {r_color}: {r_val:+.2f} R）**\n\n"
-                f"・**シグナル日**: {target_trade['シグナル日'].strftime('%Y-%m-%d')} ／ **エントリー日**: {target_trade['エントリー日'].strftime('%Y-%m-%d')} ／ **保有本数**: {target_trade['保有本数']}本  \n"
-                f"・**エントリー価格**: {target_trade['エントリー']:,.2f} ／ **損切り価格**: {target_trade['損切り']:,.2f} ／ **利確目標**: {target_trade['利確目標']:,.2f}  \n"
-                f"・**決済価格**: {target_trade['決済価格']:,.2f} ／ **決済理由**: **{target_trade['決済理由']}** ／ **シグナル点数**: {target_trade['シグナル点数']:.1f}点"
-            )
-
-            # 個別トレードのローソク足チャート描画（保有期間・損切り・利確ライン可視化）
-            diag_fig = create_trade_diagnostic_chart(
-                data=usable_data,
-                trade=target_trade,
-                display_symbol=display_symbol,
-                mid_period=mid_trend_period,
-                is_japan=is_japan_stock,
-            )
-            st.plotly_chart(diag_fig, use_container_width=True, key=f"diag_chart_{t_date}")
-
-            # 敗因・勝因の詳細分析と対策アドバイス
-            analysis_text = generate_trade_analysis_text(
-                data=usable_data,
-                trade=target_trade,
-                is_japan=is_japan_stock,
-            )
-            st.info(analysis_text)
-        else:
-            st.info("💡 **上の累積Rグラフのマーカー（●）をクリック** すると、ここに選択したトレードの「ローソク足チャート」と「負け理由・対策分析」が自動表示されます。")
-
-
-
         # ② 表示用DataFrameの作成
         display_trades = current_trades_df.copy()
         display_trades["シグナル日"] = display_trades["シグナル日"].dt.strftime("%Y-%m-%d")
@@ -2654,7 +2690,6 @@ with tab3:
         display_trades["損切り"] = display_trades["損切り"].map(lambda x: f"{x:,.2f}")
         display_trades["利確目標"] = display_trades["利確目標"].map(lambda x: f"{x:,.2f}")
         display_trades["決済価格"] = display_trades["決済価格"].map(lambda x: f"{x:,.2f}")
-
 
         # 選択中の決済日
         match_date = target_trade["決済日"].strftime("%Y-%m-%d") if target_trade is not None else None
