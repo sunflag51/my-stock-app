@@ -1214,6 +1214,66 @@ def _extract_chart_points(event):
     pts = _get_prop(sel, "points", None)
     return pts or []
 
+def _parse_clicked_info(p, equity_fig, trades_15, trades_20):
+    cd = _get_prop(p, "customdata", None)
+    c_num = _get_prop(p, "curve_number", _get_prop(p, "curveNumber", 0))
+    p_num = _get_prop(p, "point_number", _get_prop(p, "pointNumber", 0))
+    p_idx = _get_prop(p, "point_index", _get_prop(p, "pointIndex", p_num))
+    x_val = str(_get_prop(p, "x", ""))
+
+    clicked_rr = None
+    clicked_date = None
+
+    # ① customdata からの取得
+    if cd is not None:
+        flat_cd = cd
+        while isinstance(flat_cd, (list, tuple)) and len(flat_cd) > 0 and isinstance(flat_cd[0], (list, tuple)):
+            flat_cd = flat_cd[0]
+        if isinstance(flat_cd, (list, tuple)) and len(flat_cd) >= 2:
+            clicked_rr = str(flat_cd[0])
+            clicked_date = str(flat_cd[1])
+
+    # ② RR設定の自動判定
+    if not clicked_rr:
+        if c_num is not None and 0 <= c_num < len(equity_fig.data):
+            tr_name = equity_fig.data[c_num].name or ""
+            if "1.5" in tr_name or "1:1.5" in tr_name:
+                clicked_rr = "1.5"
+            elif "2" in tr_name or "1:2" in tr_name:
+                clicked_rr = "2.0"
+        if not clicked_rr:
+            clicked_rr = "1.5" if (c_num is not None and c_num <= 1) else "2.0"
+
+    source_df = trades_15 if str(clicked_rr) == "1.5" else trades_20
+
+    # ③ point_index からの直接取得（極めて確実）
+    if not clicked_date and p_idx is not None and not source_df.empty:
+        try:
+            idx_int = int(p_idx)
+            if 0 <= idx_int < len(source_df):
+                clicked_date = source_df.iloc[idx_int]["決済日"].strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # ④ x座標からのパース補完（ミリ秒タイムスタンプやISO形式対応）
+    if not clicked_date and x_val:
+        s = x_val.strip()
+        if s.isdigit():
+            val = int(s)
+            import datetime
+            if val > 1e11:
+                clicked_date = datetime.datetime.utcfromtimestamp(val / 1000.0).strftime('%Y-%m-%d')
+            elif val > 1e8:
+                clicked_date = datetime.datetime.utcfromtimestamp(val).strftime('%Y-%m-%d')
+        if not clicked_date:
+            cleaned = s.split('T')[0].split(' ')[0]
+            try:
+                clicked_date = pd.to_datetime(cleaned).strftime('%Y-%m-%d')
+            except Exception:
+                clicked_date = cleaned
+
+    return clicked_rr, clicked_date
+
 def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highlight_date: str = None, active_rr: str = "2.0"):
     figure = go.Figure()
 
@@ -1226,6 +1286,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
             y=cum_15,
             mode="lines",
             name="RR 1:1.5 (推移線)",
+            customdata=cd_15,
             line=dict(color="#1f77b4", width=2),
             hoverinfo="skip",
             showlegend=False,
@@ -1259,6 +1320,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
             y=cum_20,
             mode="lines",
             name="RR 1:2 (推移線)",
+            customdata=cd_20,
             line=dict(color="#ff7f0e", width=2.5),
             hoverinfo="skip",
             showlegend=False,
@@ -2063,7 +2125,8 @@ with tab3:
     active_date = st.session_state.get("chart_clicked_date", None)
     equity_fig = create_equity_chart(trades_15, trades_20, highlight_date=active_date, active_rr=active_rr_val)
 
-    # ① 累積Rチャートの描画とクリックイベントの検知（グラフの点を直接クリックして下のボタンを自動選択）
+    # ① 累積Rチャートの描画とクリックイベントの検知
+    chart_event = None
     try:
         chart_event = st.plotly_chart(
             equity_fig,
@@ -2072,6 +2135,12 @@ with tab3:
             selection_mode=["points", "box"],
             key=f"equity_chart_click_{active_rr_val}"
         )
+    except TypeError:
+        st.plotly_chart(equity_fig, use_container_width=True)
+
+    # ② グラフクリックの解析（try-exceptの外で実行し、st.rerun()の内部例外が捕捉されてリセットされるバグを完全解消）
+    should_rerun = False
+    if chart_event:
         pts = _extract_chart_points(chart_event)
         if pts:
             p = pts[0]
@@ -2080,34 +2149,10 @@ with tab3:
             x_val = str(_get_prop(p, "x", ""))
             point_sig = f"{c_num}_{p_num}_{x_val}"
 
-            # 新たにクリックされた点のみ処理を実行（無限ループ・重複再実行を防止）
             if point_sig != st.session_state.get("_last_clicked_point_sig"):
                 st.session_state["_last_clicked_point_sig"] = point_sig
 
-                cd = _get_prop(p, "customdata", None)
-                clicked_rr = None
-                clicked_date = None
-
-                if cd is not None:
-                    flat_cd = cd
-                    while isinstance(flat_cd, (list, tuple)) and len(flat_cd) > 0 and isinstance(flat_cd[0], (list, tuple)):
-                        flat_cd = flat_cd[0]
-                    if isinstance(flat_cd, (list, tuple)) and len(flat_cd) >= 2:
-                        clicked_rr = str(flat_cd[0])
-                        clicked_date = str(flat_cd[1])
-
-                if not clicked_rr:
-                    if c_num is not None and 0 <= c_num < len(equity_fig.data):
-                        tr_name = equity_fig.data[c_num].name or ""
-                        if "1.5" in tr_name or "1:1.5" in tr_name:
-                            clicked_rr = "1.5"
-                        elif "2" in tr_name or "1:2" in tr_name:
-                            clicked_rr = "2.0"
-                    if not clicked_rr:
-                        clicked_rr = "1.5" if c_num <= 1 else "2.0"
-
-                if not clicked_date and x_val:
-                    clicked_date = x_val.split("T")[0].split(" ")[0]
+                clicked_rr, clicked_date = _parse_clicked_info(p, equity_fig, trades_15, trades_20)
 
                 # クリックされた線のRR設定（1:1.5 または 1:2）へ自動連動
                 if clicked_rr:
@@ -2127,13 +2172,12 @@ with tab3:
                             if not m_match.empty and float(m_match.iloc[0]["結果R"]) >= 0:
                                 st.session_state["filter_trades_mode"] = "すべて表示"
 
-                st.rerun()
+                    should_rerun = True
         else:
-            # 選択解除時
             st.session_state["_last_clicked_point_sig"] = None
-    except (TypeError, Exception):
-        # on_select未対応の環境でもエラーを出さず安全に表示
-        st.plotly_chart(equity_fig, use_container_width=True)
+
+    if should_rerun:
+        safe_rerun()
 
     st.markdown("---")
     st.markdown("##### 🔍 検証対象トレードの選択 ＆ 敗因・勝因アナライザー")
