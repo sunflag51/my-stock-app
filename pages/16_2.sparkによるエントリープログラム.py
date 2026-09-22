@@ -2066,11 +2066,11 @@ def generate_trade_analysis_text(
 
 
 
-def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
+def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, active_date: str = None, active_rr: str = "RR 1:2"):
     figure = go.Figure()
 
-
-    # RR 1:1.5 トレース（線＋マーカー統合。customdata に確実に識別子を格納）
+    cum_15 = pd.Series(dtype=float)
+    dates_15_str = []
     if not trades_15.empty:
         cum_15 = trades_15["結果R"].cumsum()
         dates_15_str = [d.strftime("%Y-%m-%d") for d in trades_15["決済日"]]
@@ -2085,15 +2085,15 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
             hovertemplate="<b>%{x} (RR 1:1.5)</b><br>累積R: %{y:+.2f} R<br>👉 クリックでトレード選択<extra></extra>",
             line=dict(color="#1f77b4", width=2),
             marker=dict(
-                size=13,
+                size=12,
                 color=m_colors_15,
-                line=dict(width=2, color="white"),
-                opacity=0.95
+                line=dict(width=1.5, color="white"),
+                opacity=0.85
             ),
         ))
 
-
-    # RR 1:2 トレース（線＋マーカー統合）
+    cum_20 = pd.Series(dtype=float)
+    dates_20_str = []
     if not trades_20.empty:
         cum_20 = trades_20["結果R"].cumsum()
         dates_20_str = [d.strftime("%Y-%m-%d") for d in trades_20["決済日"]]
@@ -2108,17 +2108,100 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
             hovertemplate="<b>%{x} (RR 1:2)</b><br>累積R: %{y:+.2f} R<br>👉 クリックでトレード選択<extra></extra>",
             line=dict(color="#ff7f0e", width=2.5),
             marker=dict(
-                size=14,
+                size=13,
                 color=m_colors_20,
-                line=dict(width=2, color="white"),
-                opacity=0.95
+                line=dict(width=1.5, color="white"),
+                opacity=0.85
             ),
         ))
 
-
     figure.add_hline(y=0, line_color="gray", line_dash="dot")
+
+    # 🎯 【超重要新機能】選択中トレードの視覚的強調（直接選択ボタン連動ハイライト）
+    if active_date:
+        target_df = trades_15 if active_rr == "RR 1:1.5" else trades_20
+        target_cum = cum_15 if active_rr == "RR 1:1.5" else cum_20
+
+        if not target_df.empty and not target_cum.empty:
+            mask = target_df["決済日"].dt.strftime("%Y-%m-%d") == str(active_date)
+            if mask.any():
+                idx_match = target_df.index[mask][0]
+                pos = target_df.index.get_loc(idx_match)
+                if isinstance(pos, (slice, np.ndarray, list)):
+                    pos = pos[0] if hasattr(pos, "__getitem__") else 0
+                pos = int(pos)
+                sel_x = str(active_date)
+                sel_y = float(target_cum.iloc[pos])
+                matched_row = target_df.iloc[pos]
+                r_val = float(matched_row["結果R"])
+                reason = str(matched_row["決済理由"])
+
+                # ① 垂直ガイドライン（位置を縦の破線で即座に特定）
+                figure.add_vline(
+                    x=sel_x,
+                    line_dash="dashdot",
+                    line_color="#ff9800",
+                    line_width=2,
+                    opacity=0.75
+                )
+
+                # ② 特大二重リング強調マーカー（ゴールド外枠リング）
+                figure.add_trace(go.Scatter(
+                    x=[sel_x],
+                    y=[sel_y],
+                    mode="markers",
+                    name="🎯 選択中",
+                    marker=dict(
+                        size=28,
+                        color="rgba(255, 235, 59, 0.45)",
+                        symbol="circle",
+                        line=dict(width=3.5, color="#ff5722"),
+                    ),
+                    hoverinfo="skip",
+                    showlegend=False
+                ))
+
+                # ③ 中心コアマーカー（スター形状）
+                core_color = "#2ca02c" if r_val > 0 else "#d62728"
+                figure.add_trace(go.Scatter(
+                    x=[sel_x],
+                    y=[sel_y],
+                    mode="markers",
+                    name="🎯 選択位置",
+                    marker=dict(
+                        size=16,
+                        color=core_color,
+                        symbol="star",
+                        line=dict(width=2, color="#ffffff"),
+                    ),
+                    hoverinfo="skip",
+                    showlegend=False
+                ))
+
+                # ④ 吹き出しアノテーション（矢印付き）
+                arrow_ay = -45 if r_val >= 0 else 45
+                badge_icon = "🟢 勝ち" if r_val > 0 else "🔴 負け"
+                figure.add_annotation(
+                    x=sel_x,
+                    y=sel_y,
+                    text=f"<b>🎯 選択中: {sel_x}</b><br>{badge_icon}: {r_val:+.2f} R ({reason})<br>累積: {sel_y:+.2f} R",
+                    showarrow=True,
+                    arrowhead=2,
+                    arrowsize=1.2,
+                    arrowwidth=2,
+                    arrowcolor="#ff5722",
+                    ax=0,
+                    ay=arrow_ay,
+                    font=dict(color="#212121", size=11),
+                    bgcolor="rgba(255, 255, 255, 0.95)",
+                    bordercolor="#ff5722",
+                    borderwidth=2,
+                    borderpad=5,
+                    opacity=0.98
+                )
+
     figure.update_layout(
-        title="📈 累積Rの推移（マーカー●をクリックすると下のトレード詳細と表が切り替わります）",
+        title="📈 累積Rの推移（下のボタンで選択したトレードの位置が●/★で強調されます）",
         xaxis_title="決済日",
         yaxis_title="累積R",
         height=480,
@@ -3402,7 +3485,14 @@ with tab3:
 
 
 
-    equity_fig = create_equity_chart(trades_15, trades_20)
+    cur_active_date = st.session_state.get("active_trade_date", None)
+    cur_active_rr = st.session_state.get("table_rr_choice", "RR 1:2")
+    equity_fig = create_equity_chart(
+        trades_15,
+        trades_20,
+        active_date=cur_active_date,
+        active_rr=cur_active_rr
+    )
 
 
 
