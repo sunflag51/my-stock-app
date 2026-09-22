@@ -613,7 +613,7 @@ def build_signals(
     result["Headroom"] = result["Recent_High"] - result["Close"]
     result["Pass_Headroom"] = result["Headroom"] >= (result["ATR"] * 2.0)
 
-    # 必須足切り条件：ラジオボタン設定（ON/OFF）に応じて動的に結合（全指標計算後に安全に評価）
+    # 必須足切り条件（元来の5大必須項目）：ONに設定されている項目のみをAND結合（OFFは足切り免除）
     mandatory_conditions = []
     if filter_settings.get("sma200", True):
         mandatory_conditions.append(result["Pass_SMA200"])
@@ -625,18 +625,21 @@ def build_signals(
         mandatory_conditions.append(result["Closed_Inside_Band"])
     if filter_settings.get("bullish", True):
         mandatory_conditions.append(result["Is_Bullish"] | result["Today_Hammer"])
-    if filter_settings.get("headroom", True):
-        mandatory_conditions.append(result["Pass_Headroom"])
-    if filter_settings.get("rsi", True):
-        mandatory_conditions.append(result["RSI_Improving"])
-    if filter_settings.get("macd", True):
-        mandatory_conditions.append(result["MACD_Improving"])
-    if filter_settings.get("volume", True):
-        mandatory_conditions.append(result["Volume_Expansion"])
-    if filter_settings.get("middle_slope", True):
-        mandatory_conditions.append(result["Pass_Middle_Slope"])
-    if filter_settings.get("lower_slope", True):
-        mandatory_conditions.append(result["Lower_Not_Collapsing"])
+
+    # 厳格モード（strict_mode == True）がONの場合のみ、補助条件も100%必須足切りに含める
+    if filter_settings.get("strict_mode", False):
+        if filter_settings.get("headroom", True):
+            mandatory_conditions.append(result["Pass_Headroom"])
+        if filter_settings.get("rsi", True):
+            mandatory_conditions.append(result["RSI_Improving"])
+        if filter_settings.get("macd", True):
+            mandatory_conditions.append(result["MACD_Improving"])
+        if filter_settings.get("volume", True):
+            mandatory_conditions.append(result["Volume_Expansion"])
+        if filter_settings.get("middle_slope", True):
+            mandatory_conditions.append(result["Pass_Middle_Slope"])
+        if filter_settings.get("lower_slope", True):
+            mandatory_conditions.append(result["Lower_Not_Collapsing"])
 
     if mandatory_conditions:
         result["Mandatory_Filter_Pass"] = mandatory_conditions[0]
@@ -645,18 +648,31 @@ def build_signals(
     else:
         result["Mandatory_Filter_Pass"] = pd.Series(True, index=result.index)
 
+    # 補助条件スコアリング（ラジオボタンでONの項目のみ加点、OFFの項目は0点換算）
+    score_inside = (result["Closed_Inside_Band"].astype(float) * 2.0) if filter_settings.get("closed_inside", True) else 0.0
+    score_rebound = (result["Rebound"].astype(float) * 2.0)
+    score_today_bullish = (result["Today_Bullish"].astype(float) * 1.5) if filter_settings.get("bullish", True) else 0.0
+    score_shadow = (result["Strong_Lower_Shadow"].astype(float) * 1.0)
+    score_rsi = (result["RSI_Improving"].astype(float) * 1.5) if filter_settings.get("rsi", True) else 0.0
+    score_macd = (result["MACD_Improving"].astype(float) * 1.0) if filter_settings.get("macd", True) else 0.0
+    score_exp = (result["No_Expansion_Raw"].astype(float) * 0.5) if filter_settings.get("no_expansion", True) else 0.0
+    score_slope = (result["Pass_Middle_Slope"].astype(float) * 0.5) if filter_settings.get("middle_slope", True) else 0.0
+    score_vol = (result["Volume_Expansion"].astype(float) * 0.5) if filter_settings.get("volume", True) else 0.0
+    score_lower_slope = (result["Lower_Not_Collapsing"].astype(float) * 1.0) if filter_settings.get("lower_slope", True) else 0.0
+    score_headroom = (result["Pass_Headroom"].astype(float) * 1.0) if filter_settings.get("headroom", True) else 0.0
+
     result["Score"] = (
-        result["Closed_Inside_Band"].astype(float) * 2.0
-        + result["Rebound"].astype(float) * 2.0
-        + result["Today_Bullish"].astype(float) * 1.5
-        + result["Strong_Lower_Shadow"].astype(float) * 1.0
-        + result["RSI_Improving"].astype(float) * 1.5
-        + result["MACD_Improving"].astype(float) * 1.0
-        + result["No_Expansion_Raw"].astype(float) * 0.5
-        + result["Pass_Middle_Slope"].astype(float) * 0.5
-        + result["Volume_Expansion"].astype(float) * 0.5
-        + result["Lower_Not_Collapsing"].astype(float) * 1.0
-        + result["Pass_Headroom"].astype(float) * 1.0
+        score_inside
+        + score_rebound
+        + score_today_bullish
+        + score_shadow
+        + score_rsi
+        + score_macd
+        + score_exp
+        + score_slope
+        + score_vol
+        + score_lower_slope
+        + score_headroom
     )
 
     # 7. エントリーシグナル
@@ -1842,14 +1858,26 @@ score_threshold = st.sidebar.number_input("条件成立点数", value=6.5, step=
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 🔘 エントリー条件 ON / OFF 設定")
-st.sidebar.caption("各条件をラジオボタンで個別に有効(ON)/無効(OFF)化できます。OFFにした条件は必須足切りから除外され、バックテスト集計にも即座に連動します。")
+st.sidebar.caption("各条件をラジオボタンで個別に有効(ON)/無効(OFF)化できます。OFFにした条件は判定・加点から除外され、バックテスト集計にも即座に連動します。")
 
-with st.sidebar.expander("⚙️ 条件ごとのON/OFFラジオボタン", expanded=True):
+with st.sidebar.expander("⚙️ 判定モード ＆ ON/OFF設定", expanded=True):
+    filter_mode = st.radio(
+        "判定モード選択",
+        ["通常モード（必須5項目＋補助条件の総合スコア加点）", "厳格モード（すべてのON項目を100%必須化）"],
+        index=0,
+        key="sb_filter_mode",
+        help="【通常モード】本来の設計。出来高やRSIなどは加点用となり、十分なエントリー回数が確保されます。\n【厳格モード】すべてのON条件を1つも漏らさず同時に満たす足だけに絞り込みます（エントリー回数が少なくなります）。"
+    )
+    is_strict_mode = "厳格" in filter_mode
+
+    st.markdown("**【必須足切り条件（基本5項目）】**")
     opt_sma200 = st.radio("大局200日線以上", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_sma200") == "ON"
     opt_closed_inside = st.radio("終値バンド内完全復帰", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_closed_inside") == "ON"
     opt_bullish = st.radio("当日は陽線反発（買い優勢）", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_bullish") == "ON"
     opt_no_bandwalk = st.radio("下限接触・下落陰線排除", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_no_bandwalk") == "ON"
     opt_no_expansion = st.radio("バンド急拡大の抑制", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_no_expansion") == "ON"
+
+    st.markdown("**【補助条件（加点・環境認識項目）】**")
     opt_headroom = st.radio("頭上余白（天井までATR2倍以上）", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_headroom") == "ON"
     opt_rsi = st.radio("RSI改善（25以上＆上昇）", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_rsi") == "ON"
     opt_macd = st.radio("MACDヒストグラム好転", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_macd") == "ON"
@@ -1858,6 +1886,7 @@ with st.sidebar.expander("⚙️ 条件ごとのON/OFFラジオボタン", expan
     opt_lower_slope = st.radio("BB下限の急落防止", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_lower_slope") == "ON"
 
 filter_settings = {
+    "strict_mode": is_strict_mode,
     "sma200": opt_sma200,
     "closed_inside": opt_closed_inside,
     "bullish": opt_bullish,
