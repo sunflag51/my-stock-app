@@ -2098,8 +2098,8 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
                 line=dict(width=2, color="white"),
                 opacity=0.9
             ),
-            selected=dict(marker=dict(size=18, color="#ffd700", line=dict(width=3, color="#222"))),
-            unselected=dict(marker=dict(opacity=0.7)),
+            selected=dict(marker=dict(color="#ffd700", opacity=1.0)),
+            unselected=dict(marker=dict(opacity=0.6)),
         ))
 
     # RR 1:2 の描画（折れ線とマーカーを分離）
@@ -2131,8 +2131,8 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
                 line=dict(width=2, color="white"),
                 opacity=0.95
             ),
-            selected=dict(marker=dict(size=19, color="#ffd700", line=dict(width=3, color="#222"))),
-            unselected=dict(marker=dict(opacity=0.7)),
+            selected=dict(marker=dict(color="#ffd700", opacity=1.0)),
+            unselected=dict(marker=dict(opacity=0.6)),
         ))
 
     # 現在選択中トレードの視覚的強調リング（金色の発光マーカー）
