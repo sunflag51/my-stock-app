@@ -3428,7 +3428,7 @@ with tab3:
     )
 
 
-    # グラフクリックの安全な解析（RR 1:1.5 / RR 1:2 両対応 ＆ 余白クリックによる解除）
+    # グラフクリックの安全な解析（直接選択ボタンとの完全同一ロジック連動 ＆ 余白クリックによる解除）
     if chart_event:
         pts = []
         if isinstance(chart_event, dict):
@@ -3477,18 +3477,48 @@ with tab3:
                 if idx_to_use is not None and 0 <= idx_to_use < len(source_df):
                     new_date = source_df.iloc[idx_to_use]["決済日"].strftime("%Y-%m-%d")
 
+            # 🎯 ユーザーご提案方針：クリックされた点に対応する直接選択ボタンを特定し、そのボタン押下と100%同一の処理を実行
             if new_date:
-                new_rr = "RR 1:1.5" if clicked_rr == "1.5" else "RR 1:2"
+                target_rr_choice = "RR 1:1.5" if clicked_rr == "1.5" else "RR 1:2"
                 sel_id = f"{clicked_rr}_{new_date}"
-                st.session_state["_last_chart_selection"] = sel_id
-                st.session_state["active_trade_date"] = new_date
-                st.session_state["table_rr_choice"] = new_rr
-                st.session_state["radio_rr_display"] = new_rr  # ラジオボタン表示も完全に同期！
+
+                # 新規クリック時のみ実行（ボタン押下と全く同じ完全同期を実行）
+                if sel_id != st.session_state.get("_last_chart_selection"):
+                    st.session_state["_last_chart_selection"] = sel_id
+                    st.session_state["table_rr_choice"] = target_rr_choice
+                    st.session_state["radio_rr_display"] = target_rr_choice  # 表示設定ラジオを同期
+                    st.session_state["active_trade_date"] = new_date          # 該当トレード日付を同期
+
+                    # 負けトレード絞り込み中の場合、勝ちトレードクリック時は自動で絞り込み解除
+                    target_trade_rows = source_df[source_df["決済日"].dt.strftime("%Y-%m-%d") == new_date]
+                    if not target_trade_rows.empty:
+                        clicked_trade_r = float(target_trade_rows.iloc[0]["結果R"])
+                        if clicked_trade_r > 0 and st.session_state.get("filter_losses_only", False):
+                            st.session_state["filter_losses_only"] = False
+
+                    # 直接選択ボタン／スライダーの該当インデックスを計算して同期
+                    matched_btn_idx = 0
+                    calc_items = []
+                    curr_filter_loss = st.session_state.get("filter_losses_only", False)
+                    for idx_c, r_c in source_df.iterrows():
+                        r_val_c = float(r_c["結果R"])
+                        if curr_filter_loss and r_val_c >= 0:
+                            continue
+                        if r_c["決済日"].strftime("%Y-%m-%d") == new_date:
+                            matched_btn_idx = len(calc_items)
+                            break
+                        calc_items.append(idx_c)
+
+                    st.session_state["timeline_slider_control_v14"] = matched_btn_idx + 1
+                    st.session_state["_chart_selected"] = True
+                    st.rerun()
         else:
             # 背景余白クリック等による選択解除
-            if st.session_state.get("_last_chart_selection") is not None:
+            if st.session_state.get("_chart_selected", False):
                 st.session_state["active_trade_date"] = None
                 st.session_state["_last_chart_selection"] = None
+                st.session_state["_chart_selected"] = False
+                st.rerun()
 
 
     st.markdown("---")
