@@ -1174,6 +1174,245 @@ def summarize_backtest(trades: pd.DataFrame, reward_r: float) -> dict:
 
 
 
+
+def create_trade_diagnostic_chart(
+    data: pd.DataFrame,
+    trade: pd.Series,
+    display_symbol: str,
+    mid_period: int,
+    is_japan: bool = False,
+) -> go.Figure:
+    """選択されたトレードの個別検証用ローソク足チャート（保有期間・損切り・利確ライン可視化）"""
+    unit = "円" if is_japan else "ドル"
+    sig_date = trade["シグナル日"]
+    entry_date = trade["エントリー日"]
+    exit_date = trade["決済日"]
+
+    try:
+        sig_idx = data.index.get_loc(sig_date)
+        if isinstance(sig_idx, (slice, np.ndarray, list)):
+            sig_idx = sig_idx[0]
+    except KeyError:
+        sig_idx = 0
+    try:
+        exit_idx = data.index.get_loc(exit_date)
+        if isinstance(exit_idx, (slice, np.ndarray, list)):
+            exit_idx = exit_idx[-1]
+    except KeyError:
+        exit_idx = len(data) - 1
+
+    start_idx = max(0, int(sig_idx) - 20)
+    end_idx = min(len(data), int(exit_idx) + 15)
+    plot_df = data.iloc[start_idx:end_idx].copy()
+
+    fig = go.Figure()
+
+    # ローソク足
+    fig.add_trace(
+        go.Candlestick(
+            x=plot_df.index,
+            open=plot_df["Open"],
+            high=plot_df["High"],
+            low=plot_df["Low"],
+            close=plot_df["Close"],
+            name=display_symbol,
+            increasing_line_color="#26a69a",
+            decreasing_line_color="#ef5350",
+        )
+    )
+
+    # ボリンジャーバンド
+    if "BB_Upper" in plot_df.columns:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Upper"], line=dict(color="rgba(220,70,70,0.45)", width=1), name="BB+2σ", hoverinfo="skip"))
+    if "BB_Middle" in plot_df.columns:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Middle"], line=dict(color="rgba(128,128,128,0.6)", width=1.2, dash="dash"), name="BB中央(20SMA)", hoverinfo="skip"))
+    if "BB_Lower" in plot_df.columns:
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["BB_Lower"], line=dict(color="rgba(41,98,255,0.7)", width=1.8), name="BB-2σ", hoverinfo="skip"))
+
+    # 移動平均線 (200SMA)
+    if "SMA200" in plot_df.columns and plot_df["SMA200"].notna().any():
+        fig.add_trace(go.Scatter(x=plot_df.index, y=plot_df["SMA200"], line=dict(color="rgba(255,152,0,0.8)", width=1.8), name="200日SMA", hoverinfo="skip"))
+
+    entry_price = float(trade["エントリー"])
+    stop_price = float(trade["損切り"])
+    target_price = float(trade["利確目標"])
+    exit_price = float(trade["決済価格"])
+    r_val = float(trade["結果R"])
+
+    # 保有期間の背景ハイライト
+    shade_color = "rgba(76, 175, 80, 0.12)" if r_val > 0 else "rgba(244, 67, 54, 0.12)"
+    fig.add_vrect(
+        x0=entry_date,
+        x1=exit_date,
+        fillcolor=shade_color,
+        layer="below",
+        line_width=1,
+        line_dash="dot",
+        line_color="rgba(0,0,0,0.2)",
+        annotation_text=f"保有期間 ({trade['保有本数']}本)",
+        annotation_position="top left",
+    )
+
+    # エントリーライン（青点線）
+    fig.add_shape(
+        type="line",
+        x0=entry_date, x1=exit_date,
+        y0=entry_price, y1=entry_price,
+        line=dict(color="#1976d2", width=2, dash="dot"),
+    )
+    fig.add_annotation(
+        x=entry_date, y=entry_price,
+        text=f"買エントリー: {entry_price:,.2f}{unit}",
+        showarrow=True, arrowhead=2, arrowcolor="#1976d2",
+        ax=-40, ay=-25,
+        font=dict(color="#1976d2", size=11),
+        bgcolor="rgba(255,255,255,0.9)", bordercolor="#1976d2"
+    )
+
+    # 損切りライン（赤実線）
+    fig.add_shape(
+        type="line",
+        x0=entry_date, x1=exit_date,
+        y0=stop_price, y1=stop_price,
+        line=dict(color="#d32f2f", width=2.5),
+    )
+    fig.add_annotation(
+        x=exit_date, y=stop_price,
+        text=f"損切り: {stop_price:,.2f}{unit}",
+        showarrow=False,
+        xanchor="left", yanchor="middle",
+        font=dict(color="#d32f2f", size=10),
+        bgcolor="rgba(255,255,255,0.85)", bordercolor="#d32f2f"
+    )
+
+    # 利確目標ライン（緑実線）
+    fig.add_shape(
+        type="line",
+        x0=entry_date, x1=exit_date,
+        y0=target_price, y1=target_price,
+        line=dict(color="#388e3c", width=2.5),
+    )
+    fig.add_annotation(
+        x=exit_date, y=target_price,
+        text=f"利確目標: {target_price:,.2f}{unit}",
+        showarrow=False,
+        xanchor="left", yanchor="middle",
+        font=dict(color="#388e3c", size=10),
+        bgcolor="rgba(255,255,255,0.85)", bordercolor="#388e3c"
+    )
+
+    # 決済ポイントのアノテーション
+    exit_icon = "🟢" if r_val > 0 else "🔴"
+    fig.add_annotation(
+        x=exit_date, y=exit_price,
+        text=f"{exit_icon} 決済: {exit_price:,.2f}{unit}<br>({trade['決済理由']}: {r_val:+.2f}R)",
+        showarrow=True, arrowhead=2,
+        arrowcolor="#d32f2f" if r_val < 0 else "#388e3c",
+        ax=40, ay=-35 if r_val >= 0 else 35,
+        font=dict(color="#111", size=11),
+        bgcolor="rgba(255,255,255,0.9)",
+        bordercolor="#d32f2f" if r_val < 0 else "#388e3c",
+        borderwidth=1.5
+    )
+
+    date_str_entry = entry_date.strftime("%Y-%m-%d")
+    date_str_exit = exit_date.strftime("%Y-%m-%d")
+    title_text = f"🔍 【個別トレード検証チャート】{display_symbol}（エントリー: {date_str_entry} → 決済: {date_str_exit}）"
+    fig.update_layout(
+        title=title_text,
+        xaxis_title="日付",
+        yaxis_title=f"株価 ({unit})",
+        xaxis_rangeslider_visible=False,
+        height=520,
+        margin=dict(l=40, r=60, t=50, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def generate_trade_analysis_text(
+    data: pd.DataFrame,
+    trade: pd.Series,
+    is_japan: bool = False,
+) -> str:
+    """選択トレードの敗因・勝因を自動診断し、具体的な対策アドバイスを生成"""
+    unit = "円" if is_japan else "ドル"
+    r_val = float(trade["結果R"])
+    reason = str(trade["決済理由"])
+    entry_p = float(trade["エントリー"])
+    stop_p = float(trade["損切り"])
+    exit_p = float(trade["決済価格"])
+    holding_bars = int(trade["保有本数"])
+    score = float(trade.get("シグナル点数", 0))
+    exit_date = trade["決済日"]
+
+    try:
+        exit_loc = data.index.get_loc(exit_date)
+        if isinstance(exit_loc, (slice, np.ndarray, list)):
+            exit_loc = exit_loc[-1]
+        after_df = data.iloc[exit_loc: min(len(data), exit_loc + 10)]
+    except Exception:
+        after_df = pd.DataFrame()
+
+    lines = []
+
+    if r_val < 0:
+        lines.append(f"##### 🔴 負けトレード検証（結果: {r_val:+.2f} R ／ 決済理由: {reason}）")
+
+        # 1. 損切り後の値動き検証（ヒゲ狩りか、ナイス損切りか）
+        if not after_df.empty and len(after_df) > 1:
+            after_min = float(after_df["Low"].min())
+            after_max = float(after_df["High"].max())
+            if after_min < stop_p * 0.98:
+                lines.append(
+                    f"✅ **【ナイス損切り】下落回避の成功**  \n"
+                    f"決済後に株価はさらに下落し、直後10日間の最安値は **{after_min:,.2f}{unit}** まで下がりました。  \n"
+                    f"「BB下限割れからのバンドウォーク（急落）」に巻き込まれる前に計画通りの1Rで撤退できており、**資金を守るトレードとして適正な対応**です。"
+                )
+            elif after_max > entry_p * 1.02:
+                lines.append(
+                    f"⚠️ **【ヒゲ狩り・直後反発】損切り幅がタイトだった可能性**  \n"
+                    f"損切りにかかった後、株価が反転して直後10日間に **{after_max:,.2f}{unit}** まで上昇しています。  \n"
+                    f"**💡 対策案**: ボラティリティ（ATR）に対して損切り幅が浅かった可能性があります。「ATR乗数を1.5倍から1.8〜2.0倍に広げる」、または「直近安値の少し下（スイング安値基準）」を採用することで、一時的な下ヒゲノイズに耐えられるか比較検証が有効です。"
+                )
+            else:
+                lines.append(
+                    f"ℹ️ **【保ち合い損切り】**  \n"
+                    f"損切り後も株価は大きく反発せず、弱含みで推移しています。買いの勢いが続かなかった局面でした。"
+                )
+
+        # 2. 決済理由別の詳細アドバイス
+        if "ギャップ損切り" in reason:
+            lines.append(
+                f"⚠️ **【窓開け急落】**  \n"
+                f"寄り付きで損切りラインを下回ってスタートしました（決算発表や突発的な地合い悪化などが疑われます）。  \n"
+                f"**💡 対策案**: 決算発表日（Earnings Date）の直前エントリーを避けるフィルターの導入が有効です。"
+            )
+        elif "期限決済" in reason:
+            lines.append(
+                f"⏳ **【タイムアウト（揉み合い停滞）】**  \n"
+                f"最大保有本数（{holding_bars}本）を満了しても利確目標に届きませんでした。  \n"
+                f"**💡 対策案**: バンド幅が狭いスクイーズ状態や、出来高が伴わない反発は勢いが持続しにくい傾向があります。シグナル点数基準（現在: {score:.1f}点）を上げるか、出来高急増を伴う足に絞るのが効果的です。"
+            )
+
+        # 3. エントリー環境の再確認
+        lines.append(
+            f"📋 **エントリー時環境の振り返り**:  \n"
+            f"・シグナル点数: **{score:.1f} 点**  \n"
+            f"・反発陽線でバンド内復帰は確認できていましたが、相場全体の地合いや上位足の抵抗に阻まれた可能性があります。「1R損失に抑えた」ことを評価し、次の一貫したエントリーに繋げましょう。"
+        )
+
+    else:
+        lines.append(f"##### 🟢 勝ちトレード検証（結果: {r_val:+.2f} R ／ 決済理由: {reason}）")
+        lines.append(
+            f"🎉 **【ルール通りの利確】押し目反発の成功パターン**  \n"
+            f"・保有本数: **{holding_bars} 本** で目標価格 **{exit_p:,.2f}{unit}** に到達しました。  \n"
+            f"・BB下限テスト後に終値でバンド内へ完全復帰した陽線から、想定通りの買い支えが入った理想的なエントリーです。この勝ちパターンを記憶し、同様のチャート形状を優先的に探しましょう。"
+        )
+
+    return "\n\n".join(lines)
+
+
 def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame):
     figure = go.Figure()
     if not trades_15.empty:
@@ -2118,7 +2357,7 @@ with tab3:
                     target_trade = matches.iloc[0]
 
 
-        # ① 選択されたトレード詳細カード（最上部に大きく表示）
+        # ① 選択されたトレード詳細カード＆個別検証チャート＆敗因・勝因アナライザー
         if target_trade is not None:
             r_val = float(target_trade["結果R"])
             r_color = "🟢 勝ち" if r_val > 0 else ("🔴 負け" if r_val < 0 else "⚪ 分岐")
@@ -2129,6 +2368,27 @@ with tab3:
                 f"・**エントリー価格**: {target_trade['エントリー']:,.2f} ／ **損切り価格**: {target_trade['損切り']:,.2f} ／ **利確目標**: {target_trade['利確目標']:,.2f}  \n"
                 f"・**決済価格**: {target_trade['決済価格']:,.2f} ／ **決済理由**: **{target_trade['決済理由']}** ／ **シグナル点数**: {target_trade['シグナル点数']:.1f}点"
             )
+
+            # 個別トレードのローソク足チャート描画（保有期間・損切り・利確ライン可視化）
+            diag_fig = create_trade_diagnostic_chart(
+                data=usable_data,
+                trade=target_trade,
+                display_symbol=display_symbol,
+                mid_period=mid_trend_period,
+                is_japan=is_japan,
+            )
+            st.plotly_chart(diag_fig, use_container_width=True, key=f"diag_chart_{t_date}")
+
+            # 敗因・勝因の詳細分析と対策アドバイス
+            analysis_text = generate_trade_analysis_text(
+                data=usable_data,
+                trade=target_trade,
+                is_japan=is_japan,
+            )
+            st.info(analysis_text)
+        else:
+            st.info("💡 **上の累積Rグラフのマーカー（●）をクリック** すると、ここに選択したトレードの「ローソク足チャート」と「負け理由・対策分析」が自動表示されます。")
+
 
 
         # ② 表示用DataFrameの作成
