@@ -1280,11 +1280,12 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
     # RR 1:1.5 の描画（折れ線とマーカーを分離し、クリック判定を100%マーカーに集中）
     if not trades_15.empty:
         cum_15 = trades_15["結果R"].cumsum()
-        cd_15 = [["1.5", d.strftime("%Y-%m-%d"), idx] for idx, d in enumerate(trades_15["決済日"])]
+        dates_15_str = [d.strftime("%Y-%m-%d") for d in trades_15["決済日"]]
+        cd_15 = [["1.5", d_str, idx] for idx, d_str in enumerate(dates_15_str)]
         marker_colors_15 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_15["結果R"]]
-        # ① 背景の折れ線（線はクリックを受け付けず、マーカーのみを選択可能にする）
+        # ① 背景の折れ線
         figure.add_trace(go.Scatter(
-            x=trades_15["決済日"],
+            x=dates_15_str,
             y=cum_15,
             mode="lines",
             name="RR 1:1.5 (推移線)",
@@ -1295,7 +1296,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
         ))
         # ② 最前面のクリッカブルマーカー（勝ち=緑、負け=赤、選択時=金色）
         figure.add_trace(go.Scatter(
-            x=trades_15["決済日"],
+            x=dates_15_str,
             y=cum_15,
             mode="markers",
             name="RR 1:1.5 (トレード点)",
@@ -1314,11 +1315,12 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
     # RR 1:2 の描画（折れ線とマーカーを分離）
     if not trades_20.empty:
         cum_20 = trades_20["結果R"].cumsum()
-        cd_20 = [["2.0", d.strftime("%Y-%m-%d"), idx] for idx, d in enumerate(trades_20["決済日"])]
+        dates_20_str = [d.strftime("%Y-%m-%d") for d in trades_20["決済日"]]
+        cd_20 = [["2.0", d_str, idx] for idx, d_str in enumerate(dates_20_str)]
         marker_colors_20 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_20["結果R"]]
         # ① 背景の折れ線
         figure.add_trace(go.Scatter(
-            x=trades_20["決済日"],
+            x=dates_20_str,
             y=cum_20,
             mode="lines",
             name="RR 1:2 (推移線)",
@@ -1329,7 +1331,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
         ))
         # ② 最前面のクリッカブルマーカー
         figure.add_trace(go.Scatter(
-            x=trades_20["決済日"],
+            x=dates_20_str,
             y=cum_20,
             mode="markers",
             name="RR 1:2 (トレード点)",
@@ -1354,8 +1356,9 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
                 if not m_rows.empty:
                     pos = t_df.index.get_loc(m_rows.index[0])
                     cum_v = t_df["結果R"].cumsum().iloc[pos]
+                    d_match_str = m_rows["決済日"].iloc[0].strftime("%Y-%m-%d")
                     figure.add_trace(go.Scatter(
-                        x=[m_rows["決済日"].iloc[0]],
+                        x=[d_match_str],
                         y=[cum_v],
                         mode="markers",
                         name="現在選択中",
@@ -1375,7 +1378,8 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
         xaxis_title="決済日",
         yaxis_title="累積R",
         height=480,
-                        hoverdistance=50,
+        clickmode="event+select",
+        hoverdistance=50,
         xaxis=dict(fixedrange=True),
         yaxis=dict(fixedrange=False),
         legend=dict(orientation="h"),
@@ -2133,51 +2137,41 @@ with tab3:
             use_container_width=True,
             on_select="rerun",
             selection_mode=["points", "box"],
-            key=f"equity_chart_click_{active_rr_val}"
+            key="equity_chart_interactive_v10"
         )
     except TypeError:
         st.plotly_chart(equity_fig, use_container_width=True)
 
-    # ② グラフクリックの解析（try-exceptの外で実行し、st.rerun()の内部例外が捕捉されてリセットされるバグを完全解消）
-    should_rerun = False
+    # ② グラフクリックの解析（日付またはRR設定が変更された時のみ安全にrerunし、確実に選択を固定）
     if chart_event:
         pts = _extract_chart_points(chart_event)
         if pts:
             p = pts[0]
-            c_num = _get_prop(p, "curve_number", _get_prop(p, "curveNumber", 0))
-            p_num = _get_prop(p, "point_number", _get_prop(p, "pointNumber", 0))
-            x_val = str(_get_prop(p, "x", ""))
-            point_sig = f"{c_num}_{p_num}_{x_val}"
+            clicked_rr, clicked_date = _parse_clicked_info(p, equity_fig, trades_15, trades_20)
 
-            if point_sig != st.session_state.get("_last_clicked_point_sig"):
-                st.session_state["_last_clicked_point_sig"] = point_sig
+            need_update = False
+            target_rr_label = ("RR 1:1.5" if str(clicked_rr) == "1.5" else "RR 1:2") if clicked_rr else None
 
-                clicked_rr, clicked_date = _parse_clicked_info(p, equity_fig, trades_15, trades_20)
+            if target_rr_label and target_rr_label != st.session_state.get("table_rr_choice"):
+                st.session_state["table_rr_choice"] = target_rr_label
+                need_update = True
 
-                # クリックされた線のRR設定（1:1.5 または 1:2）へ自動連動
-                if clicked_rr:
-                    target_rr_label = "RR 1:1.5" if str(clicked_rr) == "1.5" else "RR 1:2"
-                    st.session_state["table_rr_choice"] = target_rr_label
+            if clicked_date and clicked_date != st.session_state.get("chart_clicked_date"):
+                st.session_state["chart_clicked_date"] = clicked_date
+                st.session_state["chart_click_detected"] = True
 
-                # クリックされた決済日を即時反映し、下の直接選択ボタンと完全連動
-                if clicked_date:
-                    st.session_state["chart_clicked_date"] = clicked_date
-                    st.session_state["chart_click_detected"] = True
+                # 負け絞り込み中に勝ちトレードをクリックした場合、自動で「すべて表示」に切り替え
+                if st.session_state.get("filter_trades_mode") == "🔴 負けトレード（損切り・期限切れ）のみ":
+                    check_df = trades_15 if str(clicked_rr) == "1.5" else trades_20
+                    if not check_df.empty:
+                        m_match = check_df[check_df["決済日"].dt.strftime("%Y-%m-%d") == str(clicked_date)]
+                        if not m_match.empty and float(m_match.iloc[0]["結果R"]) >= 0:
+                            st.session_state["filter_trades_mode"] = "すべて表示"
 
-                    # 負け絞り込み中に勝ちトレードの点をクリックした場合、自動で「すべて表示」に切り替えてボタンを表示
-                    if st.session_state.get("filter_trades_mode") == "🔴 負けトレード（損切り・期限切れ）のみ":
-                        check_df = trades_15 if str(clicked_rr) == "1.5" else trades_20
-                        if not check_df.empty:
-                            m_match = check_df[check_df["決済日"].dt.strftime("%Y-%m-%d") == str(clicked_date)]
-                            if not m_match.empty and float(m_match.iloc[0]["結果R"]) >= 0:
-                                st.session_state["filter_trades_mode"] = "すべて表示"
+                need_update = True
 
-                    should_rerun = True
-        else:
-            st.session_state["_last_clicked_point_sig"] = None
-
-    if should_rerun:
-        safe_rerun()
+            if need_update:
+                safe_rerun()
 
     st.markdown("---")
     st.markdown("##### 🔍 検証対象トレードの選択 ＆ 敗因・勝因アナライザー")
