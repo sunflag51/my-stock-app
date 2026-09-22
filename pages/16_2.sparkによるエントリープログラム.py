@@ -359,6 +359,24 @@ def normalize_yfinance_columns(df: pd.DataFrame) -> pd.DataFrame:
 # 価格データ取得
 # =========================================================
 @st.cache_data(ttl=600, show_spinner=False)
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_market_index_data(is_japan: bool, period: str, interval: str) -> pd.DataFrame:
+    """市場全体（米国: S&P500(SPY), 日本: 日経平均(^N225)）の価格データを取得"""
+    market_symbol = "^N225" if is_japan else "SPY"
+    try:
+        raw = load_price_data(market_symbol, period, interval)
+        if raw is not None and not raw.empty:
+            m_df = pd.DataFrame(index=raw.index)
+            m_df["Market_Close"] = raw["Close"]
+            m_df["Market_SMA50"] = raw["Close"].rolling(50).mean()
+            m_df["Market_SMA200"] = raw["Close"].rolling(200).mean()
+            return m_df
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
 def load_price_data(provider_symbol: str, period: str, interval: str) -> pd.DataFrame:
     try:
         ticker = yf.Ticker(provider_symbol)
@@ -488,6 +506,19 @@ def add_indicators(
     data["Lower_Slope_3"] = data["BB_Lower"].pct_change(3) * 100
     data["Recent_Low"] = data["Low"].rolling(swing_lookback).min()
     data["Recent_High"] = data["High"].rolling(swing_high_lookback).max()
+    # 【環境フィルター指標】
+    # ② 上位足（週足20週線相当：100日移動平均線）
+    data["SMA100"] = data["Close"].rolling(100).mean()
+    data["SMA100_Slope_5"] = data["SMA100"].pct_change(5) * 100
+    data["Pass_Weekly_Trend"] = data["SMA100"].isna() | ((data["Close"] >= data["SMA100"]) & (data["SMA100_Slope_5"] >= -0.5))
+
+    # ③ ボラティリティ（地合い荒れ・ATR急拡大の抑制：50日平均の1.8倍以内）
+    data["ATR_MA50"] = data["ATR"].rolling(50).mean()
+    data["Pass_Volatility"] = data["ATR_MA50"].isna() | (data["ATR"] <= data["ATR_MA50"] * 1.8)
+
+    # ④ 出来高・エネルギー（20日平均の1.5倍以上の大口買い支え）
+    data["Pass_Volume_Surge"] = (data["Volume_MA20"] > 0) & (data["Volume"] >= data["Volume_MA20"] * 1.5)
+
 
 
 
@@ -613,8 +644,22 @@ def build_signals(
     result["Headroom"] = result["Recent_High"] - result["Close"]
     result["Pass_Headroom"] = result["Headroom"] >= (result["ATR"] * 2.0)
 
-    # 必須足切り条件（元来の5大必須項目）：ONに設定されている項目のみをAND結合（OFFは足切り免除）
+    # 必須足切り条件（個別株の必須5項目 ＋ プロ仕様の4大環境フィルター）
     mandatory_conditions = []
+    # ① 市場全体（地合い）フィルター
+    if filter_settings.get("market_regime", True) and "Pass_Market_Regime" in result.columns:
+        mandatory_conditions.append(result["Pass_Market_Regime"])
+    # ② 上位足（週足20週線相当）トレンドフィルター
+    if filter_settings.get("weekly_trend", True) and "Pass_Weekly_Trend" in result.columns:
+        mandatory_conditions.append(result["Pass_Weekly_Trend"])
+    # ③ ボラティリティ（荒れ相場回避）フィルター
+    if filter_settings.get("volatility", True) and "Pass_Volatility" in result.columns:
+        mandatory_conditions.append(result["Pass_Volatility"])
+    # ④ 出来高・エネルギー（1.5倍以上）フィルター
+    if filter_settings.get("volume_surge", False) and "Pass_Volume_Surge" in result.columns:
+        mandatory_conditions.append(result["Pass_Volume_Surge"])
+
+    # 個別株の基本足切り
     if filter_settings.get("sma200", True):
         mandatory_conditions.append(result["Pass_SMA200"])
     if filter_settings.get("no_expansion", True):
@@ -787,6 +832,10 @@ def get_condition_stats(data: pd.DataFrame, filter_settings: dict) -> list:
     total_cand = int(cand_mask.sum())
 
     defs = [
+        ("【環境①】市場全体（S&P500/日経）が50日/200日線以上", "market_regime", data.get("Pass_Market_Regime", pd.Series(True, index=data.index))),
+        ("【環境②】上位足（週足20週/100日線）が上向き＆株価が線上", "weekly_trend", data.get("Pass_Weekly_Trend", pd.Series(True, index=data.index))),
+        ("【環境③】ボラティリティ安定（ATR急拡大なし）", "volatility", data.get("Pass_Volatility", pd.Series(True, index=data.index))),
+        ("【環境④】出来高エネルギー（20日平均の1.5倍以上）", "volume_surge", data.get("Pass_Volume_Surge", pd.Series(False, index=data.index))),
         ("【必須】大局200日線以上", "sma200", data["Pass_SMA200"]),
         ("【必須】終値でバンド内へ完全復帰（タッチ中買い禁止）", "closed_inside", data["Closed_Inside_Band"]),
         ("【必須】当日は陽線で引ける（買い圧力の確認）", "bullish", data["Is_Bullish"] | data["Today_Hammer"]),
@@ -883,7 +932,13 @@ def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int,
 
 
 
+    market_name = "日経平均" if is_japan else "S&P500"
+    m_close_str = f"{bar.get('Market_Close', 0):,.1f}" if pd.notna(bar.get('Market_Close')) else "-"
     conditions = {
+        f"【環境①】市場全体（{market_name}: {m_close_str}）が50日/200日線上（地合い健全）": bool(bar.get("Pass_Market_Regime", True)),
+        "【環境②】上位足（週足20週/100日線）が上向き＆株価が線上（大局上昇）": bool(bar.get("Pass_Weekly_Trend", True)),
+        "【環境③】ボラティリティ安定（ATRが過去平均の1.8倍以内・荒れ相場なし）": bool(bar.get("Pass_Volatility", True)),
+        f"【環境④】出来高エネルギー（20日平均の1.5倍以上 / 実績: {vol_pct:.0f}%）": bool(bar.get("Pass_Volume_Surge", False)),
         f"【必須】終値でバンド内へ完全復帰（下限より上: +{diff_lower:,.2f}{unit} / タッチ中の買い禁止）": bool(bar.get("Closed_Inside_Band", False)),
         "【必須】直近3日以内にBB下限テストあり（安値が下限以下）": bool(bar.get("Touched_Lower_Recent", False)),
         "【必須】当日は陽線で引けている（買い圧力の確認）": bool(bar.get("Is_Bullish", False) or bar.get("Today_Hammer", False)),
@@ -1870,6 +1925,12 @@ with st.sidebar.expander("⚙️ 判定モード ＆ ON/OFF設定", expanded=Tru
     )
     is_strict_mode = "厳格" in filter_mode
 
+    st.markdown("**【🌍 プロ仕様・4大環境フィルター】**")
+    opt_market_regime = st.radio("① 市場全体（地合い: S&P500/日経）", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_market", help="市場指数が50日/200日線以上にある健全相場のみ買いを許可。市場全体の暴落を回避します。") == "ON"
+    opt_weekly_trend = st.radio("② 上位足（週足20週/100日線）トレンド", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_weekly", help="週足20週線相当が上向き＆株価が線上にある時のみ許可。大局下落での逆張りを排除します。") == "ON"
+    opt_volatility = st.radio("③ ボラティリティ（地合い荒れ回避）", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_volatility", help="ATRが過去平均の1.8倍以内の安定相場のみ許可。乱高下による損切り貧乏を防ぎます。") == "ON"
+    opt_volume_surge = st.radio("④ 出来高エネルギー（20日平均1.5倍以上）", ["ON", "OFF"], index=1, horizontal=True, key="cond_opt_volume_surge", help="出来高が20日平均の1.5倍以上の大口買い支えを確認。薄商いの騙しを排除します（初期値: OFF/加点用）。") == "ON"
+
     st.markdown("**【必須足切り条件（基本5項目）】**")
     opt_sma200 = st.radio("大局200日線以上", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_sma200") == "ON"
     opt_closed_inside = st.radio("終値バンド内完全復帰", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_closed_inside") == "ON"
@@ -1887,6 +1948,10 @@ with st.sidebar.expander("⚙️ 判定モード ＆ ON/OFF設定", expanded=Tru
 
 filter_settings = {
     "strict_mode": is_strict_mode,
+    "market_regime": opt_market_regime,
+    "weekly_trend": opt_weekly_trend,
+    "volatility": opt_volatility,
+    "volume_surge": opt_volume_surge,
     "sma200": opt_sma200,
     "closed_inside": opt_closed_inside,
     "bullish": opt_bullish,
@@ -1920,6 +1985,19 @@ if raw_data.empty:
 
 
 data = add_indicators(raw_data, int(bb_period), float(bb_sigma), int(atr_period), int(swing_lookback), int(mid_trend_period), int(swing_high_lookback))
+
+# 市場全体（S&P500 / 日経平均）データの取得と結合
+market_df = load_market_index_data(is_japan_stock, period, interval)
+if not market_df.empty:
+    data = data.join(market_df, how="left")
+    data["Market_Close"] = data["Market_Close"].ffill()
+    data["Market_SMA50"] = data["Market_SMA50"].ffill()
+    data["Market_SMA200"] = data["Market_SMA200"].ffill()
+    # 地合い判定：市場指数が50日線以上または200日線以上にあること
+    data["Pass_Market_Regime"] = data["Market_SMA50"].isna() | (data["Market_Close"] >= data["Market_SMA50"]) | (data["Market_Close"] >= data["Market_SMA200"])
+else:
+    data["Pass_Market_Regime"] = pd.Series(True, index=data.index)
+
 data = build_signals(data, float(tolerance_pct), float(score_threshold), filter_settings=filter_settings)
 usable_data = data.dropna(subset=["BB_Lower", "ATR", "Recent_Low"]).copy()
 
