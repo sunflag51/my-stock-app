@@ -600,7 +600,20 @@ def build_signals(
 
 
 
-    # 必須足切り条件：ラジオボタン設定（ON/OFF）に応じて動的に結合
+    # 6. 補助条件・インジケーター判定（スコアリングおよびフィルター用）
+    result["Near_Lower"] = result["Touched_Lower_Recent"]
+    result["RSI_Improving"] = (result["RSI"] > result["RSI"].shift(1)) & (result["RSI"] >= 25)
+    result["MACD_Improving"] = result["MACD_Hist"] > result["MACD_Hist"].shift(1)
+    result["Above_Mid_SMA"] = result["Mid_SMA"].notna() & (result["Close"] >= result["Mid_SMA"])
+    result["Above_SMA200"] = result["SMA200"].notna() & (result["Close"] >= result["SMA200"])
+    result["Volume_Expansion"] = (result["Volume_MA20"] > 0) & (result["Volume"] >= result["Volume_MA20"])
+    result["Lower_Not_Collapsing"] = result["Lower_Slope_3"] > -3.0
+
+    # 直近高値（天井）までの余白判定（ATRの2倍以上の空間があるか）
+    result["Headroom"] = result["Recent_High"] - result["Close"]
+    result["Pass_Headroom"] = result["Headroom"] >= (result["ATR"] * 2.0)
+
+    # 必須足切り条件：ラジオボタン設定（ON/OFF）に応じて動的に結合（全指標計算後に安全に評価）
     mandatory_conditions = []
     if filter_settings.get("sma200", True):
         mandatory_conditions.append(result["Pass_SMA200"])
@@ -632,28 +645,6 @@ def build_signals(
     else:
         result["Mandatory_Filter_Pass"] = pd.Series(True, index=result.index)
 
-
-
-
-    # 6. 補助条件スコアリング
-    result["Near_Lower"] = result["Touched_Lower_Recent"]
-    result["RSI_Improving"] = (result["RSI"] > result["RSI"].shift(1)) & (result["RSI"] >= 25)
-    result["MACD_Improving"] = result["MACD_Hist"] > result["MACD_Hist"].shift(1)
-    result["Above_Mid_SMA"] = result["Mid_SMA"].notna() & (result["Close"] >= result["Mid_SMA"])
-    result["Above_SMA200"] = result["SMA200"].notna() & (result["Close"] >= result["SMA200"])
-    result["Volume_Expansion"] = (result["Volume_MA20"] > 0) & (result["Volume"] >= result["Volume_MA20"])
-    result["Lower_Not_Collapsing"] = result["Lower_Slope_3"] > -3.0
-
-
-
-
-    # 直近高値（天井）までの余白判定（ATRの2倍以上の空間があるか）
-    result["Headroom"] = result["Recent_High"] - result["Close"]
-    result["Pass_Headroom"] = result["Headroom"] >= (result["ATR"] * 2.0)
-
-
-
-
     result["Score"] = (
         result["Closed_Inside_Band"].astype(float) * 2.0
         + result["Rebound"].astype(float) * 2.0
@@ -667,9 +658,6 @@ def build_signals(
         + result["Lower_Not_Collapsing"].astype(float) * 1.0
         + result["Pass_Headroom"].astype(float) * 1.0
     )
-
-
-
 
     # 7. エントリーシグナル
     result["Entry_Signal"] = (
