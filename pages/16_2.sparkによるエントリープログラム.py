@@ -1277,110 +1277,64 @@ def _parse_clicked_info(p, equity_fig, trades_15, trades_20):
 def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highlight_date: str = None, active_rr: str = "2.0"):
     figure = go.Figure()
 
-    # RR 1:1.5 の描画（折れ線とマーカーを分離し、クリック判定を100%マーカーに集中）
+    # RR 1:1.5 の描画（線＋マーカーを統合した単一トレース。選択中トレードは金色リングで強調）
     if not trades_15.empty:
         cum_15 = trades_15["結果R"].cumsum()
         dates_15_str = [d.strftime("%Y-%m-%d") for d in trades_15["決済日"]]
         cd_15 = [["1.5", d_str, idx] for idx, d_str in enumerate(dates_15_str)]
-        marker_colors_15 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_15["結果R"]]
-        # ① 背景の折れ線
+        m_colors_15 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_15["結果R"]]
+        sizes_15 = [24 if (highlight_date and d_str == str(highlight_date) and active_rr == "1.5") else 13 for d_str in dates_15_str]
+        borders_15 = [3.5 if (highlight_date and d_str == str(highlight_date) and active_rr == "1.5") else 1.5 for d_str in dates_15_str]
+        border_colors_15 = ["#ffd700" if (highlight_date and d_str == str(highlight_date) and active_rr == "1.5") else "white" for d_str in dates_15_str]
+
         figure.add_trace(go.Scatter(
             x=dates_15_str,
             y=cum_15,
-            mode="lines",
-            name="RR 1:1.5 (推移線)",
+            mode="lines+markers",
+            name="RR 1:1.5",
             customdata=cd_15,
+            hovertemplate="<b>%{x} (RR 1:1.5)</b><br>累積R: %{y:+.2f} R<br>👉 クリックで選択<extra></extra>",
             line=dict(color="#1f77b4", width=2),
-            hoverinfo="skip",
-            showlegend=False,
-        ))
-        # ② 最前面のクリッカブルマーカー（勝ち=緑、負け=赤、選択時=金色）
-        figure.add_trace(go.Scatter(
-            x=dates_15_str,
-            y=cum_15,
-            mode="markers",
-            name="RR 1:1.5 (トレード点)",
-            customdata=cd_15,
-            hovertemplate="<b>%{customdata[1]} (RR 1:1.5)</b><br>累積R: %{y:+.2f} R<br><extra></extra>",
             marker=dict(
-                size=14,
-                color=marker_colors_15,
-                line=dict(width=2, color="white"),
-                opacity=0.9
+                size=sizes_15,
+                color=m_colors_15,
+                line=dict(width=borders_15, color=border_colors_15),
             ),
-            selected=dict(marker=dict(color="#ffd700", opacity=1.0)),
-            unselected=dict(marker=dict(opacity=0.6)),
         ))
 
-    # RR 1:2 の描画（折れ線とマーカーを分離）
+    # RR 1:2 の描画（線＋マーカーを統合した単一トレース。選択中トレードは金色リングで強調）
     if not trades_20.empty:
         cum_20 = trades_20["結果R"].cumsum()
         dates_20_str = [d.strftime("%Y-%m-%d") for d in trades_20["決済日"]]
         cd_20 = [["2.0", d_str, idx] for idx, d_str in enumerate(dates_20_str)]
         marker_colors_20 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_20["結果R"]]
-        # ① 背景の折れ線
-        figure.add_trace(go.Scatter(
-            x=dates_20_str,
-            y=cum_20,
-            mode="lines",
-            name="RR 1:2 (推移線)",
-            customdata=cd_20,
-            line=dict(color="#ff7f0e", width=2.5),
-            hoverinfo="skip",
-            showlegend=False,
-        ))
-        # ② 最前面のクリッカブルマーカー
-        figure.add_trace(go.Scatter(
-            x=dates_20_str,
-            y=cum_20,
-            mode="markers",
-            name="RR 1:2 (トレード点)",
-            customdata=cd_20,
-            hovertemplate="<b>%{customdata[1]} (RR 1:2)</b><br>累積R: %{y:+.2f} R<br><extra></extra>",
-            marker=dict(
-                size=14,
-                color=marker_colors_20,
-                line=dict(width=2, color="white"),
-                opacity=0.95
-            ),
-            selected=dict(marker=dict(color="#ffd700", opacity=1.0)),
-            unselected=dict(marker=dict(opacity=0.6)),
-        ))
+        sizes_20 = [24 if (highlight_date and d_str == str(highlight_date) and active_rr == "2.0") else 14 for d_str in dates_20_str]
+        borders_20 = [3.5 if (highlight_date and d_str == str(highlight_date) and active_rr == "2.0") else 1.5 for d_str in dates_20_str]
+        border_colors_20 = ["#ffd700" if (highlight_date and d_str == str(highlight_date) and active_rr == "2.0") else "white" for d_str in dates_20_str]
 
-    # 現在選択中トレードの視覚的強調リング（金色の発光マーカー）
-    if highlight_date:
-        target_dfs = [trades_15, trades_20] if active_rr == "1.5" else [trades_20, trades_15]
-        for t_df in target_dfs:
-            if not t_df.empty:
-                m_rows = t_df[t_df["決済日"].dt.strftime("%Y-%m-%d") == str(highlight_date)]
-                if not m_rows.empty:
-                    pos = t_df.index.get_loc(m_rows.index[0])
-                    cum_v = t_df["結果R"].cumsum().iloc[pos]
-                    d_match_str = m_rows["決済日"].iloc[0].strftime("%Y-%m-%d")
-                    figure.add_trace(go.Scatter(
-                        x=[d_match_str],
-                        y=[cum_v],
-                        mode="markers",
-                        name="現在選択中",
-                        customdata=[[active_rr, d_match_str, pos]],
-                        marker=dict(
-                            size=22,
-                            color="rgba(255, 215, 0, 0.35)",
-                            line=dict(width=3, color="#ffd700"),
-                        ),
-                        hoverinfo="skip",
-                        showlegend=False,
-                    ))
-                    break
+        figure.add_trace(go.Scatter(
+            x=dates_20_str,
+            y=cum_20,
+            mode="lines+markers",
+            name="RR 1:2",
+            customdata=cd_20,
+            hovertemplate="<b>%{x} (RR 1:2)</b><br>累積R: %{y:+.2f} R<br>👉 クリックで選択<extra></extra>",
+            line=dict(color="#ff7f0e", width=2.5),
+            marker=dict(
+                size=sizes_20,
+                color=marker_colors_20,
+                line=dict(width=borders_20, color=border_colors_20),
+            ),
+        ))
 
     figure.add_hline(y=0, line_color="gray", line_dash="dot")
     figure.update_layout(
-        title="📈 累積R推移（RR 1:1.5 [青] ／ RR 1:2 [橙] ／ 選択トレード [金色●]）",
+        title="📈 累積R推移（RR 1:1.5 [青] ／ RR 1:2 [橙] ／ 選択トレード [金色リング●]）",
         xaxis_title="決済日",
         yaxis_title="累積R",
         height=480,
         clickmode="event+select",
-        hoverdistance=50,
+        hoverdistance=30,
         xaxis=dict(fixedrange=True),
         yaxis=dict(fixedrange=False),
         legend=dict(orientation="h"),
@@ -2138,17 +2092,26 @@ with tab3:
             use_container_width=True,
             on_select="rerun",
             selection_mode=["points", "box"],
-            key="equity_chart_interactive_v11"
+            key="equity_chart_unified_v12"
         )
     except TypeError:
         st.plotly_chart(equity_fig, use_container_width=True)
 
-    # ② グラフクリックの解析（日付またはRR設定が変更された時のみ安全にrerunし、確実に選択を固定）
+    # ② グラフクリックの解析（新規にクリックされた点を100%確実に検出し、選択を切り替え）
     if chart_event:
         pts = _extract_chart_points(chart_event)
         if pts:
-            p = pts[0]
-            clicked_rr, clicked_date = _parse_clicked_info(p, equity_fig, trades_15, trades_20)
+            current_date = st.session_state.get("chart_clicked_date")
+            new_candidates = []
+            for pt in pts:
+                c_rr, c_d = _parse_clicked_info(pt, equity_fig, trades_15, trades_20)
+                if c_d and c_d != current_date:
+                    new_candidates.append((c_rr, c_d))
+
+            if new_candidates:
+                clicked_rr, clicked_date = new_candidates[-1]
+            else:
+                clicked_rr, clicked_date = _parse_clicked_info(pts[-1], equity_fig, trades_15, trades_20)
 
             need_update = False
             target_rr_label = ("RR 1:1.5" if str(clicked_rr) == "1.5" else "RR 1:2") if clicked_rr else None
@@ -2163,9 +2126,9 @@ with tab3:
 
                 # 負け絞り込み中に勝ちトレードをクリックした場合、自動で「すべて表示」に切り替え
                 if st.session_state.get("filter_trades_mode") == "🔴 負けトレード（損切り・期限切れ）のみ":
-                    check_df = trades_15 if str(clicked_rr) == "1.5" else trades_20
-                    if not check_df.empty:
-                        m_match = check_df[check_df["決済日"].dt.strftime("%Y-%m-%d") == str(clicked_date)]
+                    target_df = trades_15 if str(clicked_rr) == "1.5" else trades_20
+                    if not target_df.empty:
+                        m_match = target_df[target_df["決済日"].dt.strftime("%Y-%m-%d") == str(clicked_date)]
                         if not m_match.empty and float(m_match.iloc[0]["結果R"]) >= 0:
                             st.session_state["filter_trades_mode"] = "すべて表示"
 
