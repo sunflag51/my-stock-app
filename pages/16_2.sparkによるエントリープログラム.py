@@ -500,8 +500,15 @@ def add_indicators(
 # =========================================================
 # シグナル判定（下限タッチ排除・バンド内完全復帰必須版）
 # =========================================================
-def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: float) -> pd.DataFrame:
+def build_signals(
+    data: pd.DataFrame,
+    tolerance_pct: float,
+    score_threshold: float,
+    filter_settings: dict = None
+) -> pd.DataFrame:
     result = data.copy()
+    if filter_settings is None:
+        filter_settings = {}
 
 
 
@@ -593,15 +600,37 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
 
 
 
-    # 必須足切り条件：
-    # 200日線以上 ＋ バンド拡大抑制（陽線反転なら免除） ＋ 【下限接触・陰線でないこと】 ＋ 【終値でバンド内に完全復帰】 ＋ 【当日は陽線または強力ピンバー】
-    result["Mandatory_Filter_Pass"] = (
-        result["Pass_SMA200"]
-        & result["Pass_No_Expansion"]
-        & (~result["Is_Bandwalk_Drop"])
-        & result["Closed_Inside_Band"]
-        & (result["Is_Bullish"] | result["Today_Hammer"])
-    )
+    # 必須足切り条件：ラジオボタン設定（ON/OFF）に応じて動的に結合
+    mandatory_conditions = []
+    if filter_settings.get("sma200", True):
+        mandatory_conditions.append(result["Pass_SMA200"])
+    if filter_settings.get("no_expansion", True):
+        mandatory_conditions.append(result["Pass_No_Expansion"])
+    if filter_settings.get("no_bandwalk", True):
+        mandatory_conditions.append(~result["Is_Bandwalk_Drop"])
+    if filter_settings.get("closed_inside", True):
+        mandatory_conditions.append(result["Closed_Inside_Band"])
+    if filter_settings.get("bullish", True):
+        mandatory_conditions.append(result["Is_Bullish"] | result["Today_Hammer"])
+    if filter_settings.get("headroom", True):
+        mandatory_conditions.append(result["Pass_Headroom"])
+    if filter_settings.get("rsi", True):
+        mandatory_conditions.append(result["RSI_Improving"])
+    if filter_settings.get("macd", True):
+        mandatory_conditions.append(result["MACD_Improving"])
+    if filter_settings.get("volume", True):
+        mandatory_conditions.append(result["Volume_Expansion"])
+    if filter_settings.get("middle_slope", True):
+        mandatory_conditions.append(result["Pass_Middle_Slope"])
+    if filter_settings.get("lower_slope", True):
+        mandatory_conditions.append(result["Lower_Not_Collapsing"])
+
+    if mandatory_conditions:
+        result["Mandatory_Filter_Pass"] = mandatory_conditions[0]
+        for cond in mandatory_conditions[1:]:
+            result["Mandatory_Filter_Pass"] = result["Mandatory_Filter_Pass"] & cond
+    else:
+        result["Mandatory_Filter_Pass"] = pd.Series(True, index=result.index)
 
 
 
@@ -746,6 +775,53 @@ def build_signals(data: pd.DataFrame, tolerance_pct: float, score_threshold: flo
 # =========================================================
 # 特定日の条件評価
 # =========================================================
+
+def get_condition_stats(data: pd.DataFrame, filter_settings: dict) -> list:
+    """過去バックテスト期間における各エントリー条件の成立実績（何回中何回ONしたか）を集計"""
+    total_bars = len(data)
+    cand_mask = data.get("Touched_Lower_Recent", pd.Series(False, index=data.index))
+    total_cand = int(cand_mask.sum())
+
+    defs = [
+        ("【必須】大局200日線以上", "sma200", data["Pass_SMA200"]),
+        ("【必須】終値でバンド内へ完全復帰（タッチ中買い禁止）", "closed_inside", data["Closed_Inside_Band"]),
+        ("【必須】当日は陽線で引ける（買い圧力の確認）", "bullish", data["Is_Bullish"] | data["Today_Hammer"]),
+        ("【必須】下落中・下限接触中ではない（下落陰線の完全否定）", "no_bandwalk", ~data["Is_Bandwalk_Drop"]),
+        ("【必須】バンド穏やか または 強い陽線反転", "no_expansion", data["Pass_No_Expansion"]),
+        ("【安全】直近高値（天井）まで十分な余白あり（ATR2倍以上）", "headroom", data["Pass_Headroom"]),
+        ("【補助】RSIが改善（基準: 25以上＆上昇）", "rsi", data["RSI_Improving"]),
+        ("【補助】MACDが改善（ヒストグラム好転）", "macd", data["MACD_Improving"]),
+        ("【補助】出来高が20日平均以上", "volume", data["Volume_Expansion"]),
+        ("【補助】20日中央線が安定（傾き-3.5%以上）", "middle_slope", data["Pass_Middle_Slope"]),
+        ("【補助】BB下限が急落していない", "lower_slope", data["Lower_Not_Collapsing"]),
+        ("【前提】直近3日以内にBB下限テストあり（安値が下限以下）", "trigger", data["Touched_Lower_Recent"]),
+        ("【反発】当日の反発を確認（陽線反転・下限回復）", "rebound", data["Rebound"]),
+    ]
+
+    stats = []
+    for label, key, mask in defs:
+        cnt_all = int(mask.sum())
+        pct_all = (cnt_all / total_bars * 100) if total_bars > 0 else 0.0
+
+        cnt_cand = int((cand_mask & mask).sum())
+        pct_cand = (cnt_cand / total_cand * 100) if total_cand > 0 else 0.0
+
+        is_on = filter_settings.get(key, True) if key not in ["trigger", "rebound"] else True
+
+        stats.append({
+            "key": key,
+            "label": label,
+            "is_on": is_on,
+            "cnt_all": cnt_all,
+            "total_bars": total_bars,
+            "pct_all": pct_all,
+            "cnt_cand": cnt_cand,
+            "total_cand": total_cand,
+            "pct_cand": pct_cand,
+        })
+    return stats
+
+
 def evaluate_target_bar(bar: pd.Series, score_threshold: float, mid_period: int, is_japan: bool = False):
     unit = "円" if is_japan else "ドル"
     close_val = float(bar["Close"])
@@ -1776,6 +1852,37 @@ swing_high_lookback = st.sidebar.number_input("直近高値（天井）の確認
 tolerance_pct = st.sidebar.number_input("BB下限接近許容幅（％）", value=1.0, step=0.1, key="sb_tolerance_pct")
 score_threshold = st.sidebar.number_input("条件成立点数", value=6.5, step=0.5, key="sb_score_threshold")
 
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 🔘 エントリー条件 ON / OFF 設定")
+st.sidebar.caption("各条件をラジオボタンで個別に有効(ON)/無効(OFF)化できます。OFFにした条件は必須足切りから除外され、バックテスト集計にも即座に連動します。")
+
+with st.sidebar.expander("⚙️ 条件ごとのON/OFFラジオボタン", expanded=True):
+    opt_sma200 = st.radio("大局200日線以上", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_sma200") == "ON"
+    opt_closed_inside = st.radio("終値バンド内完全復帰", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_closed_inside") == "ON"
+    opt_bullish = st.radio("当日は陽線反発（買い優勢）", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_bullish") == "ON"
+    opt_no_bandwalk = st.radio("下限接触・下落陰線排除", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_no_bandwalk") == "ON"
+    opt_no_expansion = st.radio("バンド急拡大の抑制", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_no_expansion") == "ON"
+    opt_headroom = st.radio("頭上余白（天井までATR2倍以上）", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_headroom") == "ON"
+    opt_rsi = st.radio("RSI改善（25以上＆上昇）", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_rsi") == "ON"
+    opt_macd = st.radio("MACDヒストグラム好転", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_macd") == "ON"
+    opt_volume = st.radio("出来高が20日平均以上", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_volume") == "ON"
+    opt_middle_slope = st.radio("20日中央線の傾き安定", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_middle_slope") == "ON"
+    opt_lower_slope = st.radio("BB下限の急落防止", ["ON", "OFF"], index=0, horizontal=True, key="cond_opt_lower_slope") == "ON"
+
+filter_settings = {
+    "sma200": opt_sma200,
+    "closed_inside": opt_closed_inside,
+    "bullish": opt_bullish,
+    "no_bandwalk": opt_no_bandwalk,
+    "no_expansion": opt_no_expansion,
+    "headroom": opt_headroom,
+    "rsi": opt_rsi,
+    "macd": opt_macd,
+    "volume": opt_volume,
+    "middle_slope": opt_middle_slope,
+    "lower_slope": opt_lower_slope,
+}
+
 
 
 
@@ -1796,7 +1903,7 @@ if raw_data.empty:
 
 
 data = add_indicators(raw_data, int(bb_period), float(bb_sigma), int(atr_period), int(swing_lookback), int(mid_trend_period), int(swing_high_lookback))
-data = build_signals(data, float(tolerance_pct), float(score_threshold))
+data = build_signals(data, float(tolerance_pct), float(score_threshold), filter_settings=filter_settings)
 usable_data = data.dropna(subset=["BB_Lower", "ATR", "Recent_Low"]).copy()
 
 
@@ -1923,11 +2030,45 @@ with tab1:
 
 
 
-    st.markdown("#### 【上の表示】合否確認テーブル")
-    condition_table = pd.DataFrame([
-        {"確認項目": name, f"判定（{target_date_str}）": ("✅ 成立・合格" if result else "❌ 未成立・警告")}
-        for name, result in conditions.items()
-    ])
+    st.markdown("#### 📋 エントリー条件 合否確認＆バックテスト集計テーブル")
+    st.caption("各条件の現在の合否判定に加え、**「過去バックテスト全体で何回中何回ON（成立）したか」** の統計実績を併記しています。")
+
+    all_stats = get_condition_stats(usable_data, filter_settings)
+    stat_dict = {s["label"].split("（")[0].strip(): s for s in all_stats}
+
+    table_rows = []
+    for name, result in conditions.items():
+        base_name = name.split("（")[0].split(":")[0].strip()
+        # Find matching stat
+        matched_stat = None
+        for s in all_stats:
+            s_base = s["label"].split("（")[0].split(":")[0].strip()
+            if s_base in base_name or base_name in s_base:
+                matched_stat = s
+                break
+
+        if matched_stat:
+            setting_str = "🟢 ON (有効)" if matched_stat["is_on"] else "⚪ OFF (無効)"
+            all_str = f"{matched_stat['cnt_all']} / {matched_stat['total_bars']}回 ({matched_stat['pct_all']:.1f}%)"
+            cand_str = f"{matched_stat['cnt_cand']} / {matched_stat['total_cand']}回 ({matched_stat['pct_cand']:.1f}%)"
+        else:
+            setting_str = "🟢 ON"
+            all_str = "-"
+            cand_str = "-"
+
+        status_str = "✅ 成立・合格" if result else "❌ 未成立・警告"
+        if matched_stat and not matched_stat["is_on"]:
+            status_str = f"{status_str} (※OFF設定中)"
+
+        table_rows.append({
+            "確認項目": name,
+            "フィルター設定": setting_str,
+            f"判定（{target_date_str}）": status_str,
+            "バックテスト成立実績 (全期間)": all_str,
+            "下限テスト候補日での成立実績": cand_str,
+        })
+
+    condition_table = pd.DataFrame(table_rows)
     display_df_safe(condition_table, use_container_width=True)
 
 
@@ -2182,6 +2323,22 @@ with tab3:
 
     st.markdown("##### 📊 バックテスト成績サマリー（リスク調整後健全性評価）")
     display_df_safe(summary_df)
+
+    st.markdown("##### 🔘 エントリー条件別 バックテスト成立頻度集計（何回中何回ONしたか）")
+    st.caption("サイドバーのラジオボタン設定と連動し、過去データ内で各フィルターがどれだけ機能（成立）したかを集計しています。")
+    bt_stats = get_condition_stats(usable_data, filter_settings)
+    bt_stat_df = pd.DataFrame([
+        {
+            "エントリー条件項目": s["label"],
+            "現在の設定": "🟢 ON (有効)" if s["is_on"] else "⚪ OFF (無効)",
+            "全データ期間での成立回数": f"{s['cnt_all']} / {s['total_bars']} 営業日",
+            "全期間成立率": f"{s['pct_all']:.1f}%",
+            "下限テスト候補での成立回数": f"{s['cnt_cand']} / {s['total_cand']} 回",
+            "候補日での成立率": f"{s['pct_cand']:.1f}%",
+        }
+        for s in bt_stats
+    ])
+    display_df_safe(bt_stat_df, use_container_width=True)
 
 
     # 主要メトリクスカード（RR 1:2 基準）
