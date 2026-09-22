@@ -5175,7 +5175,13 @@ with tab3:
             key="table_rr_choice"
         )
     with col_ctrl2:
-        filter_losses_only = st.checkbox("🔴 負けトレード（損切り・期限切れ）のみに絞り込む", value=False, key="filter_losses_only")
+        filter_mode = st.radio(
+            "絞り込みフィルター:",
+            ["すべて表示", "🔴 負けトレード（損切り・期限切れ）のみ"],
+            horizontal=True,
+            key="filter_trades_mode"
+        )
+        filter_losses_only = (filter_mode == "🔴 負けトレード（損切り・期限切れ）のみ")
 
 
 
@@ -5187,7 +5193,7 @@ with tab3:
 
     target_trade = None
     if not current_trades_df.empty:
-        # トレードリスト構築
+        # トレードリスト構築（ボタン内にもRR設定と勝敗ステータスを明記して切替を100%可視化）
         trade_items = []
         for idx, r in current_trades_df.iterrows():
             r_val = float(r["結果R"])
@@ -5197,8 +5203,8 @@ with tab3:
             d_str = r["決済日"].strftime("%Y-%m-%d")
             reason = str(r["決済理由"])
             bars = int(r["保有本数"])
-            opt_label = f"{icon} 【決済日: {d_str}】 結果: {r_val:+.2f}R ({reason}) | 保有: {bars}本"
-            btn_label = f"{icon} #{len(trade_items)+1}: {d_str} ({r_val:+.2f}R)"
+            opt_label = f"{icon} 【決済日: {d_str}】 結果: {r_val:+.2f}R ({reason}) | 保有: {bars}本 | {table_choice}"
+            btn_label = f"{icon} #{len(trade_items)+1}: {d_str} ({r_val:+.2f}R | {table_choice})"
             trade_items.append({
                 "label": opt_label,
                 "btn_label": btn_label,
@@ -5211,24 +5217,23 @@ with tab3:
 
 
         if trade_items:
-            # グラフクリックが検知された場合、該当する日付のインデックスへジャンプ
-            if st.session_state.get("chart_click_detected", False):
-                clk_d = st.session_state.get("chart_clicked_date")
-                for i, item in enumerate(trade_items):
-                    if item["date"] == clk_d:
-                        st.session_state["selected_trade_idx"] = i
+            # 日付ベースでのトレード自動追従（RR切替や負け絞り込み時にも同一日付トレードを最優先維持）
+            target_date = st.session_state.get("chart_clicked_date")
+            matched_idx = None
+            if target_date:
+                for i_item, it in enumerate(trade_items):
+                    if it["date"] == str(target_date):
+                        matched_idx = i_item
                         break
-                st.session_state["chart_click_detected"] = False
 
-
-
-
-            # インデックスの境界値安全チェック
-            curr_idx = st.session_state.get("selected_trade_idx", 0)
-            if curr_idx >= len(trade_items):
-                curr_idx = len(trade_items) - 1
-            if curr_idx < 0:
-                curr_idx = 0
+            if matched_idx is not None:
+                curr_idx = matched_idx
+            else:
+                curr_idx = st.session_state.get("selected_trade_idx", 0)
+                if curr_idx >= len(trade_items):
+                    curr_idx = len(trade_items) - 1
+                if curr_idx < 0:
+                    curr_idx = 0
             st.session_state["selected_trade_idx"] = curr_idx
 
 
