@@ -1221,7 +1221,13 @@ def _parse_clicked_info(p, equity_fig, trades_15, trades_20):
     p_idx = _get_prop(p, "point_index", _get_prop(p, "pointIndex", p_num))
     x_val = str(_get_prop(p, "x", ""))
 
-    clicked_rr = None
+    # 現在選択中デコレーション（Trace 2以降）はクリック対象から除外
+    if c_num is not None and c_num >= 2:
+        return None, None
+
+    clicked_rr = "1.5" if c_num == 0 else "2.0"
+    source_df = trades_15 if c_num == 0 else trades_20
+
     clicked_date = None
 
     # ① customdata からの取得
@@ -1233,20 +1239,7 @@ def _parse_clicked_info(p, equity_fig, trades_15, trades_20):
             clicked_rr = str(flat_cd[0])
             clicked_date = str(flat_cd[1])
 
-    # ② RR設定の自動判定
-    if not clicked_rr:
-        if c_num is not None and 0 <= c_num < len(equity_fig.data):
-            tr_name = equity_fig.data[c_num].name or ""
-            if "1.5" in tr_name or "1:1.5" in tr_name:
-                clicked_rr = "1.5"
-            elif "2" in tr_name or "1:2" in tr_name:
-                clicked_rr = "2.0"
-        if not clicked_rr:
-            clicked_rr = "1.5" if (c_num is not None and c_num <= 1) else "2.0"
-
-    source_df = trades_15 if str(clicked_rr) == "1.5" else trades_20
-
-    # ③ point_index からの直接取得（極めて確実）
+    # ② point_index からの直接取得（100%確実）
     if not clicked_date and p_idx is not None and not source_df.empty:
         try:
             idx_int = int(p_idx)
@@ -1255,37 +1248,23 @@ def _parse_clicked_info(p, equity_fig, trades_15, trades_20):
         except Exception:
             pass
 
-    # ④ x座標からのパース補完（ミリ秒タイムスタンプやISO形式対応）
+    # ③ x座標からのパース補完
     if not clicked_date and x_val:
-        s = x_val.strip()
-        if s.isdigit():
-            val = int(s)
-            import datetime
-            if val > 1e11:
-                clicked_date = datetime.datetime.utcfromtimestamp(val / 1000.0).strftime('%Y-%m-%d')
-            elif val > 1e8:
-                clicked_date = datetime.datetime.utcfromtimestamp(val).strftime('%Y-%m-%d')
-        if not clicked_date:
-            cleaned = s.split('T')[0].split(' ')[0]
-            try:
-                clicked_date = pd.to_datetime(cleaned).strftime('%Y-%m-%d')
-            except Exception:
-                clicked_date = cleaned
+        cleaned = x_val.split("T")[0].split(" ")[0]
+        if len(cleaned) == 10 and "-" in cleaned:
+            clicked_date = cleaned
 
     return clicked_rr, clicked_date
 
 def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highlight_date: str = None, active_rr: str = "2.0"):
     figure = go.Figure()
 
-    # RR 1:1.5 の描画（線＋マーカーを統合した単一トレース。選択中トレードは金色リングで強調）
+    # RR 1:1.5 の描画（折れ線＋カラフルマーカー）
     if not trades_15.empty:
         cum_15 = trades_15["結果R"].cumsum()
         dates_15_str = [d.strftime("%Y-%m-%d") for d in trades_15["決済日"]]
         cd_15 = [["1.5", d_str, idx] for idx, d_str in enumerate(dates_15_str)]
         m_colors_15 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_15["結果R"]]
-        sizes_15 = [24 if (highlight_date and d_str == str(highlight_date) and active_rr == "1.5") else 13 for d_str in dates_15_str]
-        borders_15 = [3.5 if (highlight_date and d_str == str(highlight_date) and active_rr == "1.5") else 1.5 for d_str in dates_15_str]
-        border_colors_15 = ["#ffd700" if (highlight_date and d_str == str(highlight_date) and active_rr == "1.5") else "white" for d_str in dates_15_str]
 
         figure.add_trace(go.Scatter(
             x=dates_15_str,
@@ -1296,21 +1275,19 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
             hovertemplate="<b>%{x} (RR 1:1.5)</b><br>累積R: %{y:+.2f} R<br>👉 クリックで選択<extra></extra>",
             line=dict(color="#1f77b4", width=2),
             marker=dict(
-                size=sizes_15,
+                size=13,
                 color=m_colors_15,
-                line=dict(width=borders_15, color=border_colors_15),
+                line=dict(width=1.5, color="white"),
+                opacity=0.9
             ),
         ))
 
-    # RR 1:2 の描画（線＋マーカーを統合した単一トレース。選択中トレードは金色リングで強調）
+    # RR 1:2 の描画（折れ線＋カラフルマーカー）
     if not trades_20.empty:
         cum_20 = trades_20["結果R"].cumsum()
         dates_20_str = [d.strftime("%Y-%m-%d") for d in trades_20["決済日"]]
         cd_20 = [["2.0", d_str, idx] for idx, d_str in enumerate(dates_20_str)]
         marker_colors_20 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_20["結果R"]]
-        sizes_20 = [24 if (highlight_date and d_str == str(highlight_date) and active_rr == "2.0") else 14 for d_str in dates_20_str]
-        borders_20 = [3.5 if (highlight_date and d_str == str(highlight_date) and active_rr == "2.0") else 1.5 for d_str in dates_20_str]
-        border_colors_20 = ["#ffd700" if (highlight_date and d_str == str(highlight_date) and active_rr == "2.0") else "white" for d_str in dates_20_str]
 
         figure.add_trace(go.Scatter(
             x=dates_20_str,
@@ -1321,11 +1298,37 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
             hovertemplate="<b>%{x} (RR 1:2)</b><br>累積R: %{y:+.2f} R<br>👉 クリックで選択<extra></extra>",
             line=dict(color="#ff7f0e", width=2.5),
             marker=dict(
-                size=sizes_20,
+                size=14,
                 color=marker_colors_20,
-                line=dict(width=borders_20, color=border_colors_20),
+                line=dict(width=2, color="white"),
+                opacity=0.95
             ),
         ))
+
+    # 現在選択中トレードの視覚的強調リング（直接ボタン押下時と同じ大きい金色の点）
+    if highlight_date:
+        target_dfs = [trades_15, trades_20] if active_rr == "1.5" else [trades_20, trades_15]
+        for t_df in target_dfs:
+            if not t_df.empty:
+                m_rows = t_df[t_df["決済日"].dt.strftime("%Y-%m-%d") == str(highlight_date)]
+                if not m_rows.empty:
+                    pos = t_df.index.get_loc(m_rows.index[0])
+                    cum_v = t_df["結果R"].cumsum().iloc[pos]
+                    d_match_str = m_rows["決済日"].iloc[0].strftime("%Y-%m-%d")
+                    figure.add_trace(go.Scatter(
+                        x=[d_match_str],
+                        y=[cum_v],
+                        mode="markers",
+                        name="現在選択中",
+                        marker=dict(
+                            size=22,
+                            color="rgba(255, 215, 0, 0.4)",
+                            line=dict(width=3.5, color="#ffd700"),
+                        ),
+                        hoverinfo="skip",
+                        showlegend=False,
+                    ))
+                    break
 
     figure.add_hline(y=0, line_color="gray", line_dash="dot")
     figure.update_layout(
@@ -1334,6 +1337,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
         yaxis_title="累積R",
         height=480,
         clickmode="event+select",
+        uirevision="constant_ui_state",
         hoverdistance=30,
         xaxis=dict(fixedrange=True),
         yaxis=dict(fixedrange=False),
@@ -2092,7 +2096,7 @@ with tab3:
             use_container_width=True,
             on_select="rerun",
             selection_mode=["points", "box"],
-            key="equity_chart_unified_v12"
+            key="equity_chart_unified_v13"
         )
     except TypeError:
         st.plotly_chart(equity_fig, use_container_width=True)
