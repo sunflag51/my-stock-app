@@ -3416,8 +3416,6 @@ with tab3:
         st.session_state["radio_rr_display"] = "RR 1:2"
     if "_last_chart_selection" not in st.session_state:
         st.session_state["_last_chart_selection"] = None
-    if "_chart_selected" not in st.session_state:
-        st.session_state["_chart_selected"] = False
 
 
     # ① 累積Rチャートの描画とクリックイベントの検知
@@ -3482,25 +3480,20 @@ with tab3:
             if new_date:
                 new_rr = "RR 1:1.5" if clicked_rr == "1.5" else "RR 1:2"
                 sel_id = f"{clicked_rr}_{new_date}"
-                if sel_id != st.session_state.get("_last_chart_selection"):
-                    st.session_state["_last_chart_selection"] = sel_id
-                    st.session_state["active_trade_date"] = new_date
-                    st.session_state["table_rr_choice"] = new_rr
-                    st.session_state["radio_rr_display"] = new_rr  # ラジオボタン表示も完全に同期！
-                    st.session_state["_chart_selected"] = True
-                    st.rerun()
+                st.session_state["_last_chart_selection"] = sel_id
+                st.session_state["active_trade_date"] = new_date
+                st.session_state["table_rr_choice"] = new_rr
+                st.session_state["radio_rr_display"] = new_rr  # ラジオボタン表示も完全に同期！
         else:
             # 背景余白クリック等による選択解除
-            if st.session_state.get("_chart_selected", False):
+            if st.session_state.get("_last_chart_selection") is not None:
                 st.session_state["active_trade_date"] = None
                 st.session_state["_last_chart_selection"] = None
-                st.session_state["_chart_selected"] = False
-                st.rerun()
 
 
     st.markdown("---")
     st.markdown("##### 🔍 検証対象トレードの選択 ＆ 敗因・勝因アナライザー")
-    st.caption("💡 **下のボタン一覧** や **上のグラフの点（●）** から検証したいトレードを選択してください。即座に個別ローソク足チャートと敗因診断、履歴表が切り替わります。（グラフの背景余白をクリックすると選択解除されます）")
+    st.caption("💡 **上のグラフの点（●）をクリック**、または **下のボタン一覧** から検証したいトレードを選択してください。即座に個別ローソク足チャートと敗因診断、履歴表が切り替わります。（グラフの背景余白をクリックすると選択解除されます）")
 
 
     col_ctrl1, col_ctrl2 = st.columns([1, 2])
@@ -3516,7 +3509,6 @@ with tab3:
         if table_choice != current_rr_val:
             st.session_state["table_rr_choice"] = table_choice
             st.session_state["active_trade_date"] = None
-            st.session_state["_chart_selected"] = False
             if "timeline_slider_control_v14" in st.session_state:
                 st.session_state["timeline_slider_control_v14"] = 1
             if "equity_chart_interactive" in st.session_state:
@@ -3558,6 +3550,17 @@ with tab3:
                 "r_val": r_val
             })
 
+        # スライダー手動操作時（on_changeコールバック）の同期
+        if "_slider_moved_to" in st.session_state:
+            s_idx = st.session_state.pop("_slider_moved_to")
+            if 0 <= s_idx < len(trade_items):
+                st.session_state["active_trade_date"] = trade_items[s_idx]["date"]
+                st.session_state["_last_chart_selection"] = None
+                if "equity_chart_interactive" in st.session_state:
+                    try:
+                        st.session_state["equity_chart_interactive"] = {"selection": {"points": []}}
+                    except Exception:
+                        pass
 
         if trade_items:
             # 選択中の日付からインデックスを特定
@@ -3570,6 +3573,9 @@ with tab3:
                         target_trade = item["row"]
                         break
 
+            # スライダー内部状態の同期（ボタンやチャート選択時に追従）
+            if curr_idx is not None:
+                st.session_state["timeline_slider_control_v14"] = curr_idx + 1
 
             # 操作ナビゲーション（前へ・次へボタン ＆ カウンター）
             nav_c1, nav_c2, nav_c3 = st.columns([1, 1, 4])
@@ -3578,7 +3584,6 @@ with tab3:
                     new_idx = (curr_idx - 1) if curr_idx is not None else 0
                     st.session_state["active_trade_date"] = trade_items[new_idx]["date"]
                     st.session_state["timeline_slider_control_v14"] = new_idx + 1
-                    st.session_state["_chart_selected"] = False
                     if "equity_chart_interactive" in st.session_state:
                         try:
                             st.session_state["equity_chart_interactive"] = {"selection": {"points": []}}
@@ -3591,7 +3596,6 @@ with tab3:
                     new_idx = (curr_idx + 1) if curr_idx is not None else 0
                     st.session_state["active_trade_date"] = trade_items[new_idx]["date"]
                     st.session_state["timeline_slider_control_v14"] = new_idx + 1
-                    st.session_state["_chart_selected"] = False
                     if "equity_chart_interactive" in st.session_state:
                         try:
                             st.session_state["equity_chart_interactive"] = {"selection": {"points": []}}
@@ -3606,7 +3610,7 @@ with tab3:
                     st.caption(f"全 {len(trade_items)} 件のトレードがあります（上のグラフの点 ● または 下のボタンから選択してください）")
 
 
-            # 🎯 全トレードのクイック選択ボタンパレット（確実に動作する直接選択ボタン）
+            # 🎯 全トレードのクイック選択ボタンパレット
             st.markdown("**▼ トレード直接選択ボタン（クリックすると即座に対象が切り替わります）:**")
             grid_cols = st.columns(4)
             for i, item in enumerate(trade_items):
@@ -3616,7 +3620,6 @@ with tab3:
                 if col.button(btn_text, key=f"trade_btn_v14_{item['date']}_{i}", type="primary" if is_active else "secondary"):
                     st.session_state["active_trade_date"] = item["date"]
                     st.session_state["timeline_slider_control_v14"] = i + 1
-                    st.session_state["_chart_selected"] = False
                     if "equity_chart_interactive" in st.session_state:
                         try:
                             st.session_state["equity_chart_interactive"] = {"selection": {"points": []}}
@@ -3626,26 +3629,20 @@ with tab3:
                     st.rerun()
 
 
-            # 🎚️ タイムラインスライダー
+            # 🎚️ タイムラインスライダー（on_changeコールバックで安全に操作）
+            def on_slider_change():
+                s_val = st.session_state.get("timeline_slider_control_v14", 1)
+                st.session_state["_slider_moved_to"] = s_val - 1
+
             if len(trade_items) > 1:
-                slider_val = st.slider(
+                st.slider(
                     "🎚️ タイムライン移動（スライダーを動かすと時系列で切り替わります）:",
                     min_value=1,
                     max_value=len(trade_items),
                     value=(curr_idx + 1) if curr_idx is not None else 1,
-                    key="timeline_slider_control_v14"
+                    key="timeline_slider_control_v14",
+                    on_change=on_slider_change
                 )
-                if curr_idx is not None and (slider_val - 1 != curr_idx):
-                    new_idx = slider_val - 1
-                    st.session_state["active_trade_date"] = trade_items[new_idx]["date"]
-                    st.session_state["_chart_selected"] = False
-                    if "equity_chart_interactive" in st.session_state:
-                        try:
-                            st.session_state["equity_chart_interactive"] = {"selection": {"points": []}}
-                        except Exception:
-                            pass
-                    st.session_state["_last_chart_selection"] = None
-                    st.rerun()
 
 
         else:
