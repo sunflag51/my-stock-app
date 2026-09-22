@@ -2063,11 +2063,81 @@ with tab3:
     active_date = st.session_state.get("chart_clicked_date", None)
     equity_fig = create_equity_chart(trades_15, trades_20, highlight_date=active_date, active_rr=active_rr_val)
 
-    st.plotly_chart(equity_fig, use_container_width=True)
+    # ① 累積Rチャートの描画とクリックイベントの検知（グラフの点を直接クリックして下のボタンを自動選択）
+    try:
+        chart_event = st.plotly_chart(
+            equity_fig,
+            use_container_width=True,
+            on_select="rerun",
+            selection_mode=["points", "box"],
+            key=f"equity_chart_click_{active_rr_val}"
+        )
+        pts = _extract_chart_points(chart_event)
+        if pts:
+            p = pts[0]
+            c_num = _get_prop(p, "curve_number", _get_prop(p, "curveNumber", 0))
+            p_num = _get_prop(p, "point_number", _get_prop(p, "pointNumber", 0))
+            x_val = str(_get_prop(p, "x", ""))
+            point_sig = f"{c_num}_{p_num}_{x_val}"
+
+            # 新たにクリックされた点のみ処理を実行（無限ループ・重複再実行を防止）
+            if point_sig != st.session_state.get("_last_clicked_point_sig"):
+                st.session_state["_last_clicked_point_sig"] = point_sig
+
+                cd = _get_prop(p, "customdata", None)
+                clicked_rr = None
+                clicked_date = None
+
+                if cd is not None:
+                    flat_cd = cd
+                    while isinstance(flat_cd, (list, tuple)) and len(flat_cd) > 0 and isinstance(flat_cd[0], (list, tuple)):
+                        flat_cd = flat_cd[0]
+                    if isinstance(flat_cd, (list, tuple)) and len(flat_cd) >= 2:
+                        clicked_rr = str(flat_cd[0])
+                        clicked_date = str(flat_cd[1])
+
+                if not clicked_rr:
+                    if c_num is not None and 0 <= c_num < len(equity_fig.data):
+                        tr_name = equity_fig.data[c_num].name or ""
+                        if "1.5" in tr_name or "1:1.5" in tr_name:
+                            clicked_rr = "1.5"
+                        elif "2" in tr_name or "1:2" in tr_name:
+                            clicked_rr = "2.0"
+                    if not clicked_rr:
+                        clicked_rr = "1.5" if c_num <= 1 else "2.0"
+
+                if not clicked_date and x_val:
+                    clicked_date = x_val.split("T")[0].split(" ")[0]
+
+                # クリックされた線のRR設定（1:1.5 または 1:2）へ自動連動
+                if clicked_rr:
+                    target_rr_label = "RR 1:1.5" if str(clicked_rr) == "1.5" else "RR 1:2"
+                    st.session_state["table_rr_choice"] = target_rr_label
+
+                # クリックされた決済日を即時反映し、下の直接選択ボタンと完全連動
+                if clicked_date:
+                    st.session_state["chart_clicked_date"] = clicked_date
+                    st.session_state["chart_click_detected"] = True
+
+                    # 負け絞り込み中に勝ちトレードの点をクリックした場合、自動で「すべて表示」に切り替えてボタンを表示
+                    if st.session_state.get("filter_trades_mode") == "🔴 負けトレード（損切り・期限切れ）のみ":
+                        check_df = trades_15 if str(clicked_rr) == "1.5" else trades_20
+                        if not check_df.empty:
+                            m_match = check_df[check_df["決済日"].dt.strftime("%Y-%m-%d") == str(clicked_date)]
+                            if not m_match.empty and float(m_match.iloc[0]["結果R"]) >= 0:
+                                st.session_state["filter_trades_mode"] = "すべて表示"
+
+                st.rerun()
+        else:
+            # 選択解除時
+            st.session_state["_last_clicked_point_sig"] = None
+    except (TypeError, Exception):
+        # on_select未対応の環境でもエラーを出さず安全に表示
+        st.plotly_chart(equity_fig, use_container_width=True)
 
     st.markdown("---")
     st.markdown("##### 🔍 検証対象トレードの選択 ＆ 敗因・勝因アナライザー")
-    st.caption("💡 下の **「◀ 前へ」「次へ ▶」ボタン**、**直接選択ボタン**、**スライダー**、**選択リスト** からトレードを自由に切り替えられます。")
+    st.caption("💡 **上のグラフの点（●）をクリック** すると、下のボタンが自動で押されてトレードが選択されます！もちろん **直接ボタン**、**スライダー**、**選択リスト** からも自由に切り替え可能です。")
 
     col_ctrl1, col_ctrl2 = st.columns([1, 2])
     with col_ctrl1:
