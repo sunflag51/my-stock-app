@@ -1362,6 +1362,7 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
                         y=[cum_v],
                         mode="markers",
                         name="現在選択中",
+                        customdata=[[active_rr, d_match_str, pos]],
                         marker=dict(
                             size=22,
                             color="rgba(255, 215, 0, 0.35)",
@@ -2137,7 +2138,7 @@ with tab3:
             use_container_width=True,
             on_select="rerun",
             selection_mode=["points", "box"],
-            key="equity_chart_interactive_v10"
+            key="equity_chart_interactive_v11"
         )
     except TypeError:
         st.plotly_chart(equity_fig, use_container_width=True)
@@ -2273,33 +2274,24 @@ with tab3:
                         st.session_state["chart_clicked_date"] = item["date"]
                         st.rerun()
 
-            # タイムラインスライダー（複数トレードがある場合）
-            if len(trade_items) > 1:
-                slider_val = st.slider(
-                    "🎚️ タイムライン移動（スライダーを動かすと時系列でトレードが切り替わります）:",
-                    min_value=1,
-                    max_value=len(trade_items),
-                    value=curr_idx + 1,
-                    key=f"slider_nav_{table_choice}_{filter_losses_only}_{curr_idx}"
-                )
-                if slider_val - 1 != curr_idx:
-                    st.session_state["selected_trade_idx"] = slider_val - 1
-                    st.session_state["chart_clicked_date"] = trade_items[slider_val - 1]["date"]
-                    st.rerun()
-
-            # プルダウン選択メニュー
+            # プルダウン選択メニュー（グラフクリック・直接選択ボタンと完全同期）
             sbox_labels = [item["label"] for item in trade_items]
-            selected_sbox_label = st.selectbox(
+            sbox_key = f"sbox_nav_{table_choice}_{filter_losses_only}"
+
+            def on_sbox_selected():
+                chosen_lbl = st.session_state.get(sbox_key)
+                for it in trade_items:
+                    if it["label"] == chosen_lbl:
+                        st.session_state["chart_clicked_date"] = it["date"]
+                        break
+
+            st.selectbox(
                 "📋 リストから直接選択:",
                 sbox_labels,
                 index=curr_idx,
-                key=f"sbox_nav_{table_choice}_{filter_losses_only}_{curr_idx}"
+                key=sbox_key,
+                on_change=on_sbox_selected
             )
-            picked_idx = sbox_labels.index(selected_sbox_label)
-            if picked_idx != curr_idx:
-                st.session_state["selected_trade_idx"] = picked_idx
-                st.session_state["chart_clicked_date"] = trade_items[picked_idx]["date"]
-                st.rerun()
 
             target_trade = trade_items[curr_idx]["row"]
             st.session_state["chart_clicked_date"] = trade_items[curr_idx]["date"]
