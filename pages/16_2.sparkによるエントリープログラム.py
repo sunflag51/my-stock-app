@@ -2563,11 +2563,13 @@ with tab3:
     equity_fig = create_equity_chart(trades_15, trades_20)
 
 
-    # セッションステート初期化
-    if "selected_trade_date" not in st.session_state:
-        st.session_state["selected_trade_date"] = None
+    # セッションステート初期化（単一の真実: active_trade_date）
+    if "active_trade_date" not in st.session_state:
+        st.session_state["active_trade_date"] = None
     if "table_rr_choice" not in st.session_state:
         st.session_state["table_rr_choice"] = "RR 1:2"
+    if "_last_chart_selection" not in st.session_state:
+        st.session_state["_last_chart_selection"] = None
 
     # ① 累積Rチャートの描画とクリックイベントの検知
     chart_event = st.plotly_chart(
@@ -2577,7 +2579,7 @@ with tab3:
         key="equity_chart_interactive"
     )
 
-    # グラフクリックの解析（複数の方法で確実にデータを抽出）
+    # グラフクリックの安全な解析（ゾンビ上書きループを完全防止）
     if chart_event:
         pts = []
         if isinstance(chart_event, dict):
@@ -2586,34 +2588,38 @@ with tab3:
             pts = chart_event.selection.points
 
         if pts:
-            p = pts[0]
-            cd = p.get("customdata") if isinstance(p, dict) else getattr(p, "customdata", None)
-            p_idx = p.get("point_index") if isinstance(p, dict) else getattr(p, "point_index", None)
-            c_num = p.get("curve_number") if isinstance(p, dict) else getattr(p, "curve_number", 0)
+            # 選択された点の固有ID（シリアライズ）
+            sel_id = str(pts[0])
+            # 前回処理したイベントと異なる「新規のクリック」の時だけ状態を更新する！
+            if sel_id != st.session_state.get("_last_chart_selection"):
+                st.session_state["_last_chart_selection"] = sel_id
+                p = pts[0]
+                cd = p.get("customdata") if isinstance(p, dict) else getattr(p, "customdata", None)
+                p_idx = p.get("point_index") if isinstance(p, dict) else getattr(p, "point_index", None)
+                c_num = p.get("curve_number") if isinstance(p, dict) else getattr(p, "curve_number", 0)
 
-            clicked_rr = "2.0"
-            clicked_idx = 0
+                clicked_rr = "2.0"
+                clicked_idx = 0
 
-            if cd and isinstance(cd, (list, tuple)) and len(cd) >= 2:
-                clicked_rr = str(cd[0])
-                clicked_idx = int(cd[1])
-            else:
-                clicked_rr = "1.5" if c_num == 0 else "2.0"
-                if p_idx is not None:
-                    clicked_idx = int(p_idx)
+                if cd and isinstance(cd, (list, tuple)) and len(cd) >= 2:
+                    clicked_rr = str(cd[0])
+                    clicked_idx = int(cd[1])
+                else:
+                    clicked_rr = "1.5" if c_num == 0 else "2.0"
+                    if p_idx is not None:
+                        clicked_idx = int(p_idx)
 
-            source_df = trades_15 if clicked_rr == "1.5" else trades_20
-            if 0 <= clicked_idx < len(source_df):
-                new_date = source_df.iloc[clicked_idx]["決済日"].strftime("%Y-%m-%d")
-                new_rr = "RR 1:1.5" if clicked_rr == "1.5" else "RR 1:2"
-                if st.session_state.get("selected_trade_date") != new_date or st.session_state.get("table_rr_choice") != new_rr:
-                    st.session_state["selected_trade_date"] = new_date
+                source_df = trades_15 if clicked_rr == "1.5" else trades_20
+                if 0 <= clicked_idx < len(source_df):
+                    new_date = source_df.iloc[clicked_idx]["決済日"].strftime("%Y-%m-%d")
+                    new_rr = "RR 1:1.5" if clicked_rr == "1.5" else "RR 1:2"
+                    st.session_state["active_trade_date"] = new_date
                     st.session_state["table_rr_choice"] = new_rr
                     st.rerun()
 
     st.markdown("---")
     st.markdown("##### 🔍 検証対象トレードの選択 ＆ 敗因・勝因アナライザー")
-    st.caption("💡 **上のグラフの点（●）をクリック**、または **下のボタン一覧** から検証したいトレードを選択してください。即座に個別ローソク足チャートと敗因診断、履歴表が切り替わります。")
+    st.caption("💡 **下のボタン一覧** や **上のグラフの点（●）** から検証したいトレードを選択してください。即座に個別ローソク足チャートと敗因診断、履歴表が切り替わります。")
 
     col_ctrl1, col_ctrl2 = st.columns([1, 2])
     with col_ctrl1:
@@ -2627,6 +2633,7 @@ with tab3:
         )
         if table_choice != current_rr_val:
             st.session_state["table_rr_choice"] = table_choice
+            st.session_state["_last_chart_selection"] = None
             st.rerun()
 
     with col_ctrl2:
@@ -2659,7 +2666,7 @@ with tab3:
 
         if trade_items:
             # 選択中の日付からインデックスを特定
-            active_date = st.session_state.get("selected_trade_date", None)
+            active_date = st.session_state.get("active_trade_date", None)
             curr_idx = 0
             if active_date:
                 for i, item in enumerate(trade_items):
@@ -2667,21 +2674,21 @@ with tab3:
                         curr_idx = i
                         break
 
-            # 選択されたトレードを決定
+            # 選択されたトレードを決定しセッションを同期
             target_trade = trade_items[curr_idx]["row"]
-            st.session_state["selected_trade_date"] = trade_items[curr_idx]["date"]
+            st.session_state["active_trade_date"] = trade_items[curr_idx]["date"]
 
             # 操作ナビゲーション（前へ・次へボタン ＆ カウンター）
             nav_c1, nav_c2, nav_c3 = st.columns([1, 1, 4])
             with nav_c1:
                 if st.button("◀ 前のトレード", key="btn_prev_nav", disabled=(curr_idx == 0)):
-                    new_d = trade_items[curr_idx - 1]["date"]
-                    st.session_state["selected_trade_date"] = new_d
+                    st.session_state["active_trade_date"] = trade_items[curr_idx - 1]["date"]
+                    st.session_state["_last_chart_selection"] = None
                     st.rerun()
             with nav_c2:
                 if st.button("次のトレード ▶", key="btn_next_nav", disabled=(curr_idx >= len(trade_items) - 1)):
-                    new_d = trade_items[curr_idx + 1]["date"]
-                    st.session_state["selected_trade_date"] = new_d
+                    st.session_state["active_trade_date"] = trade_items[curr_idx + 1]["date"]
+                    st.session_state["_last_chart_selection"] = None
                     st.rerun()
             with nav_c3:
                 st.caption(f"全 {len(trade_items)} 件中 **{curr_idx + 1}** 件目を選択中 （決済日: **{trade_items[curr_idx]['date']}** ／ 結果: **{trade_items[curr_idx]['r_val']:+.2f} R**）")
@@ -2691,10 +2698,11 @@ with tab3:
             grid_cols = st.columns(4)
             for i, item in enumerate(trade_items):
                 col = grid_cols[i % 4]
-                is_active = (i == curr_idx)
+                is_active = (item["date"] == st.session_state["active_trade_date"])
                 btn_text = f"👉 {item['btn_label']}" if is_active else item['btn_label']
-                if col.button(btn_text, key=f"trade_palette_{item['date']}_{i}", type="primary" if is_active else "secondary"):
-                    st.session_state["selected_trade_date"] = item["date"]
+                if col.button(btn_text, key=f"trade_btn_v14_{item['date']}_{i}", type="primary" if is_active else "secondary"):
+                    st.session_state["active_trade_date"] = item["date"]
+                    st.session_state["_last_chart_selection"] = None
                     st.rerun()
 
             # 🎚️ タイムラインスライダー
@@ -2704,10 +2712,11 @@ with tab3:
                     min_value=1,
                     max_value=len(trade_items),
                     value=curr_idx + 1,
-                    key="timeline_slider_control"
+                    key="timeline_slider_control_v14"
                 )
                 if slider_val - 1 != curr_idx:
-                    st.session_state["selected_trade_date"] = trade_items[slider_val - 1]["date"]
+                    st.session_state["active_trade_date"] = trade_items[slider_val - 1]["date"]
+                    st.session_state["_last_chart_selection"] = None
                     st.rerun()
 
         else:
@@ -2758,9 +2767,10 @@ with tab3:
         display_trades["利確目標"] = display_trades["利確目標"].map(lambda x: f"{x:,.2f}")
         display_trades["決済価格"] = display_trades["決済価格"].map(lambda x: f"{x:,.2f}")
 
-        # 選択中の決済日
-        match_date = target_trade["決済日"].strftime("%Y-%m-%d") if target_trade is not None else None
-
+        # 選択中の決済日（active_trade_date と直接完全一致判定）
+        match_date = st.session_state.get("active_trade_date", None)
+        if not match_date and target_trade is not None:
+            match_date = target_trade["決済日"].strftime("%Y-%m-%d")
 
         display_trades["選択状態"] = display_trades["決済日Str"].map(
             lambda x: "👉 【選択中】" if (match_date and x == match_date) else ""
