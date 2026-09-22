@@ -2610,8 +2610,10 @@ with tab3:
 
     target_trade = None
     if not current_trades_df.empty:
-        # トレード選択用の選択肢リストを作成
-        trade_options = []
+        # トレード選択用の選択肢（キー文字列）とマッピングを作成
+        trade_keys = []
+        trade_labels = {}
+        trade_map = {}
         for idx, r in current_trades_df.iterrows():
             r_val = float(r["結果R"])
             if filter_losses_only and r_val >= 0:
@@ -2622,26 +2624,28 @@ with tab3:
             bars = int(r["保有本数"])
             opt_key = f"{d_str}_{idx}"
             opt_label = f"{icon} 【決済日: {d_str}】 結果: {r_val:+.2f}R ({reason}) | 保有: {bars}本"
-            trade_options.append((opt_label, opt_key, r))
+            trade_keys.append(opt_key)
+            trade_labels[opt_key] = opt_label
+            trade_map[opt_key] = r
 
         # グラフクリックから連動したデフォルトインデックスの特定
         default_opt_idx = 0
         current_sel_date = st.session_state.get("selected_trade_date", None)
         if current_sel_date:
-            for i, (lbl, k, r) in enumerate(trade_options):
-                if r["決済日"].strftime("%Y-%m-%d") == current_sel_date:
+            for i, k in enumerate(trade_keys):
+                if trade_map[k]["決済日"].strftime("%Y-%m-%d") == current_sel_date:
                     default_opt_idx = i
                     break
 
-        if trade_options:
-            selected_option_tuple = st.selectbox(
+        if trade_keys:
+            selected_key = st.selectbox(
                 "📋 検証するトレードを選択（グラフクリックでも自動で切り替わります）:",
-                trade_options,
+                trade_keys,
                 index=default_opt_idx,
-                format_func=lambda x: x[0],
+                format_func=lambda k: trade_labels.get(k, k),
                 key=f"trade_selectbox_{table_choice}_{filter_losses_only}"
             )
-            target_trade = selected_option_tuple[2]
+            target_trade = trade_map[selected_key]
             st.session_state["selected_trade_date"] = target_trade["決済日"].strftime("%Y-%m-%d")
         else:
             st.info("条件に一致するトレードがありませんでした。")
