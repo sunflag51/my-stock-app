@@ -1280,6 +1280,8 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
     # RR 1:1.5 の描画（折れ線とマーカーを分離し、クリック判定を100%マーカーに集中）
     if not trades_15.empty:
         cum_15 = trades_15["結果R"].cumsum()
+        cd_15 = [["1.5", d.strftime("%Y-%m-%d"), idx] for idx, d in enumerate(trades_15["決済日"])]
+        marker_colors_15 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_15["結果R"]]
         # ① 背景の折れ線（線はクリックを受け付けず、マーカーのみを選択可能にする）
         figure.add_trace(go.Scatter(
             x=trades_15["決済日"],
@@ -1292,8 +1294,6 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
             showlegend=False,
         ))
         # ② 最前面のクリッカブルマーカー（勝ち=緑、負け=赤、選択時=金色）
-        cd_15 = [["1.5", d.strftime("%Y-%m-%d"), idx] for idx, d in enumerate(trades_15["決済日"])]
-        marker_colors_15 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_15["結果R"]]
         figure.add_trace(go.Scatter(
             x=trades_15["決済日"],
             y=cum_15,
@@ -1314,6 +1314,8 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
     # RR 1:2 の描画（折れ線とマーカーを分離）
     if not trades_20.empty:
         cum_20 = trades_20["結果R"].cumsum()
+        cd_20 = [["2.0", d.strftime("%Y-%m-%d"), idx] for idx, d in enumerate(trades_20["決済日"])]
+        marker_colors_20 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_20["結果R"]]
         # ① 背景の折れ線
         figure.add_trace(go.Scatter(
             x=trades_20["決済日"],
@@ -1326,8 +1328,6 @@ def create_equity_chart(trades_15: pd.DataFrame, trades_20: pd.DataFrame, highli
             showlegend=False,
         ))
         # ② 最前面のクリッカブルマーカー
-        cd_20 = [["2.0", d.strftime("%Y-%m-%d"), idx] for idx, d in enumerate(trades_20["決済日"])]
-        marker_colors_20 = ["#2ca02c" if r > 0 else ("#d62728" if r < 0 else "#7f7f7f") for r in trades_20["結果R"]]
         figure.add_trace(go.Scatter(
             x=trades_20["決済日"],
             y=cum_20,
