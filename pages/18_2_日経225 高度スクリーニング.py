@@ -23,7 +23,6 @@ DATA_FILE_JP = os.path.join(DATA_DIR, "nikkei225_japanese_spreadsheet.csv")
 st.set_page_config(page_title="日経225 高度スクリーニング", layout="wide")
 
 DEFAULT_CONFIG = {
-    # 日本語版Wikipediaから取得
     "nikkei225_url": (
         "https://ja.wikipedia.org/wiki/%E6%97%A5%E7%B5%8C%E5%B9%B3%E5%9D%87%E6%A0%AA%E4%BE%A1"
     ),
@@ -77,7 +76,7 @@ DEFAULT_CONFIG = {
 }
 
 # ============================================================
-# 日経225 代表銘柄バックアップリスト（通信障害時の自動安全装置）
+# 日経225 代表銘柄バックアップリスト
 # ============================================================
 NIKKEI225_FALLBACK = [
     {"code": "7203", "Security": "トヨタ自動車", "Sector": "自動車"},
@@ -208,7 +207,6 @@ def get_saved_data_time():
 # ============================================================
 @st.cache_data(ttl=3600 * 24)
 def get_nikkei225_constituents(url):
-  """日本語版Wikipediaから業種別テーブルを巡回して日経225構成銘柄を取得"""
   storage_options = {
       "User-Agent": (
           "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,"
@@ -220,7 +218,6 @@ def get_nikkei225_constituents(url):
     dfs = []
     for t in tables:
       cols = [str(c).strip() for c in t.columns]
-      # 「証券コード」と「銘柄」の列を持つテーブルをすべて収集
       if any("証券コード" in c or "コード" in c for c in cols) and any(
           "銘柄" in c for c in cols
       ):
@@ -244,7 +241,6 @@ def get_nikkei225_constituents(url):
   except Exception:
     pass
 
-  # 万が一Wikipediaの取得に失敗した場合は内蔵バックアップリストを使用
   fallback_df = pd.DataFrame(NIKKEI225_FALLBACK)
   fallback_df["yahoo_symbol"] = fallback_df["code"] + ".T"
   fallback_df["display_symbol"] = fallback_df["code"] + ".T"
@@ -289,6 +285,22 @@ def get_first_info_value(info, names):
     if not pd.isna(value):
       return value
   return np.nan
+
+
+def get_dividend_yield(info):
+  """【修正】配当利回りを小数（例: 2.8%なら 0.028）に正規化する関数"""
+  raw_val = safe_float(
+      info.get("dividendYield") or info.get("trailingAnnualDividendYield")
+  )
+  if pd.isna(raw_val) or raw_val <= 0:
+    return np.nan
+
+  # yfinanceでは日本株などで最初からパーセント形式（例: 2.8）で返るケースがある
+  # 0.50（50%）を超えている場合は「すでにパーセント数値」と判定して100で割る
+  if raw_val > 0.50:
+    return raw_val / 100.0
+
+  return raw_val
 
 
 def get_market_cap(ticker, info):
@@ -409,7 +421,6 @@ def analyze_company(company):
   high_52w = safe_float(info.get("fiftyTwoWeekHigh"))
   beta = safe_float(info.get("beta"))
 
-  # 実際の業種名が取れる場合は反映
   sector_name = company.get("Sector", "日経225")
   if info.get("sector"):
     sector_name = info.get("sector")
@@ -424,6 +435,9 @@ def analyze_company(company):
       if (pd.notna(current_price) and pd.notna(high_52w) and high_52w > 0)
       else np.nan
   )
+
+  # 正規化した配当利回りを取得
+  dividend_yield = get_dividend_yield(info)
 
   return {
       "code": company["code"],
@@ -460,7 +474,7 @@ def analyze_company(company):
       ),
       "ev_to_ebitda": get_first_info_value(info, ["enterpriseToEbitda"]),
       "peg_ratio": get_first_info_value(info, ["trailingPegRatio", "pegRatio"]),
-      "dividend_yield": get_first_info_value(info, ["dividendYield"]),
+      "dividend_yield": dividend_yield,
   }
 
 
