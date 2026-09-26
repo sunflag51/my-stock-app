@@ -1121,4 +1121,36 @@ def main():
         index=False, encoding="utf-8-sig"
     ).encode("utf-8-sig")
     col2.download_button(
-        label=f"📄 日経225全{len(all_companies
+        label=f"📄 日経225全{len(all_companies_jp)}銘柄データ (日本語CSV)",
+        data=all_csv_data,
+        file_name="nikkei225_all_companies_sorted.csv",
+        mime="text/csv",
+    )
+
+    # Webプレビュー表示
+    st.markdown("---")
+    total_passed = len(filtered_df)
+
+    st.subheader(
+        f"🏆 条件合致 {total_passed} 銘柄（スコア上位 {len(screened)} 銘柄を表示中）"
+    )
+
+    if filtered_df.empty:
+      st.warning(
+          "⚠️ 設定した条件に合致する銘柄がありませんでした。サイドバーのフィルター条件を緩めてください。"
+      )
+    else:
+      display_df = create_display_dataframe(screened)
+      st.dataframe(display_df, use_container_width=True)
+
+    if errors:
+      with st.expander(f"⚠️ 取得エラー銘柄一覧 ({len(errors)}件)"):
+        st.dataframe(pd.DataFrame(errors))
+  else:
+    st.warning(
+        "👈 サイドバーの「🔄 最新データを取得（上書き保存）」ボタンを押してデータを取得してください。"
+    )
+
+
+if __name__ == "__main__":
+  main()
