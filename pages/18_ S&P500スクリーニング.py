@@ -1,4 +1,6 @@
+import datetime
 import io
+import os
 import time
 import warnings
 import numpy as np
@@ -7,6 +9,13 @@ import streamlit as st
 import yfinance as yf
 
 warnings.filterwarnings("ignore")
+
+# ============================================================
+# 保存先フォルダ・ファイルの設定
+# ============================================================
+DATA_DIR = "data"
+DATA_FILE_RAW = os.path.join(DATA_DIR, "sp500_raw_data.csv")
+DATA_FILE_JP = os.path.join(DATA_DIR, "sp500_japanese_spreadsheet.csv")
 
 # ============================================================
 # 初期設定 (Streamlit画面の設定)
@@ -93,6 +102,37 @@ JAPANESE_COLUMNS_MAP = {
     "valuation_score": "割安スコア",
     "composite_score": "総合スコア",
 }
+
+
+# ============================================================
+# ローカルファイル保存・読み込み関数
+# ============================================================
+def save_data_to_local(df):
+  """取得したデータをローカルのdataフォルダに保存"""
+  os.makedirs(DATA_DIR, exist_ok=True)
+  # 1. プログラム内部処理用
+  df.to_csv(DATA_FILE_RAW, index=False)
+  # 2. スプレッドシート/Excelで直接開く用（日本語列名・UTF-8 BOM）
+  jp_df = create_spreadsheet_export_dataframe(df)
+  jp_df.to_csv(DATA_FILE_JP, index=False, encoding="utf-8-sig")
+
+
+def load_data_from_local():
+  """ローカルのdataフォルダからデータを読み込み"""
+  if os.path.exists(DATA_FILE_RAW):
+    try:
+      return pd.read_csv(DATA_FILE_RAW)
+    except Exception:
+      return None
+  return None
+
+
+def get_saved_data_time():
+  """保存されたファイルの最終更新日時を取得"""
+  if os.path.exists(DATA_FILE_RAW):
+    mtime = os.path.getmtime(DATA_FILE_RAW)
+    return datetime.datetime.fromtimestamp(mtime).strftime("%Y/%m/%d %H:%M:%S")
+  return None
 
 
 # ============================================================
@@ -506,7 +546,7 @@ def create_spreadsheet_export_dataframe(dataframe):
   ]
   for col in percent_columns:
     if col in df.columns:
-      df[col] = df[col] * 100
+      df[col] = pd.to_numeric(df[col], errors="coerce") * 100
 
   cols_to_use = [c for c in JAPANESE_COLUMNS_MAP.keys() if c in df.columns]
   df = df[cols_to_use].rename(columns=JAPANESE_COLUMNS_MAP)
@@ -590,353 +630,3 @@ def get_score_logic_dataframe():
           "指標名": "PSR",
           "評価基準": "低いほど高得点(割安)",
           "重み": "0.5",
-          "概要": "売上高に対する株価倍率",
-      },
-      {
-          "カテゴリ": "割安度(40%配分)",
-          "指標名": "PEGレシオ",
-          "評価基準": "低いほど高得点(割安)",
-          "重み": "0.5",
-          "概要": "PERを成長率で割った指標(成長に対して割安か)",
-      },
-      {
-          "カテゴリ": "テクニカル指標",
-          "指標名": "200日線上",
-          "評価基準": "株価 >= 200日SMA",
-          "重み": "-",
-          "概要": "長期上昇トレンド判定（落ちてくるナイフの回避）",
-      },
-      {
-          "カテゴリ": "テクニカル指標",
-          "指標名": "52週高値乖離率",
-          "評価基準": "0%に近いほど強い",
-          "重み": "-",
-          "概要": "新高値近辺のリーダー株を捉えるモメンタム指標",
-      },
-      {
-          "カテゴリ": "リスク指標",
-          "指標名": "ベータ値(Beta)",
-          "評価基準": "<1.0=低変動, >1.2=高成長",
-          "重み": "-",
-          "概要": "市場全体に対する株価のボラティリティ感応度",
-      },
-  ]
-  return pd.DataFrame(data)
-
-
-def get_excel_download_with_autofilter(
-    screened_jp, all_companies_jp, errors_df
-):
-  try:
-    import openpyxl
-    from openpyxl.utils import get_column_letter
-  except ImportError:
-    return None
-
-  output = io.BytesIO()
-  with pd.ExcelWriter(output, engine="openpyxl") as writer:
-    all_companies_jp.to_excel(
-        writer, sheet_name="S&P500全銘柄(ソート済)", index=False
-    )
-    screened_jp.to_excel(writer, sheet_name="条件通過上位銘柄", index=False)
-    score_logic_df = get_score_logic_dataframe()
-    score_logic_df.to_excel(
-        writer, sheet_name="総合スコアの算出基準", index=False
-    )
-
-    if not errors_df.empty:
-      errors_df.to_excel(writer, sheet_name="取得エラー", index=False)
-
-    workbook = writer.book
-    for sheet_name in ["S&P500全銘柄(ソート済)", "条件通過上位銘柄"]:
-      if sheet_name in workbook.sheetnames:
-        ws = workbook[sheet_name]
-        ws.auto_filter.ref = ws.dimensions
-        for col in ws.columns:
-          max_len = max(len(str(cell.value or "")) for cell in col)
-          col_letter = get_column_letter(col[0].column)
-          ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
-
-  return output.getvalue()
-
-
-# ============================================================
-# Streamlit UI (メイン画面)
-# ============================================================
-def main():
-  st.title("🦅 S&P500 高度スクリーニング")
-  st.write(
-      "ファンダメンタルズ（業績・割安性）とテクニカル（トレンド・モメンタム）を統合したスクリーニングツールです。"
-  )
-
-  with st.expander("ℹ️ 【解説】総合スコアおよび各種指標について"):
-    st.markdown("""
-        ### 📊 総合スコア (0〜100点満点)
-        全銘柄の中で各数値を順位付け（パーセンタイル順位）し、**「企業の質（稼ぐ力・健全性）」**と**「株価の割安度」**を統合したスコアです。
-        
-        $$\\text{総合スコア} = (\\text{クオリティスコア} \\times 0.60) + (\\text{割安スコア} \\times 0.40)$$
-        """)
-
-    col_q, col_v = st.columns(2)
-    with col_q:
-      st.markdown("#### ① クオリティスコア (配分 60%)")
-      st.caption("稼ぐ力・利益の質・財務健全性を評価（高いほど高得点）")
-      st.markdown("""
-            * **売上高成長率 (1年)** (重み: 1.0)
-            * **売上高3年CAGR (年平均成長率)** (重み: 1.0)
-            * **純利益率** (重み: 1.0)
-            * **ROE (自己資本利益率)** (重み: 1.0)
-            * **FCF利益率 (フリーキャッシュフロー/売上高)** (重み: 1.0)
-            * **ネット有利子負債 / EBITDA** (重み: 0.5) ※低いほど高得点
-            """)
-    with col_v:
-      st.markdown("#### ② 割安スコア (配分 40%)")
-      st.caption("株価の割安度を評価（低いほど高得点・割安）")
-      st.markdown("""
-            * **実績PER** (重み: 1.0)
-            * **予想PER** (重み: 1.0)
-            * **EV / EBITDA** (重み: 1.0)
-            * **PBR (株価純資産倍率)** (重み: 0.5)
-            * **PSR (株価売上高倍率)** (重み: 0.5)
-            * **PEGレシオ** (重み: 0.5)
-            """)
-
-    st.markdown("---")
-    st.markdown("#### 🎯 実践的な非財務・テクニカルフィルターの役割")
-    st.markdown("""
-        * **200日移動平均線（長期トレンド）**: いくら財務が良くても下落トレンドにある株（バリューの罠）を避け、機関投資家の買い支えがある銘柄を抽出します。
-        * **52週高値乖離率（モメンタム）**: 市場の資金が集中している「最強の主導株」を捉えるための指標です。
-        * **ベータ値（ボラティリティ）**: 市場に対する感応度です。相場波乱期には 1.0 未満のディフェンシブ株、強気相場では 1.2 以上の成長株が有効です。
-        """)
-
-  if "all_companies" not in st.session_state:
-    st.session_state["all_companies"] = None
-  if "errors" not in st.session_state:
-    st.session_state["errors"] = []
-
-  st.sidebar.header("1. 実行設定")
-  max_tickers = st.sidebar.number_input(
-      "取得・分析する銘柄数",
-      min_value=1,
-      max_value=510,
-      value=503,
-      step=50,
-      help="500銘柄すべて取得する場合は約15〜20分かかります。テスト時は少なめに設定してください。",
-  )
-
-  st.sidebar.markdown("---")
-  st.sidebar.header("2. 財務フィルター設定")
-  use_financial_filter = st.sidebar.checkbox(
-      "財務フィルターを適用する",
-      value=False,
-      help="純利益率15%以上、ROE15%以上、PER40倍以下などの厳格な財務基準を適用します。",
-  )
-
-  st.sidebar.markdown("---")
-  st.sidebar.header("3. 🎯 テクニカル・非財務フィルター")
-
-  filter_sma200 = st.sidebar.checkbox(
-      "長期上昇トレンドのみ (株価 > 200日線)",
-      value=True,
-      help="株価が200日移動平均線の上にある銘柄のみに限定し、下落トレンドの銘柄（バリューの罠）を排除します。",
-  )
-
-  filter_momentum = st.sidebar.checkbox(
-      "高値圏モメンタム株 (52週高値から-20%以内)",
-      value=False,
-      help="直近52週間の最高値から20%以内にある強い銘柄のみを抽出します。",
-  )
-
-  beta_option = st.sidebar.selectbox(
-      "ベータ値（リスク感応度）",
-      options=[
-          "指定なし（全銘柄）",
-          "低ボラ・守り重視 (Beta < 1.0)",
-          "高ボラ・攻め重視 (Beta > 1.2)",
-      ],
-      index=0,
-      help="市場平均に対する値動きの大きさを選択します。",
-  )
-
-  min_dividend = st.sidebar.slider(
-      "最低配当利回り (%)",
-      min_value=0.0,
-      max_value=6.0,
-      value=0.0,
-      step=0.5,
-      help="配当狙いの場合に設定します。0%は無配株も含みます。",
-  )
-
-  all_sectors = [
-      "Information Technology",
-      "Health Care",
-      "Financials",
-      "Consumer Discretionary",
-      "Communication Services",
-      "Industrials",
-      "Consumer Staples",
-      "Energy",
-      "Utilities",
-      "Real Estate",
-      "Materials",
-  ]
-  selected_sectors = st.sidebar.multiselect(
-      "セクター絞り込み",
-      options=all_sectors,
-      default=all_sectors,
-      help="選択したセクターの銘柄のみが表示されます。",
-  )
-
-  st.sidebar.markdown("---")
-  top_n = st.sidebar.number_input(
-      "Webプレビューに表示する上位銘柄数",
-      min_value=5,
-      max_value=200,
-      value=50,
-      step=5,
-      help="抽出された銘柄のうち、総合スコア上位何件を表示するか設定します。",
-  )
-
-  config = DEFAULT_CONFIG.copy()
-
-  if st.button("データ取得を開始", type="primary"):
-    constituents = get_sp500_constituents(config["sp500_url"])
-    constituents = constituents.head(max_tickers)
-    total = len(constituents)
-
-    results, errors = [], []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-
-    for number, (_, company) in enumerate(
-        constituents.iterrows(), start=1
-    ):
-      symbol = company["display_symbol"]
-      status_text.text(
-          f"[{number:>3}/{total}] 財務・バリュエーション取得中：{symbol} ..."
-      )
-
-      try:
-        result = analyze_company(company)
-        results.append(result)
-      except Exception as e:
-        errors.append({
-            "symbol": symbol,
-            "company_name": company["Security"],
-            "error": str(e),
-        })
-
-      time.sleep(config["request_sleep_seconds"])
-      progress_bar.progress(number / total)
-
-    if not results:
-      st.error("有効なデータを取得できませんでした。")
-      return
-
-    status_text.info("スコア計算中...")
-    all_companies = pd.DataFrame(results)
-    all_companies = add_scores(all_companies, config)
-
-    sort_by = config.get("sort_by", "composite_score")
-    sort_asc = config.get("sort_ascending", False)
-    all_companies = all_companies.sort_values(
-        sort_by, ascending=sort_asc, na_position="last"
-    ).reset_index(drop=True)
-
-    st.session_state["all_companies"] = all_companies
-    st.session_state["errors"] = errors
-    status_text.success(f"完了しました！（全{len(all_companies)}銘柄取得）")
-
-  if st.session_state["all_companies"] is not None:
-    all_companies = st.session_state["all_companies"]
-    errors = st.session_state["errors"]
-
-    filtered_df = all_companies.copy()
-
-    if use_financial_filter:
-      filtered_df = apply_financial_filters(filtered_df, config)
-
-    if selected_sectors:
-      filtered_df = filtered_df[filtered_df["sector"].isin(selected_sectors)]
-
-    if filter_sma200:
-      filtered_df = filtered_df[filtered_df["is_above_sma200"] == True]
-
-    if filter_momentum:
-      filtered_df = filtered_df[filtered_df["pct_from_52w_high"] >= -0.20]
-
-    if beta_option == "低ボラ・守り重視 (Beta < 1.0)":
-      filtered_df = filtered_df[filtered_df["beta"] < 1.0]
-    elif beta_option == "高ボラ・攻め重視 (Beta > 1.2)":
-      filtered_df = filtered_df[filtered_df["beta"] > 1.2]
-
-    if min_dividend > 0:
-      filtered_df = filtered_df[
-          filtered_df["dividend_yield"] >= (min_dividend / 100)
-      ]
-
-    sort_by = config.get("sort_by", "composite_score")
-    sort_asc = config.get("sort_ascending", False)
-    screened = (
-        filtered_df.sort_values(
-            sort_by, ascending=sort_asc, na_position="last"
-        )
-        .head(int(top_n))
-        .reset_index(drop=True)
-    )
-
-    all_companies_jp = create_spreadsheet_export_dataframe(all_companies)
-    screened_jp = create_spreadsheet_export_dataframe(screened)
-
-    st.markdown("---")
-    st.subheader("📥 スプレッドシート用データダウンロード")
-
-    col1, col2 = st.columns(2)
-    excel_data = get_excel_download_with_autofilter(
-        screened_jp, all_companies_jp, pd.DataFrame(errors)
-    )
-    if excel_data is not None:
-      col1.download_button(
-          label="📗 ソート機能＆解説付きExcel (.xlsx) をダウンロード",
-          data=excel_data,
-          file_name="sp500_screening_autofilter.xlsx",
-          mime=(
-              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          ),
-          type="primary",
-      )
-    else:
-      col1.warning("※Excel出力には `openpyxl` が必要です。")
-
-    all_csv_data = all_companies_jp.to_csv(
-        index=False, encoding="utf-8-sig"
-    ).encode("utf-8-sig")
-    col2.download_button(
-        label=f"📄 S&P500全{len(all_companies_jp)}銘柄データ (日本語CSV)",
-        data=all_csv_data,
-        file_name="sp500_all_companies_sorted.csv",
-        mime="text/csv",
-    )
-
-    st.markdown("---")
-    total_passed = len(filtered_df)
-
-    st.subheader(
-        f"🏆 条件合致 {total_passed} 銘柄（スコア上位 {len(screened)} 銘柄を表示中）"
-    )
-
-    if filtered_df.empty:
-      st.warning(
-          "⚠️ 設定した条件に合致する銘柄がありませんでした。サイドバーのフィルター条件を緩めてください。"
-      )
-    else:
-      display_df = create_display_dataframe(screened)
-      st.dataframe(display_df, use_container_width=True)
-
-    if errors:
-      with st.expander(f"⚠️ 取得エラー銘柄一覧 ({len(errors)}件)"):
-        st.dataframe(pd.DataFrame(errors))
-
-
-if __name__ == "__main__":
-  main()
