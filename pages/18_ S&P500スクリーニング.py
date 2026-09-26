@@ -15,7 +15,7 @@ st.set_page_config(page_title="S&P500 高度スクリーニング", layout="wide
 
 DEFAULT_CONFIG = {
     "sp500_url": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-    "top_n": 30,
+    "top_n": 50,  # 初期値を50銘柄に変更
     "request_sleep_seconds": 0.15,
     "missing_data_passes": False,
     "excluded_sectors": [],
@@ -468,10 +468,9 @@ def create_display_dataframe(dataframe):
 
 
 # ============================================================
-# スプレッドシート用エクスポート関数（日本語列名・オートフィルタ組込）
+# スプレッドシート用エクスポート関数
 # ============================================================
 def create_spreadsheet_export_dataframe(dataframe):
-  """スプレッドシートでフィルタ・計算ができるよう数値を保持したまま日本語列名に変換"""
   df = dataframe.copy()
 
   percent_columns = [
@@ -493,7 +492,6 @@ def create_spreadsheet_export_dataframe(dataframe):
 
 
 def get_score_logic_dataframe():
-  """総合スコアの算出基準を説明するDataFrame（Excelシート添付用）"""
   data = [
       {
           "カテゴリ": "クオリティ(60%配分)",
@@ -586,7 +584,6 @@ def get_score_logic_dataframe():
 def get_excel_download_with_autofilter(
     screened_jp, all_companies_jp, errors_df
 ):
-  """オートフィルタ（ソート機能）と解説シートを組み込んだExcelファイルを生成"""
   try:
     import openpyxl
     from openpyxl.utils import get_column_letter
@@ -595,13 +592,10 @@ def get_excel_download_with_autofilter(
 
   output = io.BytesIO()
   with pd.ExcelWriter(output, engine="openpyxl") as writer:
-    # 1. 全銘柄シート（総合スコア降順）
     all_companies_jp.to_excel(
         writer, sheet_name="S&P500全銘柄(ソート済)", index=False
     )
-    # 2. 条件通過上位銘柄シート
     screened_jp.to_excel(writer, sheet_name="条件通過上位銘柄", index=False)
-    # 3. 総合スコア算出基準の解説シート
     score_logic_df = get_score_logic_dataframe()
     score_logic_df.to_excel(
         writer, sheet_name="総合スコアの算出基準", index=False
@@ -610,15 +604,11 @@ def get_excel_download_with_autofilter(
     if not errors_df.empty:
       errors_df.to_excel(writer, sheet_name="取得エラー", index=False)
 
-    # openpyxlで各データシートにオートフィルタ（ソート用矢印）を設定
     workbook = writer.book
     for sheet_name in ["S&P500全銘柄(ソート済)", "条件通過上位銘柄"]:
       if sheet_name in workbook.sheetnames:
         ws = workbook[sheet_name]
-        # 1行目にソート・フィルタドロップダウンを適用
         ws.auto_filter.ref = ws.dimensions
-
-        # 列幅を見やすく自動調整
         for col in ws.columns:
           max_len = max(len(str(cell.value or "")) for cell in col)
           col_letter = get_column_letter(col[0].column)
@@ -636,9 +626,7 @@ def main():
       "クオリティ（成長性・収益性）とバリュエーション（割安性）を統合したスコア評価とフィルタリングを行います。"
   )
 
-  # ============================================================
-  # 総合スコアの解説パネル（常時確認可能）
-  # ============================================================
+  # 総合スコア解説アコーディオン
   with st.expander("ℹ️ 【解説】総合スコアの算出ロジック・計算基準について"):
     st.markdown("""
         ### 📊 総合スコアの仕組み (0〜100点満点)
@@ -693,7 +681,18 @@ def main():
       help="500銘柄すべて取得する場合は約15〜20分かかります。テスト時は少なめに設定してください。",
   )
 
-  config = DEFAULT_CONFIG
+  # 表示件数の設定（初期値: 50）
+  top_n = st.sidebar.number_input(
+      "Webプレビューに表示する上位銘柄数",
+      min_value=5,
+      max_value=200,
+      value=50,
+      step=5,
+      help="条件を通過した銘柄のうち、上位何件を表示するか設定します。",
+  )
+
+  config = DEFAULT_CONFIG.copy()
+  config["top_n"] = top_n
 
   # データ取得ボタン
   if st.button("データ取得＆スクリーニングを開始", type="primary"):
@@ -734,7 +733,6 @@ def main():
     all_companies = pd.DataFrame(results)
     all_companies = add_scores(all_companies, config)
 
-    # 総合スコアの降順（高スコア順）にソート
     sort_by = config.get("sort_by", "composite_score")
     sort_asc = config.get("sort_ascending", False)
     all_companies = all_companies.sort_values(
@@ -748,7 +746,7 @@ def main():
         .reset_index(drop=True)
     )
 
-    # session_state に保存（再起動防止）
+    # session_state に保存
     st.session_state["all_companies"] = all_companies
     st.session_state["screened"] = screened
     st.session_state["errors"] = errors
@@ -759,14 +757,13 @@ def main():
     )
 
   # ============================================================
-  # ダウンロード＆結果表示（セッション保存により再起動を防止）
+  # ダウンロード＆結果表示
   # ============================================================
   if st.session_state["all_companies"] is not None:
     all_companies = st.session_state["all_companies"]
     screened = st.session_state["screened"]
     errors = st.session_state["errors"]
 
-    # スプレッドシート用（日本語ヘッダー・数値データ保持）データ作成
     all_companies_jp = create_spreadsheet_export_dataframe(all_companies)
     screened_jp = create_spreadsheet_export_dataframe(screened)
 
@@ -781,7 +778,7 @@ def main():
 
     col1, col2 = st.columns(2)
 
-    # 1. Excel（オートフィルタ機能＆解説シート組み込み済み）
+    # 1. Excel
     excel_data = get_excel_download_with_autofilter(
         screened_jp, all_companies_jp, pd.DataFrame(errors)
     )
@@ -794,14 +791,13 @@ def main():
               "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           ),
           type="primary",
-          help="GoogleスプレッドシートやExcelで開くだけで、各列の▼ボタンから即座に並び替え・絞り込みが可能です。",
       )
     else:
       col1.warning(
           "※Excel出力には `openpyxl` が必要です。右側のCSVをご利用ください。"
       )
 
-    # 2. 全件CSV（総合スコア降順・日本語列名）
+    # 2. CSV
     all_csv_data = all_companies_jp.to_csv(
         index=False, encoding="utf-8-sig"
     ).encode("utf-8-sig")
@@ -812,7 +808,7 @@ def main():
         mime="text/csv",
     )
 
-    # Webプレビュー表示
+    # Webプレビュー表示（最大50銘柄）
     st.markdown("---")
     st.subheader(f"🏆 スコア上位 {len(screened)} 銘柄（Webプレビュー）")
     if screened.empty:
