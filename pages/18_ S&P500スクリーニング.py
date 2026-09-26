@@ -62,6 +62,10 @@ JAPANESE_COLUMNS_MAP = {
     "symbol": "ティッカー",
     "company_name": "企業名",
     "sector": "セクター",
+    "current_price": "株価(USD)",
+    "price_above_sma200_label": "200日線上",
+    "pct_from_52w_high": "52週高値乖離率(%)",
+    "beta": "ベータ値(Beta)",
     "market_cap_usd": "時価総額(USD)",
     "enterprise_value_usd": "企業価値EV(USD)",
     "revenue_usd": "売上高(USD)",
@@ -260,10 +264,39 @@ def analyze_company(company):
 
   market_cap = get_market_cap(ticker, info)
 
+  # ============================================================
+  # 【新設】非財務・テクニカル指標の取得
+  # ============================================================
+  current_price = safe_float(
+      info.get("currentPrice") or info.get("regularMarketPrice")
+  )
+  sma200 = safe_float(info.get("twoHundredDayAverage"))
+  high_52w = safe_float(info.get("fiftyTwoWeekHigh"))
+  beta = safe_float(info.get("beta"))
+
+  # 200日移動平均線の上にあるか
+  is_above_sma200 = (
+      (current_price >= sma200)
+      if (pd.notna(current_price) and pd.notna(sma200))
+      else False
+  )
+  # 52週高値からの乖離率 (例: -0.05 は高値から5%下落)
+  pct_from_52w_high = (
+      ((current_price / high_52w) - 1)
+      if (pd.notna(current_price) and pd.notna(high_52w) and high_52w > 0)
+      else np.nan
+  )
+
   return {
       "symbol": company["display_symbol"],
       "company_name": company["Security"],
       "sector": company["GICS Sector"],
+      "current_price": current_price,
+      "sma200": sma200,
+      "is_above_sma200": is_above_sma200,
+      "price_above_sma200_label": "○" if is_above_sma200 else "×",
+      "pct_from_52w_high": pct_from_52w_high,
+      "beta": beta,
       "market_cap_usd": market_cap,
       "enterprise_value_usd": get_first_info_value(info, ["enterpriseValue"]),
       "revenue_usd": latest_revenue,
@@ -362,11 +395,9 @@ def add_scores(dataframe, config):
   return df
 
 
-def apply_filters(dataframe, config):
+def apply_financial_filters(dataframe, config):
+  """純粋な財務フィルターの適用"""
   filtered = dataframe.copy()
-  if config.get("excluded_sectors"):
-    filtered = filtered[~filtered["sector"].isin(config["excluded_sectors"])]
-
   for metric, limits in config["filters"].items():
     if metric not in filtered.columns:
       continue
@@ -394,19 +425,17 @@ def create_display_dataframe(dataframe):
       "symbol",
       "company_name",
       "sector",
+      "current_price",
+      "price_above_sma200_label",
+      "pct_from_52w_high",
+      "beta",
       "market_cap_usd",
       "revenue_growth_1y",
-      "revenue_cagr_3y",
       "net_margin",
       "roe",
-      "fcf_margin",
-      "net_debt_to_ebitda",
       "trailing_pe",
-      "forward_pe",
-      "price_to_book",
-      "price_to_sales",
       "ev_to_ebitda",
-      "peg_ratio",
+      "dividend_yield",
       "quality_score",
       "valuation_score",
       "composite_score",
@@ -419,44 +448,42 @@ def create_display_dataframe(dataframe):
       "symbol": "銘柄",
       "company_name": "会社名",
       "sector": "セクター",
+      "current_price": "株価",
+      "price_above_sma200_label": "200日線上",
+      "pct_from_52w_high": "52週高値比",
+      "beta": "ベータ値",
       "market_cap_usd": "時価総額",
       "revenue_growth_1y": "売上成長率",
-      "revenue_cagr_3y": "売上3年CAGR",
       "net_margin": "純利益率",
       "roe": "ROE",
-      "fcf_margin": "FCF利益率",
-      "net_debt_to_ebitda": "ネット負債/EBITDA",
       "trailing_pe": "実績PER",
-      "forward_pe": "予想PER",
-      "price_to_book": "PBR",
-      "price_to_sales": "PSR",
       "ev_to_ebitda": "EV/EBITDA",
-      "peg_ratio": "PEG",
+      "dividend_yield": "配当利回り",
       "quality_score": "品質スコア",
       "valuation_score": "割安スコア",
       "composite_score": "総合スコア",
   }
   display = display.rename(columns=rename_map)
 
+  if "株価" in display.columns:
+    display["株価"] = display["株価"].map(
+        lambda x: f"${x:.2f}" if pd.notna(x) else "-"
+    )
   if "時価総額" in display.columns:
     display["時価総額"] = display["時価総額"].map(
         lambda x: f"${x / 1_000_000_000:,.1f}B" if pd.notna(x) else "-"
     )
 
-  for col in ["売上成長率", "売上3年CAGR", "純利益率", "ROE", "FCF利益率"]:
+  for col in ["売上成長率", "純利益率", "ROE", "配当利回り", "52週高値比"]:
     if col in display.columns:
       display[col] = display[col].map(
           lambda x: f"{x * 100:.1f}%" if pd.notna(x) else "-"
       )
 
   for col in [
-      "ネット負債/EBITDA",
+      "ベータ値",
       "実績PER",
-      "予想PER",
-      "PBR",
-      "PSR",
       "EV/EBITDA",
-      "PEG",
       "品質スコア",
       "割安スコア",
       "総合スコア",
@@ -481,6 +508,7 @@ def create_spreadsheet_export_dataframe(dataframe):
       "fcf_margin",
       "roe",
       "dividend_yield",
+      "pct_from_52w_high",
   ]
   for col in percent_columns:
     if col in df.columns:
@@ -577,6 +605,27 @@ def get_score_logic_dataframe():
           "重み": "0.5",
           "概要": "PERを成長率で割った指標(成長に対して割安か)",
       },
+      {
+          "カテゴリ": "テクニカル指標",
+          "指標名": "200日線上",
+          "評価基準": "株価 >= 200日SMA",
+          "重み": "-",
+          "概要": "長期上昇トレンド判定（落ちてくるナイフの回避）",
+      },
+      {
+          "カテゴリ": "テクニカル指標",
+          "指標名": "52週高値乖離率",
+          "評価基準": "0%に近いほど強い",
+          "重み": "-",
+          "概要": "新高値近辺のリーダー株を捉えるモメンタム指標",
+      },
+      {
+          "カテゴリ": "リスク指標",
+          "指標名": "ベータ値(Beta)",
+          "評価基準": "<1.0=低変動, >1.2=高成長",
+          "重み": "-",
+          "概要": "市場全体に対する株価のボラティリティ感応度",
+      },
   ]
   return pd.DataFrame(data)
 
@@ -623,12 +672,12 @@ def get_excel_download_with_autofilter(
 def main():
   st.title("🦅 S&P500 高度スクリーニング")
   st.write(
-      "クオリティ（成長性・収益性）とバリュエーション（割安性）を統合したスコア評価とフィルタリングを行います。"
+      "ファンダメンタルズ（業績・割安性）とテクニカル（トレンド・モメンタム）を統合したスクリーニングツールです。"
   )
 
-  with st.expander("ℹ️ 【解説】総合スコアの算出ロジック・計算基準について"):
+  with st.expander("ℹ️ 【解説】総合スコアおよび各種指標について"):
     st.markdown("""
-        ### 📊 総合スコアの仕組み (0〜100点満点)
+        ### 📊 総合スコア (0〜100点満点)
         全銘柄の中で各数値を順位付け（パーセンタイル順位）し、**「企業の質（稼ぐ力・健全性）」**と**「株価の割安度」**を統合したスコアです。
         
         $$\\text{総合スコア} = (\\text{クオリティスコア} \\times 0.60) + (\\text{割安スコア} \\times 0.40)$$
@@ -657,10 +706,14 @@ def main():
             * **PSR (株価売上高倍率)** (重み: 0.5)
             * **PEGレシオ** (重み: 0.5)
             """)
-    st.info(
-        "💡"
-        " 赤字企業のマイナスPERなどの異常値は自動除外され、全銘柄中での相対順位で点数化されます。"
-    )
+
+    st.markdown("---")
+    st.markdown("#### 🎯 実践的な非財務・テクニカルフィルターの役割")
+    st.markdown("""
+        * **200日移動平均線（長期トレンド）**: いくら財務が良くても下落トレンドにある株（バリューの罠）を避け、機関投資家の買い支えがある銘柄を抽出します。
+        * **52週高値乖離率（モメンタム）**: 市場の資金が集中している「最強の主導株」を捉えるための指標です。
+        * **ベータ値（ボラティリティ）**: 市場に対する感応度です。相場波乱期には 1.0 未満のディフェンシブ株、強気相場では 1.2 以上の成長株が有効です。
+        """)
 
   # session_state の初期化
   if "all_companies" not in st.session_state:
@@ -668,8 +721,10 @@ def main():
   if "errors" not in st.session_state:
     st.session_state["errors"] = []
 
+  # ============================================================
   # サイドバー設定
-  st.sidebar.header("実行設定")
+  # ============================================================
+  st.sidebar.header("1. 実行設定")
   max_tickers = st.sidebar.number_input(
       "取得・分析する銘柄数",
       min_value=1,
@@ -680,31 +735,87 @@ def main():
   )
 
   st.sidebar.markdown("---")
-  st.sidebar.header("表示・絞り込み設定")
-
-  # 【追加】フィルター適用のON/OFF
-  use_filter = st.sidebar.checkbox(
+  st.sidebar.header("2. 財務フィルター設定")
+  use_financial_filter = st.sidebar.checkbox(
       "財務フィルターを適用する",
-      value=True,
-      help=(
-          "チェックを外すと、厳しい財務条件による足切りを行わず、S&P500全銘柄から純粋に総合スコアが高い順に表示します。"
-      ),
+      value=False,  # デフォルトはOFFにして、より多くの銘柄をテクニカル等で絞り込めるように設定
+      help="純利益率15%以上、ROE15%以上、PER40倍以下などの厳格な財務基準を適用します。",
   )
 
-  # 表示件数の設定（即時反映）
+  st.sidebar.markdown("---")
+  st.sidebar.header("3. 🎯 テクニカル・非財務フィルター")
+
+  # フィルター①: 200日移動平均線
+  filter_sma200 = st.sidebar.checkbox(
+      "長期上昇トレンドのみ (株価 > 200日線)",
+      value=True,
+      help="株価が200日移動平均線の上にある銘柄のみに限定し、下落トレンドの銘柄（バリューの罠）を排除します。",
+  )
+
+  # フィルター②: 52週高値乖離率
+  filter_momentum = st.sidebar.checkbox(
+      "高値圏モメンタム株 (52週高値から-20%以内)",
+      value=False,
+      help="直近52週間の最高値から20%以内にある強い銘柄のみを抽出します。",
+  )
+
+  # フィルター③: ベータ値（ボラティリティ・感応度）
+  beta_option = st.sidebar.selectbox(
+      "ベータ値（リスク感応度）",
+      options=[
+          "指定なし（全銘柄）",
+          "低ボラ・守り重視 (Beta < 1.0)",
+          "高ボラ・攻め重視 (Beta > 1.2)",
+      ],
+      index=0,
+      help="市場平均に対する値動きの大きさを選択します。",
+  )
+
+  # フィルター④: 配当利回り
+  min_dividend = st.sidebar.slider(
+      "最低配当利回り (%)",
+      min_value=0.0,
+      max_value=6.0,
+      value=0.0,
+      step=0.5,
+      help="配当狙いの場合に設定します。0%は無配株も含みます。",
+  )
+
+  # フィルター⑤: セクター選択
+  all_sectors = [
+      "Information Technology",
+      "Health Care",
+      "Financials",
+      "Consumer Discretionary",
+      "Communication Services",
+      "Industrials",
+      "Consumer Staples",
+      "Energy",
+      "Utilities",
+      "Real Estate",
+      "Materials",
+  ]
+  selected_sectors = st.sidebar.multiselect(
+      "セクター絞り込み",
+      options=all_sectors,
+      default=all_sectors,
+      help="選択したセクターの銘柄のみが表示されます。",
+  )
+
+  st.sidebar.markdown("---")
   top_n = st.sidebar.number_input(
       "Webプレビューに表示する上位銘柄数",
       min_value=5,
       max_value=200,
       value=50,
       step=5,
-      help="上位何件を表示するか設定します（データ取得後も即座に変更が反映されます）。",
+      help="抽出された銘柄のうち、総合スコア上位何件を表示するか設定します。",
   )
 
   config = DEFAULT_CONFIG.copy()
 
   # データ取得ボタン
-  if st.button("データ取得＆スクリーニングを開始", type="primary"):
+  if st.button("データ取得を開始", type="primary"):
     constituents = get_sp500_constituents(config["sp500_url"])
     constituents = constituents.head(max_tickers)
     total = len(constituents)
@@ -749,10 +860,8 @@ def main():
         sort_by, ascending=sort_asc, na_position="last"
     ).reset_index(drop=True)
 
-    # session_state に全件データを保存
     st.session_state["all_companies"] = all_companies
     st.session_state["errors"] = errors
-
     status_text.success(f"完了しました！（全{len(all_companies)}銘柄取得）")
 
   # ============================================================
@@ -762,23 +871,47 @@ def main():
     all_companies = st.session_state["all_companies"]
     errors = st.session_state["errors"]
 
-    # フィルターの適用判定（即時反映）
-    if use_filter:
-      passed_candidates = apply_filters(all_companies, config)
-      filter_desc = "財務フィルター適用"
-    else:
-      passed_candidates = all_companies
-      filter_desc = "全銘柄・スコア順"
+    # フィルタリング処理の実行
+    filtered_df = all_companies.copy()
+
+    # 1. 財務フィルター
+    if use_financial_filter:
+      filtered_df = apply_financial_filters(filtered_df, config)
+
+    # 2. セクターフィルター
+    if selected_sectors:
+      filtered_df = filtered_df[filtered_df["sector"].isin(selected_sectors)]
+
+    # 3. 200日移動平均線フィルター
+    if filter_sma200:
+      filtered_df = filtered_df[filtered_df["is_above_sma200"] == True]
+
+    # 4. 52週高値モメンタムフィルター (-20%以内)
+    if filter_momentum:
+      filtered_df = filtered_df[filtered_df["pct_from_52w_high"] >= -0.20]
+
+    # 5. ベータ値フィルター
+    if beta_option == "低ボラ・守り重視 (Beta < 1.0)":
+      filtered_df = filtered_df[filtered_df["beta"] < 1.0]
+    elif beta_option == "高ボラ・攻め重視 (Beta > 1.2)":
+      filtered_df = filtered_df[filtered_df["beta"] > 1.2]
+
+    # 6. 配当利回りフィルター
+    if min_dividend > 0:
+      filtered_df = filtered_df[
+          filtered_df["dividend_yield"] >= (min_dividend / 100)
+      ]
 
     # 上位N件の抽出
     sort_by = config.get("sort_by", "composite_score")
     sort_asc = config.get("sort_ascending", False)
-    passed_sorted = passed_candidates.sort_values(
-        sort_by, ascending=sort_asc, na_position="last"
-    ).reset_index(drop=True)
-
-    # 指定された件数で切り出し
-    screened = passed_sorted.head(int(top_n)).reset_index(drop=True)
+    screened = (
+        filtered_df.sort_values(
+            sort_by, ascending=sort_asc, na_position="last"
+        )
+        .head(int(top_n))
+        .reset_index(drop=True)
+    )
 
     # スプレッドシート用データ作成
     all_companies_jp = create_spreadsheet_export_dataframe(all_companies)
@@ -803,47 +936,10 @@ def main():
           type="primary",
       )
     else:
-      col1.warning(
-          "※Excel出力には `openpyxl` が必要です。右側のCSVをご利用ください。"
-      )
+      col1.warning("※Excel出力には `openpyxl` が必要です。")
 
     all_csv_data = all_companies_jp.to_csv(
         index=False, encoding="utf-8-sig"
     ).encode("utf-8-sig")
     col2.download_button(
-        label=f"📄 S&P500全{len(all_companies_jp)}銘柄データ (日本語CSV)",
-        data=all_csv_data,
-        file_name="sp500_all_companies_sorted.csv",
-        mime="text/csv",
-    )
-
-    # Webプレビュー表示エリア
-    st.markdown("---")
-    total_passed = len(passed_candidates)
-
-    if use_filter and total_passed < top_n:
-      st.subheader(
-          f"🏆 条件通過銘柄（{total_passed}銘柄 / 設定上限: {top_n}件）"
-      )
-      st.info(
-          f"💡 **条件を通過した銘柄が合計 {total_passed} 銘柄のため、全 {total_passed} 銘柄を表示しています。**\n"
-          f"50銘柄以上表示したい場合は、サイドバーの **「財務フィルターを適用する」のチェックを外す** か、フィルター条件を緩和してください。"
-      )
-    else:
-      st.subheader(
-          f"🏆 スコア上位 {len(screened)} 銘柄（{filter_desc}・Webプレビュー）"
-      )
-
-    if screened.empty:
-      st.warning("設定したフィルタ条件に合致する銘柄がありませんでした。")
-    else:
-      display_df = create_display_dataframe(screened)
-      st.dataframe(display_df, use_container_width=True)
-
-    if errors:
-      with st.expander(f"⚠️ 取得エラー銘柄一覧 ({len(errors)}件)"):
-        st.dataframe(pd.DataFrame(errors))
-
-
-if __name__ == "__main__":
-  main()
+        label=f"📄 S&P500全{len(all_companies
