@@ -15,7 +15,7 @@ st.set_page_config(page_title="S&P500 高度スクリーニング", layout="wide
 
 DEFAULT_CONFIG = {
     "sp500_url": "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
-    "top_n": 50,  # 初期値を50銘柄に変更
+    "top_n": 50,
     "request_sleep_seconds": 0.15,
     "missing_data_passes": False,
     "excluded_sectors": [],
@@ -626,7 +626,6 @@ def main():
       "クオリティ（成長性・収益性）とバリュエーション（割安性）を統合したスコア評価とフィルタリングを行います。"
   )
 
-  # 総合スコア解説アコーディオン
   with st.expander("ℹ️ 【解説】総合スコアの算出ロジック・計算基準について"):
     st.markdown("""
         ### 📊 総合スコアの仕組み (0〜100点満点)
@@ -666,11 +665,10 @@ def main():
   # session_state の初期化
   if "all_companies" not in st.session_state:
     st.session_state["all_companies"] = None
-  if "screened" not in st.session_state:
-    st.session_state["screened"] = None
   if "errors" not in st.session_state:
     st.session_state["errors"] = []
 
+  # サイドバー設定
   st.sidebar.header("実行設定")
   max_tickers = st.sidebar.number_input(
       "取得・分析する銘柄数",
@@ -681,18 +679,29 @@ def main():
       help="500銘柄すべて取得する場合は約15〜20分かかります。テスト時は少なめに設定してください。",
   )
 
-  # 表示件数の設定（初期値: 50）
+  st.sidebar.markdown("---")
+  st.sidebar.header("表示・絞り込み設定")
+
+  # 【追加】フィルター適用のON/OFF
+  use_filter = st.sidebar.checkbox(
+      "財務フィルターを適用する",
+      value=True,
+      help=(
+          "チェックを外すと、厳しい財務条件による足切りを行わず、S&P500全銘柄から純粋に総合スコアが高い順に表示します。"
+      ),
+  )
+
+  # 表示件数の設定（即時反映）
   top_n = st.sidebar.number_input(
       "Webプレビューに表示する上位銘柄数",
       min_value=5,
       max_value=200,
       value=50,
       step=5,
-      help="条件を通過した銘柄のうち、上位何件を表示するか設定します。",
+      help="上位何件を表示するか設定します（データ取得後も即座に変更が反映されます）。",
   )
 
   config = DEFAULT_CONFIG.copy()
-  config["top_n"] = top_n
 
   # データ取得ボタン
   if st.button("データ取得＆スクリーニングを開始", type="primary"):
@@ -733,52 +742,53 @@ def main():
     all_companies = pd.DataFrame(results)
     all_companies = add_scores(all_companies, config)
 
+    # 総合スコア順にソート
     sort_by = config.get("sort_by", "composite_score")
     sort_asc = config.get("sort_ascending", False)
     all_companies = all_companies.sort_values(
         sort_by, ascending=sort_asc, na_position="last"
     ).reset_index(drop=True)
 
-    screened = apply_filters(all_companies, config)
-    screened = (
-        screened.sort_values(sort_by, ascending=sort_asc, na_position="last")
-        .head(config["top_n"])
-        .reset_index(drop=True)
-    )
-
-    # session_state に保存
+    # session_state に全件データを保存
     st.session_state["all_companies"] = all_companies
-    st.session_state["screened"] = screened
     st.session_state["errors"] = errors
 
-    status_text.success(
-        f"完了しました！（全{len(all_companies)}銘柄取得 / 条件通過:"
-        f" {len(screened)}銘柄）"
-    )
+    status_text.success(f"完了しました！（全{len(all_companies)}銘柄取得）")
 
   # ============================================================
-  # ダウンロード＆結果表示
+  # 画面表示＆ダウンロード（サイドバーの変更をリアルタイム反映）
   # ============================================================
   if st.session_state["all_companies"] is not None:
     all_companies = st.session_state["all_companies"]
-    screened = st.session_state["screened"]
     errors = st.session_state["errors"]
 
+    # フィルターの適用判定（即時反映）
+    if use_filter:
+      passed_candidates = apply_filters(all_companies, config)
+      filter_desc = "財務フィルター適用"
+    else:
+      passed_candidates = all_companies
+      filter_desc = "全銘柄・スコア順"
+
+    # 上位N件の抽出
+    sort_by = config.get("sort_by", "composite_score")
+    sort_asc = config.get("sort_ascending", False)
+    passed_sorted = passed_candidates.sort_values(
+        sort_by, ascending=sort_asc, na_position="last"
+    ).reset_index(drop=True)
+
+    # 指定された件数で切り出し
+    screened = passed_sorted.head(int(top_n)).reset_index(drop=True)
+
+    # スプレッドシート用データ作成
     all_companies_jp = create_spreadsheet_export_dataframe(all_companies)
     screened_jp = create_spreadsheet_export_dataframe(screened)
 
+    # ダウンロードエリア
     st.markdown("---")
     st.subheader("📥 スプレッドシート用データダウンロード")
-    st.markdown(
-        "初期状態で **総合スコア順（高い順）にソート済み**"
-        " です。Excelファイル（.xlsx）には最初から"
-        " **オートフィルタ（並び替え・絞り込みボタン）**"
-        " が組み込まれています。"
-    )
 
     col1, col2 = st.columns(2)
-
-    # 1. Excel
     excel_data = get_excel_download_with_autofilter(
         screened_jp, all_companies_jp, pd.DataFrame(errors)
     )
@@ -797,7 +807,6 @@ def main():
           "※Excel出力には `openpyxl` が必要です。右側のCSVをご利用ください。"
       )
 
-    # 2. CSV
     all_csv_data = all_companies_jp.to_csv(
         index=False, encoding="utf-8-sig"
     ).encode("utf-8-sig")
@@ -808,9 +817,23 @@ def main():
         mime="text/csv",
     )
 
-    # Webプレビュー表示（最大50銘柄）
+    # Webプレビュー表示エリア
     st.markdown("---")
-    st.subheader(f"🏆 スコア上位 {len(screened)} 銘柄（Webプレビュー）")
+    total_passed = len(passed_candidates)
+
+    if use_filter and total_passed < top_n:
+      st.subheader(
+          f"🏆 条件通過銘柄（{total_passed}銘柄 / 設定上限: {top_n}件）"
+      )
+      st.info(
+          f"💡 **条件を通過した銘柄が合計 {total_passed} 銘柄のため、全 {total_passed} 銘柄を表示しています。**\n"
+          f"50銘柄以上表示したい場合は、サイドバーの **「財務フィルターを適用する」のチェックを外す** か、フィルター条件を緩和してください。"
+      )
+    else:
+      st.subheader(
+          f"🏆 スコア上位 {len(screened)} 銘柄（{filter_desc}・Webプレビュー）"
+      )
+
     if screened.empty:
       st.warning("設定したフィルタ条件に合致する銘柄がありませんでした。")
     else:
