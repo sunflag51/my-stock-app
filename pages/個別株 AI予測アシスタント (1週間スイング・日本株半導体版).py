@@ -10,7 +10,7 @@ import plotly.graph_objects as go
 st.set_page_config(page_title="AI予測 ＆ ビジュアルバックテスト", layout="wide")
 
 st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (完全修正版)")
-st.write("資金管理（ポジションサイズ）と日中の損切りを厳密にシミュレートした、**本物のバックテスト環境**です。")
+st.write("資金管理、窓開けスリッページ、休場日を厳密に処理した**プロ仕様のバックテスト環境**です。")
 
 st.divider()
 
@@ -55,7 +55,7 @@ if is_holding:
     entry_date_input = st.sidebar.date_input("買付日（約定日）", value=date.today())
 
 # ==========================================
-# 1. データの取得と前処理
+# 1. データの取得と前処理（ダミー休日の完全排除）
 # ==========================================
 if sector_type == "半導体ハイテク（SOX連動）":
     macro_symbol = "^SOX"
@@ -73,14 +73,19 @@ try:
         'Open': 'Stock_Open', 'High': 'Stock_High', 'Low': 'Stock_Low', 'Close': 'Stock_Close', 'Volume': 'Stock_Volume'
     })
     
-    macro_data = yf.Ticker(macro_symbol).history(period="5y")[['Close']].rename(columns={'Close': 'Macro_Close'})
-    usdjpy_data = yf.Ticker("JPY=X").history(period="5y")[['Close']].rename(columns={'Close': 'USDJPY_Close'})
-    
+    # 【修正①】出来高が0のダミー日（祝日など）を排除し、日本の純正カレンダーを作成
+    stock_data = stock_data[stock_data['Stock_Volume'] > 0]
     stock_data.index = pd.to_datetime(stock_data.index).strftime('%Y-%m-%d')
+    
+    macro_data = yf.Ticker(macro_symbol).history(period="5y")[['Close']].rename(columns={'Close': 'Macro_Close'})
     macro_data.index = pd.to_datetime(macro_data.index).strftime('%Y-%m-%d')
+    
+    usdjpy_data = yf.Ticker("JPY=X").history(period="5y")[['Close']].rename(columns={'Close': 'USDJPY_Close'})
     usdjpy_data.index = pd.to_datetime(usdjpy_data.index).strftime('%Y-%m-%d')
     
-    df = pd.concat([stock_data, macro_data, usdjpy_data], axis=1).ffill().dropna()
+    # 【修正②】日本の株価カレンダーを主軸にして結合（左結合）
+    df = stock_data.join(macro_data).join(usdjpy_data)
+    df = df.ffill().dropna()
 
 except Exception as e:
     st.error(f"データの取得に失敗しました。エラー: {e}")
@@ -154,17 +159,19 @@ ai_agent.fit(train_df[features], train_df['Target'])
 chart_df['Signal'] = ai_agent.predict(chart_df[features])
 
 # ==========================================
-# 4. 【完全修正】リアル・シミュレーションループ
+# 4. 【厳格修正】リアル・シミュレーションループ
 # ==========================================
 dates = chart_df.index.strftime('%Y-%m-%d').tolist()
 closes = chart_df['Stock_Close'].values
-lows = chart_df['Stock_Low'].values # 損切り判定用の安値
+opens = chart_df['Stock_Open'].values
+lows = chart_df['Stock_Low'].values
 signals = chart_df['Signal'].values
 n_days = len(chart_df)
 
-# 【重要修正】ポジションサイズの計算（資産推移を正しく計算するための重み）
-# 例: リスク1%、損切り幅7%なら、資金の1/7（約14.2%）だけを買う
+# ポジションサイズの計算（リスク許容度に基づく安全な資金配分）
 position_weight = (risk_percent / 100.0) / (stop_loss_pct / 100.0)
+if position_weight > 1.0:
+    position_weight = 1.0 # 資金の100%を超えるレバレッジは禁止
 r_unit = stop_loss_pct / 100.0
 
 holding = False
@@ -180,12 +187,12 @@ for i in range(n_days):
         days_held_sim += 1
         stop_loss_price_sim = entry_price_sim * (1.0 - (stop_loss_pct / 100.0))
 
-        # 【重要修正】日中の安値が損切りラインに触れたら即座に損切り決済！
+        # 【修正③】日中の安値が損切りラインに触れたら即座に損切り決済
         if lows[i] <= stop_loss_price_sim:
-            exit_price = stop_loss_price_sim
+            # もし朝イチの始値がすでに損切りラインを割って大暴落スタートしていたら、始値で強制決済（リアルなペナルティ）
+            exit_price = min(stop_loss_price_sim, opens[i])
             trade_ret = (exit_price - entry_price_sim) / entry_price_sim
             
-            # 本日の口座全体のマイナスを計算
             actual_daily_ret = (exit_price - closes[i-1]) / closes[i-1]
             daily_strategy_returns[i] = actual_daily_ret * position_weight
 
@@ -201,11 +208,11 @@ for i in range(n_days):
                 '損益率': f"{trade_ret * 100:+.2f}%",
                 '獲得R': trade_ret / r_unit,
                 'status': 'closed',
-                '備考': '🚨 損切り発動'
+                '備考': '🚨 損切り発動' + ('(窓開け)' if opens[i] < stop_loss_price_sim else '')
             })
             holding = False
             days_held_sim = 0
-            continue # 損切りした日は、新規エントリーをしない
+            continue # 損切りした日は新規エントリーを行わない
 
         # 損切りに引っかからなかった場合、通常の利益（損失）を計算
         daily_ret = (closes[i] - closes[i-1]) / closes[i-1]
@@ -239,7 +246,7 @@ for i in range(n_days):
             days_held_sim = 0
             entry_price_sim = closes[i]
             entry_date_sim = dates[i]
-            daily_strategy_returns[i] = 0.0 # エントリーした日は終値で買うためリターン0
+            daily_strategy_returns[i] = 0.0 # エントリー日は終値で買うためリターン0
 
 # 期間末の未決済ポジションの記録
 if holding:
@@ -261,8 +268,11 @@ if holding:
     })
 
 chart_df['AI戦略（累積資産）'] = (1.0 + pd.Series(daily_strategy_returns, index=chart_df.index)).cumprod() * 100
-benchmark_daily = chart_df['Stock_Close'].pct_change().fillna(0.0)
-chart_df['バイ＆ホールド'] = (1.0 + benchmark_daily).cumprod() * 100
+
+# 【修正④】バイ＆ホールドの正確な絶対値計算
+chart_df['B&H(100%投資)'] = (chart_df['Stock_Close'] / chart_df['Stock_Close'].iloc[0]) * 100
+bh_daily = chart_df['Stock_Close'].pct_change().fillna(0.0)
+chart_df['B&H(AIと同リスク)'] = (1.0 + bh_daily * position_weight).cumprod() * 100
 
 trades_df = pd.DataFrame(trade_records)
 
@@ -321,15 +331,16 @@ if len(trades_df) > 0:
             marker=dict(symbol='triangle-down', size=16, color='red', line=dict(width=1, color='darkred'))
         ))
 
-# 【チャート異常の修正】安全な方法で土日だけをスキップする
+# 休場日を精密に計算してチャートからギャップ（隙間）を削除
+dt_all = pd.date_range(start=chart_df.index[0], end=chart_df.index[-1])
+dt_obs = pd.to_datetime(chart_df.index)
+dt_breaks = dt_all.difference(dt_obs).strftime("%Y-%m-%d").tolist()
+
 fig.update_layout(
     xaxis_title=None, yaxis_title="株価 (円)", hovermode="x unified", height=550, 
     margin=dict(l=10, r=10, t=50, b=10), xaxis_rangeslider_visible=False,
     legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-    xaxis=dict(
-        rangebreaks=[dict(bounds=["sat", "mon"])], # エラーの原因だった完全休場日リストを廃止し、安全な土日スキップに統一
-        type="date"
-    )
+    xaxis=dict(rangebreaks=[dict(values=dt_breaks)], type="date")
 )
 
 st.plotly_chart(fig, use_container_width=True)
@@ -341,21 +352,24 @@ st.divider()
 st.subheader(f"📊 バックテスト検証成績（{macro_name}連動）")
 st.caption(f"※検証期間: {cutoff_str} 〜 現在（直近 {backtest_years} 年間） / 完了したトレードのみ集計")
 
+# 総収益率の復元
+total_return_ai = (chart_df['AI戦略（累積資産）'].iloc[-1] / chart_df['AI戦略（累積資産）'].iloc[0] - 1.0) * 100
+total_return_bh = (chart_df['B&H(100%投資)'].iloc[-1] / chart_df['B&H(100%投資)'].iloc[0] - 1.0) * 100
+
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("勝率", f"{win_rate:.1f}%", f"計{total_trades if 'total_trades' in locals() else 0}回")
-col2.metric("プロフィットファクター", f"{profit_factor:.2f}")
-col3.metric("累積獲得R (Total R)", f"{total_r:+.1f} R")
+col1.metric("総収益率 (AI)", f"{total_return_ai:+.1f}%", f"B&H(フル)比: {total_return_ai - total_return_bh:+.1f}%")
+col2.metric("勝率", f"{win_rate:.1f}%", f"計{total_trades if 'total_trades' in locals() else 0}回")
+col3.metric("プロフィットファクター", f"{profit_factor:.2f}")
 col4.metric("期待値（1回平均R）", f"{expectancy_r:+.2f} R")
 
 if len(closed_trades) > 0:
-    st.write("▼ **累積R推移グラフ**")
+    st.write("▼ **累積R推移グラフ（AIの純粋なトレード成績）**")
     r_chart_df = closed_trades.set_index('raw_exit_date')[['累積R']]
     st.line_chart(r_chart_df)
 
-# 資産推移グラフは、リスク設定（％）に応じたリアルな推移を描画します
 st.write(f"▼ **資産推移グラフ（初期資金 100 からの推移）**")
-st.caption(f"※AI戦略は「毎回資金の100%を突っ込む」のではなく、あなたが設定した**「許容リスク {risk_percent}%」に基づいた安全なポジションサイズ**で運用した場合の現実的な資産推移です。")
-st.line_chart(chart_df[['AI戦略（累積資産）', 'バイ＆ホールド']])
+st.caption(f"※「AI戦略」はリスク{risk_percent}%で運用した安全な推移です。「B&H(100%投資)」と比較するとAIが平らに見えますが、「B&H(AIと同リスク)」と比較すると、AIの資産防衛力とタイミングの優位性が明確に分かります。")
+st.line_chart(chart_df[['AI戦略（累積資産）', 'B&H(100%投資)', 'B&H(AIと同リスク)']])
 
 if len(trades_df) > 0:
     with st.expander("📝 全トレード履歴の明細ログを表示（タップで展開）"):
