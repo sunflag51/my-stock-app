@@ -9,8 +9,8 @@ import plotly.graph_objects as go
 # 画面全体の幅を広げて見やすく設定
 st.set_page_config(page_title="個別株 AI予測アシスタント", layout="wide")
 
-st.title("🎯 個別株 AI予測＆資金管理アシスタント (1泊2日・完全復旧版)")
-st.write("個別銘柄・米国SOX指数・為替を学習したAIのバックテスト成績を、**資金管理・スリッページを厳密に処理したチャート**で可視化します。")
+st.title("🎯 個別株 AI予測＆資金管理アシスタント (1泊2日・解説アシスト版)")
+st.write("AIの売買サインだけでなく、**「なぜ買いなのか」「どの材料を根拠にしたのか」**の分析理由をわかりやすく解説します。")
 
 st.divider()
 
@@ -36,7 +36,7 @@ risk_percent = st.sidebar.slider(
 stop_loss_pct = st.sidebar.slider(
     "損切り幅の目安（%）", 
     min_value=1.0, max_value=10.0, value=3.0, step=0.5,
-    help="1泊2日の短期決戦なので、スイングよりタイトな設定が推奨されます"
+    help="1泊2日の短期決戦なので、タイトな設定（3.0%前後）が推奨されます"
 )
 
 risk_amount_1r = account_capital * (risk_percent / 100.0)
@@ -47,7 +47,7 @@ st.sidebar.header("📊 バックテスト設定")
 backtest_years = st.sidebar.slider("検証期間（直近の年数）", min_value=1, max_value=3, value=1)
 
 # ==========================================
-# 1. データの取得と前処理（ダミー休日の完全排除）
+# 1. データの取得と前処理
 # ==========================================
 st.subheader(f"1. 【{ticker_symbol}】の学習データ取得中...")
 
@@ -111,7 +111,7 @@ ai_agent.fit(train_df[features], train_df['Target'])
 chart_df['Signal'] = ai_agent.predict(chart_df[features])
 
 # ==========================================
-# 4. リアル・シミュレーションループ（1泊2日モデル）
+# 4. リアル・シミュレーションループ
 # ==========================================
 dates = chart_df.index.strftime('%Y-%m-%d').tolist()
 closes = chart_df['Stock_Close'].values
@@ -182,8 +182,6 @@ for i in range(n_days):
             holding = True
             entry_price_sim = closes[i]
             entry_date_sim = dates[i]
-            if daily_strategy_returns[i] == 0.0:
-                pass 
 
 if holding:
     current_price = closes[-1]
@@ -203,7 +201,6 @@ if holding:
         '備考': '含み損益'
     })
 
-# 資産推移と最大ドローダウンの再計算
 chart_df['AI戦略（累積資産）'] = (1.0 + pd.Series(daily_strategy_returns, index=chart_df.index)).cumprod() * 100
 
 equity = chart_df['AI戦略（累積資産）']
@@ -285,7 +282,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.divider()
 
 # ==========================================
-# 6. バックテスト結果とグラフの表示（指標完全復旧）
+# 6. バックテスト結果とグラフの表示
 # ==========================================
 st.subheader(f"📊 1泊2日モデル バックテスト検証成績")
 st.caption(f"※検証期間: {cutoff_str} 〜 現在（直近 {backtest_years} 年間） / 完了したトレードのみ集計")
@@ -293,14 +290,12 @@ st.caption(f"※検証期間: {cutoff_str} 〜 現在（直近 {backtest_years} 
 total_return_ai = (chart_df['AI戦略（累積資産）'].iloc[-1] / chart_df['AI戦略（累積資産）'].iloc[0] - 1.0) * 100
 total_return_bh = (chart_df['B&H(100%投資)'].iloc[-1] / chart_df['B&H(100%投資)'].iloc[0] - 1.0) * 100
 
-# 1段目：基本メトリクス（最大ドローダウン復活）
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("総収益率 (AI)", f"{total_return_ai:+.1f}%", f"B&H(フル)比: {total_return_ai - total_return_bh:+.1f}%")
 col2.metric("勝率", f"{win_rate:.1f}%", f"計{total_trades if 'total_trades' in locals() else 0}回")
 col3.metric("プロフィットファクター", f"{profit_factor:.2f}")
 col4.metric("最大ドローダウン", f"{max_dd:.1f}%")
 
-# 2段目：リスク管理指標（勝ち・負け平均R復活）
 st.markdown("#### 💎 リスク管理指標（R-Multiples）")
 r_col1, r_col2, r_col3, r_col4 = st.columns(4)
 r_col1.metric("累積獲得R (Total R)", f"{total_r:+.1f} R")
@@ -314,7 +309,6 @@ if len(closed_trades) > 0:
     st.line_chart(r_chart_df)
 
 st.write(f"▼ **資産推移グラフ（初期資金 100 からの金額推移）**")
-st.caption(f"※「AI戦略」はリスク{risk_percent}%で運用した安全な推移です。")
 st.line_chart(chart_df[['AI戦略（累積資産）', 'B&H(100%投資)', 'B&H(AIと同リスク)']])
 
 if len(trades_df) > 0:
@@ -338,17 +332,84 @@ st.bar_chart(importance_df)
 st.divider()
 
 # ==========================================
-# 8. 明日の予測と推奨購入株数
+# 8. 【大幅アップグレード】明日の予測と判断根拠レポート
 # ==========================================
-st.subheader(f"🔮 明日の【{ticker_symbol}】予測 ＆ エントリー計画")
+st.subheader(f"🔮 明日の【{ticker_symbol}】予測 ＆ AI判断レポート")
 st.write(f"直近終値: **{current_stock_price:,.1f} 円**")
 
-if st.button("明日の株価を予測し、購入株数を計算する"):
-    prediction = ai_agent.predict(today_row)
+if st.button("明日の株価を予測し、判断理由を診断する"):
+    # 予測と上昇確率の計算
+    prediction = ai_agent.predict(today_row)[0]
+    probabilities = ai_agent.predict_proba(today_row)[0]
+    up_prob = probabilities[1] * 100.0  # 上昇確率（%）
+
+    # 本日の各材料の値を取得
+    val_ret = today_row['Stock_Return'].values[0]
+    val_bb = today_row['BB_Position'].values[0]
+    val_sox = today_row['SOX_Change'].values[0]
+    val_fx = today_row['USDJPY_Change'].values[0]
+
     st.divider()
-    if prediction[0] == 1:
-        st.success(f"🤖 AIの予測: **「明日は上昇する可能性が高いです（買いサイン）」**")
-        
+
+    # --- 診断結果のヘッダー表示 ---
+    if prediction == 1:
+        st.success(f"🤖 AIの判定: **「買いサイン点灯（明日は上昇する可能性が高いです）」**")
+        st.metric("AIの強気度（上昇確率）", f"{up_prob:.1f}%", help="100本の決定木AIのうち何%が上昇に投票したか")
+    else:
+        st.error(f"🤖 AIの判定: **「見送り（下落または方向感の乏しい相場が予想されます）」**")
+        st.metric("AIの弱気度（下落/停滞確率）", f"{100.0 - up_prob:.1f}%")
+
+    # --- 初心者でもわかる！材料別の通信簿（個別診断） ---
+    st.markdown("### 📋 なぜこの判断になったのか？（AIの材料チェックシート）")
+
+    # ① 米国SOX指数
+    if val_sox >= 0.5:
+        sox_text = f"🟢 **追い風（好材料）:** 前日の米国SOX指数が `{val_sox:+.2f}%` と堅調。世界の半導体株にお金が集まる流れが追い風になっています。"
+    elif val_sox <= -0.5:
+        sox_text = f"🔴 **向かい風（警戒）:** 前日の米国SOX指数が `{val_sox:+.2f}%` と下落。米ハイテク株の売り圧力が日本市場にも波及する恐れがあります。"
+    else:
+        sox_text = f"⚪ **中立:** 米国SOX指数は `{val_sox:+.2f}%` と小動き。外部環境からの大きな影響は少なそうです。"
+
+    # ② ドル円為替
+    if val_fx >= 0.2:
+        fx_text = f"🟢 **追い風（好材料）:** ドル円が `{val_fx:+.2f}%` 円安方向に進行。海外売上比率の高いアドバンテストにとって業績押し上げの支援材料です。"
+    elif val_fx <= -0.2:
+        fx_text = f"🔴 **向かい風（警戒）:** ドル円が `{val_fx:+.2f}%` 円高方向に振れています。輸出企業にとって短期的な重荷となるリスクがあります。"
+    else:
+        fx_text = f"⚪ **中立:** 為替の変動は `{val_fx:+.2f}%` と安定しています。"
+
+    # ③ ボリンジャーバンド位置
+    if val_bb <= -1.0:
+        bb_text = f"🟢 **買い場（自律反発期待）:** ボリンジャーバンドの `{val_bb:+.2f}σ`（下限付近）に位置しています。『売られすぎ』のサインが出ており、リバウンド（押し目買い）が狙いやすい水準です。"
+    elif val_bb >= 1.5:
+        bb_text = f"🔴 **警戒（過熱感）:** バンドの `{val_bb:+.2f}σ`（上限付近）に達しています。短期的に買われすぎており、いつ利食い売りに押されてもおかしくない警戒ゾーンです。"
+    else:
+        bb_text = f"⚪ **中立:** バンドの `{val_bb:+.2f}σ` と中心線付近におり、極端な過熱感や割安感はありません。"
+
+    # ④ 直近の値動き
+    if val_ret < -1.0:
+        ret_text = f"📉 **押し目形成:** 前日終値比 `{val_ret:+.2f}%` と一服しています。過去の学習上、下落翌日にリバウンドするパターンに合致します。"
+    elif val_ret > 1.0:
+        ret_text = f"📈 **モメンタム（勢い）:** 前日比 `{val_ret:+.2f}%` と上昇基調。上値を試す強い買いの勢いが継続しています。"
+    else:
+        ret_text = f"⚪ **もみ合い:** 前日比 `{val_ret:+.2f}%` とほぼ横ばいです。"
+
+    # レポート表示
+    st.info(f"""
+    **【現在の4大材料の診断結果】**
+    * **米国半導体市況:** {sox_text}
+    * **為替（ドル円）:** {fx_text}
+    * **チャート位置（BB）:** {bb_text}
+    * **直近の株価推移:** {ret_text}
+    """)
+
+    # --- 総合結論 ---
+    if prediction == 1:
+        st.markdown(f"""
+        > 💡 **AIの総合結論:** > 上記の材料を総合した結果、**「上値を目指す確率（{up_prob:.1f}%）がリスクを上回る」**とAIが判断しました。  
+        > ルール通り、本日の引けでエントリーし、明日の引け（または損切りライン）で手仕舞う計画を立ててください。
+        """)
+
         stop_loss_price = current_stock_price * (1.0 - (stop_loss_pct / 100.0))
         risk_per_share = current_stock_price - stop_loss_price
         exact_shares = risk_amount_1r / risk_per_share if risk_per_share > 0 else 0
@@ -361,14 +422,9 @@ if st.button("明日の株価を予測し、購入株数を計算する"):
         calc_col2.metric("損切り目標価格", f"{stop_loss_price:,.1f} 円", f"-{stop_loss_pct}% 下落時")
         calc_col3.metric("1株あたりのリスク額", f"{risk_per_share:,.1f} 円")
         
-        st.info(f"""
-        **【購入配分の計算結果】**
-        * **理論上の最適株数:** 約 **`{exact_shares:.1f} 株`**
-        * **通常の単元（100株単位）:** **`{unit_shares} 株`**
-        * **想定買付代金（100株単位時）:** 約 **`{total_unit_cost:,.0f} 円`**
-        
-        ⚠️ **ルール:** 本日の引けで買い、**明日の引け（または損切り）で必ず手仕舞い**します。
-        """)
+        st.caption(f"・推奨株数: 約 **{exact_shares:.1f}株**（単元なら {unit_shares}株 / 約{total_unit_cost:,.0f}円）")
     else:
-        st.error(f"🤖 AIの予測: **「明日は下落、または様子見です」**")
-        st.warning("⚠️ **本日のエントリーは見送りです。新規で買いポジションは持たないでください。**")
+        st.markdown(f"""
+        > 💡 **AIの総合結論:** > 現在の環境は、向かい風となる材料（または過熱感）があり、**「勝率や期待値が十分に見込めない」**とAIが判断しました。  
+        > **本日のエントリーは見送りです。** 無理に手を出さず、現金を温存して次の安全なチャンスを待ちましょう。
+        """)
