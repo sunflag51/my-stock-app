@@ -7,58 +7,70 @@ from sklearn.ensemble import RandomForestClassifier
 # 画面全体の幅を広げて見やすく設定
 st.set_page_config(page_title="中長期 AI予測アシスタント", layout="wide")
 
-st.title("🌊 個別株 AI予測アシスタント (単一ポジション・実戦スイング完全版)")
-st.write("保有期間を「5営業日」とし、**重複保有を禁止（1度に1ポジションのみ）**した現実の運用成績を算出します。")
+st.title("🌊 個別株 AI予測アシスタント (セクター特化・実戦完全版)")
+st.write("銘柄の業種（半導体・銀行・自動車など）に合わせて**最適なマクロ経済データ**をAIに学習させます。")
 
 st.divider()
 
 # ==========================================
 # 0. 設定パネル（サイドバー）
 # ==========================================
-st.sidebar.header("⚙️ 銘柄＆資金管理設定")
+st.sidebar.header("⚙️ 銘柄＆業種設定")
 
-ticker_symbol = st.sidebar.text_input(
-    "銘柄コード（Yahoo! Finance表記）", 
-    value="6857.T", 
-    help="例: アドバンテストなら 6857.T"
+# 業種の選択
+sector_type = st.sidebar.selectbox(
+    "業種（セクター）を選択",
+    ["半導体ハイテク（SOX連動）", "銀行・金融（長期金利連動）", "自動車・輸出（S&P500連動）"]
 )
 
-account_capital = st.sidebar.number_input(
-    "総運用資金（円）", 
-    min_value=100_000, max_value=100_000_000, value=2_000_000, step=100_000
-)
+# 銘柄コードの入力（初期値をセクターに合わせて親切に設定）
+default_ticker = "6857.T"
+if sector_type == "銀行・金融（長期金利連動）":
+    default_ticker = "8306.T"
+elif sector_type == "自動車・輸出（S&P500連動）":
+    default_ticker = "7203.T"
 
-risk_percent = st.sidebar.slider(
-    "1トレードの許容リスク（1R %）", 
-    min_value=0.5, max_value=5.0, value=1.0, step=0.1
-)
+ticker_symbol = st.sidebar.text_input("銘柄コード（Yahoo! Finance表記）", value=default_ticker)
 
-stop_loss_pct = st.sidebar.slider(
-    "損切り幅の目安（%）", 
-    min_value=2.0, max_value=20.0, value=7.0, step=0.5,
-    help="スイングトレードでは、日々のノイズで狩られないよう広めの設定（例: 7.0%）が推奨されます"
-)
+# 資金管理の設定
+account_capital = st.sidebar.number_input("総運用資金（円）", min_value=100_000, max_value=100_000_000, value=2_000_000, step=100_000)
+risk_percent = st.sidebar.slider("1トレードの許容リスク（1R %）", min_value=0.5, max_value=5.0, value=1.0, step=0.1)
+
+# セクターに合わせた推奨損切り幅
+default_sl = 7.0 if sector_type == "半導体ハイテク（SOX連動）" else 4.0
+stop_loss_pct = st.sidebar.slider("損切り幅の目安（%）", min_value=1.0, max_value=15.0, value=default_sl, step=0.5)
 
 risk_amount_1r = account_capital * (risk_percent / 100.0)
 st.sidebar.markdown(f"**許容最大損失額 (1R):** `{risk_amount_1r:,.0f} 円`")
 
 # ==========================================
-# 1. データの取得と前処理
+# 1. データの取得と前処理（セクター別に外部指標を切替）
 # ==========================================
 st.subheader(f"1. 【{ticker_symbol}】の学習データ取得中...")
+
+# セクターに応じた外部指標の選定
+if sector_type == "半導体ハイテク（SOX連動）":
+    macro_symbol = "^SOX"
+    macro_name = "米国SOX指数"
+elif sector_type == "銀行・金融（長期金利連動）":
+    macro_symbol = "^TNX"
+    macro_name = "米10年債利回り"
+else:
+    macro_symbol = "^GSPC"
+    macro_name = "米S&P500指数"
 
 try:
     stock_df = yf.Ticker(ticker_symbol).history(period="5y")[['Close', 'Volume']]
     stock_data = stock_df.rename(columns={'Close': 'Stock_Close', 'Volume': 'Stock_Volume'})
     
-    sox_data = yf.Ticker("^SOX").history(period="5y")[['Close']].rename(columns={'Close': 'SOX_Close'})
+    macro_data = yf.Ticker(macro_symbol).history(period="5y")[['Close']].rename(columns={'Close': 'Macro_Close'})
     usdjpy_data = yf.Ticker("JPY=X").history(period="5y")[['Close']].rename(columns={'Close': 'USDJPY_Close'})
     
     stock_data.index = pd.to_datetime(stock_data.index).strftime('%Y-%m-%d')
-    sox_data.index = pd.to_datetime(sox_data.index).strftime('%Y-%m-%d')
+    macro_data.index = pd.to_datetime(macro_data.index).strftime('%Y-%m-%d')
     usdjpy_data.index = pd.to_datetime(usdjpy_data.index).strftime('%Y-%m-%d')
     
-    df = pd.concat([stock_data, sox_data, usdjpy_data], axis=1).ffill().dropna()
+    df = pd.concat([stock_data, macro_data, usdjpy_data], axis=1).ffill().dropna()
 
 except Exception as e:
     st.error(f"データの取得に失敗しました。エラー: {e}")
@@ -74,15 +86,14 @@ df['SMA_20'] = df['Stock_Close'].rolling(window=20).mean()
 df['STD_20'] = df['Stock_Close'].rolling(window=20).std()
 df['BB_Position'] = (df['Stock_Close'] - df['SMA_20']) / df['STD_20']
 
-# 出来高倍率（過去20日平均比）
 df['Volume_MA20'] = df['Stock_Volume'].rolling(window=20).mean()
 df['Volume_Ratio'] = df['Stock_Volume'] / df['Volume_MA20']
 
-# 50日移動平均線からの乖離率
 df['SMA_50'] = df['Stock_Close'].rolling(window=50).mean()
 df['SMA_50_Dev'] = (df['Stock_Close'] - df['SMA_50']) / df['SMA_50'] * 100
 
-df['SOX_Change'] = df['SOX_Close'].pct_change() * 100
+# セクター別外部指標
+df['Macro_Change'] = df['Macro_Close'].pct_change() * 100
 df['USDJPY_Change'] = df['USDJPY_Close'].pct_change() * 100
 
 # 正解ラベル（5日後にプラスなら1）
@@ -97,7 +108,7 @@ features = [
     'Volume_Ratio', 
     'BB_Position', 
     'SMA_50_Dev',
-    'SOX_Change', 
+    'Macro_Change', 
     'USDJPY_Change'
 ]
 
@@ -116,11 +127,10 @@ test_df = past_df.iloc[split_idx:].copy()
 ai_agent = RandomForestClassifier(n_estimators=100, random_state=42)
 ai_agent.fit(train_df[features], train_df['Target'])
 
-# AIの売買シグナルを取得（1: 買い, 0: 見送り）
 test_df['Signal'] = ai_agent.predict(test_df[features])
 
 # ==========================================
-# 4. 【核心部分】重複なし・単一ポジションシミュレーション
+# 4. 単一ポジション（重複なし）シミュレーション
 # ==========================================
 dates = test_df.index.tolist()
 closes = test_df['Stock_Close'].values
@@ -138,14 +148,11 @@ daily_strategy_returns = np.zeros(n_days)
 trade_records = []
 
 for i in range(n_days):
-    # 前日から保有している場合の処理
     if holding:
-        # 当日の日次リターン（前日終値 -> 当日終値）
         daily_ret = (closes[i] - closes[i-1]) / closes[i-1]
         daily_strategy_returns[i] = daily_ret
         days_held += 1
         
-        # 5日経過した日の引けで売却決済
         if days_held == 5:
             exit_price = closes[i]
             trade_ret = (exit_price - entry_price) / entry_price
@@ -160,18 +167,15 @@ for i in range(n_days):
             })
             holding = False
             days_held = 0
-            continue  # 決済日は新規買いを行わない
+            continue
 
-    # ノーポジションの場合、新規買いサインを判定
     if not holding:
         if signals[i] == 1:
             holding = True
             days_held = 0
             entry_price = closes[i]
             entry_date = dates[i]
-            # 当日引けで買ったため、当日の日次リターンは0（翌日から値動きを反映）
 
-# テスト期間の末尾で保有中のポジションがあれば強制決済して記録
 if holding:
     exit_price = closes[-1]
     trade_ret = (exit_price - entry_price) / entry_price
@@ -185,12 +189,10 @@ if holding:
         'raw_ret': trade_ret
     })
 
-# 日次ベースの資産曲線計算
 test_df['AI戦略（累積資産）'] = (1.0 + pd.Series(daily_strategy_returns, index=test_df.index)).cumprod() * 100
 benchmark_daily = test_df['Stock_Close'].pct_change().fillna(0.0)
 test_df['バイ＆ホールド'] = (1.0 + benchmark_daily).cumprod() * 100
 
-# トレード集計
 trades_df = pd.DataFrame(trade_records)
 total_trades = len(trades_df)
 
@@ -212,7 +214,6 @@ if total_trades > 0:
 else:
     win_rate, profit_factor, total_r, expectancy_r, avg_win_r, avg_loss_r = 0, 0, 0, 0, 0, 0
 
-# 最大ドローダウン（日次資産曲線から算出）
 equity = test_df['AI戦略（累積資産）']
 cummax = equity.cummax()
 drawdown = (equity - cummax) / cummax * 100
@@ -224,8 +225,8 @@ benchmark_return = (test_df['バイ＆ホールド'].iloc[-1] / test_df['バイ�
 # ==========================================
 # 5. 成績表とグラフの表示
 # ==========================================
-st.subheader(f"2. 【{ticker_symbol}】 1週間スイング 実戦バックテスト成績")
-st.caption(f"検証期間: {test_df.index[0]} 〜 {test_df.index[-1]}（約{len(test_df)}営業日） / 保有期間: 5営業日固定・重複なし")
+st.subheader(f"2. 【{ticker_symbol}】 バックテスト成績（{macro_name}連動）")
+st.caption(f"検証期間: {test_df.index[0]} 〜 {test_df.index[-1]}（約{len(test_df)}営業日） / 保有期間: 5営業日・重複なし")
 
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("総収益率", f"{total_return:+.1f}%", f"銘柄ホールド比: {total_return - benchmark_return:+.1f}%")
@@ -240,16 +241,14 @@ r_col2.metric("期待値（1回平均R）", f"{expectancy_r:+.2f} R")
 r_col3.metric("勝ちトレード平均", f"{avg_win_r:+.2f} R")
 r_col4.metric("負けトレード平均", f"{avg_loss_r:.2f} R")
 
-# 累積Rの推移グラフ
 if total_trades > 0:
-    st.write("▼ **累積R推移グラフ（トレードごとの純粋な積み上げ）**")
+    st.write("▼ **累積R推移グラフ（リスクに対する利益の純粋な積み上げ）**")
     r_chart_df = trades_df.set_index('決済日')[['累積R']]
     st.line_chart(r_chart_df)
 
-st.write("▼ **資産推移グラフ（日次複利・初期資金 100 からの推移）**")
+st.write("▼ **資産推移グラフ（初期資金 100 からの推移）**")
 st.line_chart(test_df[['AI戦略（累積資産）', 'バイ＆ホールド']])
 
-# 直近のトレード履歴テーブル
 if total_trades > 0:
     with st.expander("📝 全トレード履歴の明細ログを表示（クリックで展開）"):
         display_cols = ['エントリー日', '決済日', '買値', '売値', '損益率', '獲得R', '累積R']
@@ -260,7 +259,7 @@ st.divider()
 # ==========================================
 # 6. AIの頭の中（重要度グラフ）
 # ==========================================
-st.subheader("3. 中長期AIが重視した指標ランキング")
+st.subheader(f"3. AIが重視した指標ランキング（{macro_name}との関係）")
 importances = ai_agent.feature_importances_
 importance_df = pd.DataFrame(
     {"重要度（%）": importances * 100},
@@ -270,7 +269,7 @@ importance_df = pd.DataFrame(
         "出来高の急増度 (Volume_Ratio)",
         "ボリンジャーバンド位置 (BB)",
         "50日移動平均線からの乖離 (SMA50_Dev)",
-        "米国SOX指数",
+        f"{macro_name}の動き",
         "ドル/円レート"
     ]
 ).sort_values(by="重要度（%）", ascending=False)
@@ -281,7 +280,7 @@ st.divider()
 # ==========================================
 # 7. 明日の予測と推奨購入株数
 # ==========================================
-st.subheader("4. 明日のエントリー判断 ＆ ポジションサイズ計画")
+st.subheader(f"4. 明日の【{ticker_symbol}】エントリー判断 ＆ ポジション計算")
 st.write(f"直近終値: **{current_stock_price:,.1f} 円**")
 
 if st.button("明日の株価を予測し、購入株数を計算する"):
@@ -289,7 +288,7 @@ if st.button("明日の株価を予測し、購入株数を計算する"):
     
     st.divider()
     if prediction[0] == 1:
-        st.success("🤖 AIの予測: **「今後1週間で上昇する可能性が高いです（買いサイン）」**")
+        st.success(f"🤖 AIの予測: **「今後1週間で上昇する可能性が高いです（買いサイン）」**")
         
         stop_loss_price = current_stock_price * (1.0 - (stop_loss_pct / 100.0))
         risk_per_share = current_stock_price - stop_loss_price
@@ -309,7 +308,7 @@ if st.button("明日の株価を予測し、購入株数を計算する"):
         * **通常の単元（100株単位）:** **`{unit_shares} 株`**
         * **想定買付代金（100株単位時）:** 約 **`{total_unit_cost:,.0f} 円`**
         
-        ⚠️ **ルール:** エントリー後は5営業日ホールドします。その間に新たな買いサインが出ても**追加購入は行いません**。
+        ⚠️ **ルール:** エントリー後は5営業日ホールドします。その間の新規サインは追加購入しません。
         """)
     else:
         st.error("🤖 AIの予測: **「今後1週間は下落、または様子見です」**")
