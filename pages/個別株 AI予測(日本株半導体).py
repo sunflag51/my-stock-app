@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 # 画面全体の幅を広げて見やすく設定
 st.set_page_config(page_title="個別株 AI予測アシスタント", layout="wide")
 
-st.title("🎯 個別株 AI予測＆資金管理アシスタント (1泊2日・完全実戦版)")
+st.title("🎯 個別株 AI予測＆資金管理アシスタント (1泊2日・完全復旧版)")
 st.write("個別銘柄・米国SOX指数・為替を学習したAIのバックテスト成績を、**資金管理・スリッページを厳密に処理したチャート**で可視化します。")
 
 st.divider()
@@ -52,13 +52,11 @@ backtest_years = st.sidebar.slider("検証期間（直近の年数）", min_valu
 st.subheader(f"1. 【{ticker_symbol}】の学習データ取得中...")
 
 try:
-    # ローソク足や厳密なストップロス判定のためにOpen, High, Lowも取得
     stock_df = yf.Ticker(ticker_symbol).history(period="5y")[['Open', 'High', 'Low', 'Close', 'Volume']]
     stock_data = stock_df.rename(columns={
         'Open': 'Stock_Open', 'High': 'Stock_High', 'Low': 'Stock_Low', 'Close': 'Stock_Close', 'Volume': 'Stock_Volume'
     })
     
-    # 出来高0のダミー日（祝日など）を排除
     stock_data = stock_data[stock_data['Stock_Volume'] > 0]
     stock_data.index = pd.to_datetime(stock_data.index).strftime('%Y-%m-%d')
     
@@ -68,7 +66,6 @@ try:
     usdjpy_data = yf.Ticker("JPY=X").history(period="5y")[['Close']].rename(columns={'Close': 'USDJPY_Close'})
     usdjpy_data.index = pd.to_datetime(usdjpy_data.index).strftime('%Y-%m-%d')
     
-    # 日本カレンダーを主軸にして結合
     df = stock_data.join(sox_data).join(usdjpy_data)
     df = df.ffill().dropna()
 
@@ -90,11 +87,9 @@ df['BB_Position'] = (df['Stock_Close'] - df['SMA_20']) / df['STD_20']
 df['SOX_Change'] = df['SOX_Close'].pct_change() * 100
 df['USDJPY_Change'] = df['USDJPY_Close'].pct_change() * 100
 
-# 1泊2日（翌日の終値で決済）のための正解ラベル
 df['Next_Return_Pct'] = (df['Stock_Close'].shift(-1) - df['Stock_Close']) / df['Stock_Close']
 df['Target'] = np.where(df['Next_Return_Pct'] > 0, 1, 0)
 
-# 正解のない直近1日もチャート描画と予測のために残す
 df = df.dropna(subset=['Stock_Return', 'BB_Position', 'SOX_Change', 'USDJPY_Change'])
 features = ['Stock_Return', 'BB_Position', 'SOX_Change', 'USDJPY_Change']
 today_row = df.iloc[-1:][features]
@@ -116,7 +111,7 @@ ai_agent.fit(train_df[features], train_df['Target'])
 chart_df['Signal'] = ai_agent.predict(chart_df[features])
 
 # ==========================================
-# 4. 【完全修正】リアル・シミュレーションループ（1泊2日モデル）
+# 4. リアル・シミュレーションループ（1泊2日モデル）
 # ==========================================
 dates = chart_df.index.strftime('%Y-%m-%d').tolist()
 closes = chart_df['Stock_Close'].values
@@ -125,7 +120,6 @@ lows = chart_df['Stock_Low'].values
 signals = chart_df['Signal'].values
 n_days = len(chart_df)
 
-# ポジションサイズ（リスク許容度に基づく安全な資金配分）
 position_weight = (risk_percent / 100.0) / (stop_loss_pct / 100.0)
 if position_weight > 1.0:
     position_weight = 1.0
@@ -139,13 +133,10 @@ daily_strategy_returns = np.zeros(n_days)
 trade_records = []
 
 for i in range(n_days):
-    # 1泊2日なので、前日保有していれば必ず本日決済する
     if holding:
         stop_loss_price_sim = entry_price_sim * (1.0 - (stop_loss_pct / 100.0))
 
-        # 日中の安値が損切りラインに触れたら即座に損切り
         if lows[i] <= stop_loss_price_sim:
-            # 窓開け大暴落スタートのペナルティ処理
             exit_price = min(stop_loss_price_sim, opens[i])
             trade_ret = (exit_price - entry_price_sim) / entry_price_sim
             daily_strategy_returns[i] = ((exit_price - closes[i-1]) / closes[i-1]) * position_weight
@@ -166,7 +157,6 @@ for i in range(n_days):
             })
             holding = False
         else:
-            # 損切りにかからなければ、本日の引け（終値）で決済
             exit_price = closes[i]
             trade_ret = (exit_price - entry_price_sim) / entry_price_sim
             daily_strategy_returns[i] = ((exit_price - closes[i-1]) / closes[i-1]) * position_weight
@@ -187,17 +177,14 @@ for i in range(n_days):
             })
             holding = False
 
-    # 本日決済した後（または何も持っていない場合）、明日に向けての買いサインを判定
     if not holding:
         if signals[i] == 1:
             holding = True
             entry_price_sim = closes[i]
             entry_date_sim = dates[i]
-            # エントリー日当日は終値で買うため、本日のリターンは0（翌日に反映）
             if daily_strategy_returns[i] == 0.0:
                 pass 
 
-# 期間末の未決済ポジション記録（本日買ったまま終了した場合）
 if holding:
     current_price = closes[-1]
     unrealized_ret = (current_price - entry_price_sim) / entry_price_sim
@@ -216,8 +203,14 @@ if holding:
         '備考': '含み損益'
     })
 
-# 資産推移の正確な計算
+# 資産推移と最大ドローダウンの再計算
 chart_df['AI戦略（累積資産）'] = (1.0 + pd.Series(daily_strategy_returns, index=chart_df.index)).cumprod() * 100
+
+equity = chart_df['AI戦略（累積資産）']
+cummax = equity.cummax()
+drawdown = (equity - cummax) / cummax * 100
+max_dd = drawdown.min()
+
 chart_df['B&H(100%投資)'] = (chart_df['Stock_Close'] / chart_df['Stock_Close'].iloc[0]) * 100
 bh_daily = chart_df['Stock_Close'].pct_change().fillna(0.0)
 chart_df['B&H(AIと同リスク)'] = (1.0 + bh_daily * position_weight).cumprod() * 100
@@ -235,11 +228,13 @@ if len(trades_df) > 0:
         profit_factor = (wins['獲得R'].sum() / abs(losses['獲得R'].sum())) if abs(losses['獲得R'].sum()) > 0 else 999.0
         total_r = float(closed_trades['獲得R'].sum())
         expectancy_r = float(closed_trades['獲得R'].mean())
+        avg_win_r = float(wins['獲得R'].mean()) if len(wins) > 0 else 0.0
+        avg_loss_r = float(losses['獲得R'].mean()) if len(losses) > 0 else 0.0
         closed_trades['累積R'] = closed_trades['獲得R'].cumsum()
     else:
-        win_rate, profit_factor, total_r, expectancy_r = 0, 0, 0, 0
+        win_rate, profit_factor, total_r, expectancy_r, avg_win_r, avg_loss_r = 0, 0, 0, 0, 0, 0
 else:
-    win_rate, profit_factor, total_r, expectancy_r = 0, 0, 0, 0
+    win_rate, profit_factor, total_r, expectancy_r, avg_win_r, avg_loss_r = 0, 0, 0, 0, 0, 0
     closed_trades = pd.DataFrame()
 
 # ==========================================
@@ -275,7 +270,6 @@ if len(trades_df) > 0:
             marker=dict(symbol='triangle-down', size=16, color='red', line=dict(width=1, color='darkred'))
         ))
 
-# 休場日を精密に計算してチャートからギャップ（隙間）を削除
 dt_all = pd.date_range(start=chart_df.index[0], end=chart_df.index[-1])
 dt_obs = pd.to_datetime(chart_df.index)
 dt_breaks = dt_all.difference(dt_obs).strftime("%Y-%m-%d").tolist()
@@ -291,7 +285,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.divider()
 
 # ==========================================
-# 6. バックテスト結果とグラフの表示
+# 6. バックテスト結果とグラフの表示（指標完全復旧）
 # ==========================================
 st.subheader(f"📊 1泊2日モデル バックテスト検証成績")
 st.caption(f"※検証期間: {cutoff_str} 〜 現在（直近 {backtest_years} 年間） / 完了したトレードのみ集計")
@@ -299,11 +293,20 @@ st.caption(f"※検証期間: {cutoff_str} 〜 現在（直近 {backtest_years} 
 total_return_ai = (chart_df['AI戦略（累積資産）'].iloc[-1] / chart_df['AI戦略（累積資産）'].iloc[0] - 1.0) * 100
 total_return_bh = (chart_df['B&H(100%投資)'].iloc[-1] / chart_df['B&H(100%投資)'].iloc[0] - 1.0) * 100
 
+# 1段目：基本メトリクス（最大ドローダウン復活）
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("総収益率 (AI)", f"{total_return_ai:+.1f}%", f"B&H(フル)比: {total_return_ai - total_return_bh:+.1f}%")
 col2.metric("勝率", f"{win_rate:.1f}%", f"計{total_trades if 'total_trades' in locals() else 0}回")
 col3.metric("プロフィットファクター", f"{profit_factor:.2f}")
-col4.metric("期待値（1回平均R）", f"{expectancy_r:+.2f} R")
+col4.metric("最大ドローダウン", f"{max_dd:.1f}%")
+
+# 2段目：リスク管理指標（勝ち・負け平均R復活）
+st.markdown("#### 💎 リスク管理指標（R-Multiples）")
+r_col1, r_col2, r_col3, r_col4 = st.columns(4)
+r_col1.metric("累積獲得R (Total R)", f"{total_r:+.1f} R")
+r_col2.metric("期待値（1回平均R）", f"{expectancy_r:+.2f} R")
+r_col3.metric("勝ちトレード平均", f"{avg_win_r:+.2f} R")
+r_col4.metric("負けトレード平均", f"{avg_loss_r:.2f} R")
 
 if len(closed_trades) > 0:
     st.write("▼ **累積R推移グラフ（AIの純粋なトレード成績）**")
