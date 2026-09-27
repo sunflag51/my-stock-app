@@ -6,3 +6,4 @@ matplotlib
 plotly
 streamlit-lightweight-charts
 openpyxl
+scikit-learn
