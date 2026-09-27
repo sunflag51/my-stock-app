@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 # 画面全体の幅を広げて見やすく設定
 st.set_page_config(page_title="AI予測 ＆ ビジュアルバックテスト", layout="wide")
 
-st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (バグ修正版)")
+st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (チャート厳格版)")
 st.write("ボリンジャーバンドや移動平均線を表示した**TradingView風ローソク足チャート**で、AIの売買ポイントを検証できます。")
 
 st.divider()
@@ -39,6 +39,17 @@ default_sl = 7.0 if sector_type == "半導体ハイテク（SOX連動）" else 4
 stop_loss_pct = st.sidebar.slider("損切り幅の目安（%）", min_value=1.0, max_value=15.0, value=default_sl, step=0.5)
 
 risk_amount_1r = account_capital * (risk_percent / 100.0)
+
+# ------------------------------------------
+# 【新規追加】バックテスト検証期間の指定
+# ------------------------------------------
+st.sidebar.divider()
+st.sidebar.header("📊 バックテスト設定")
+backtest_years = st.sidebar.slider(
+    "検証期間（直近の年数）", 
+    min_value=1, max_value=3, value=1, 
+    help="チャートと成績表に表示し、AIの実力をテストする期間です。これより古いデータはAIの「学習用」としてのみ裏側で使用されます。"
+)
 
 # ------------------------------------------
 # 保有ポジション管理（アシスト機能）
@@ -144,18 +155,26 @@ today_row = df.iloc[-1:][features]
 past_df = df.dropna(subset=['Next_5d_Return_Pct']).copy()
 
 # ==========================================
-# 3. 学習（70%）とバックテスト（30%）
+# 3. 学習（Train）とテスト（Test）の厳密な分割
 # ==========================================
-split_idx = int(len(past_df) * 0.7)
-train_df = past_df.iloc[:split_idx]
-test_df = past_df.iloc[split_idx:].copy()
+# AIの学習用（カンペ）と、テスト用（本番）を日付で明確に分割
+past_df_dates = pd.to_datetime(past_df.index)
+latest_date = past_df_dates.max()
+cutoff_date = latest_date - pd.DateOffset(years=backtest_years)
+cutoff_str = cutoff_date.strftime('%Y-%m-%d')
+
+# 指定した年数より「古い」データはAIの学習に使用
+train_df = past_df[past_df.index < cutoff_str].copy()
+
+# 指定した年数より「新しい」データのみをバックテスト（チャート表示）に使用
+test_df = past_df[past_df.index >= cutoff_str].copy()
 
 ai_agent = RandomForestClassifier(n_estimators=100, random_state=42)
 ai_agent.fit(train_df[features], train_df['Target'])
 test_df['Signal'] = ai_agent.predict(test_df[features])
 
 # ==========================================
-# 4. 単一ポジションシミュレーション
+# 4. 単一ポジションシミュレーション（テスト期間のみ）
 # ==========================================
 dates = test_df.index.tolist()
 closes = test_df['Stock_Close'].values
@@ -204,7 +223,6 @@ for i in range(n_days):
             entry_price_sim = closes[i]
             entry_date_sim = dates[i]
 
-# 期間末の強制決済（ここで文字列を足さずに、備考欄に記載するよう修正）
 if holding:
     exit_price = closes[-1]
     trade_ret = (exit_price - entry_price_sim) / entry_price_sim
@@ -214,7 +232,7 @@ if holding:
         'raw_entry_price': entry_price_sim,
         'raw_exit_price': exit_price,
         'エントリー日': entry_date_sim,
-        '決済日': dates[-1],
+        '決済日': dates[-1] + " (期間末)",
         '買値': f"{entry_price_sim:,.1f}",
         '売値': f"{exit_price:,.1f}",
         '損益率': f"{trade_ret * 100:+.2f}%",
@@ -222,7 +240,6 @@ if holding:
         '備考': '期間末強制決済'
     })
 
-# グラフ描画用にインデックスを正確な日付型に変換
 chart_test_df = test_df.copy()
 chart_test_df.index = pd.to_datetime(chart_test_df.index)
 
@@ -245,7 +262,7 @@ else:
     win_rate, profit_factor, total_r, expectancy_r = 0, 0, 0, 0
 
 # ==========================================
-# 5. 【TradingView風】チャートの描画（日付バグ修正）
+# 5. 【TradingView風】チャートの描画（バックテスト期間のみ完全ロック）
 # ==========================================
 st.subheader(f"📈 【{ticker_symbol}】 TradingView風 ビジュアル・バックテスト")
 
@@ -294,26 +311,12 @@ if total_trades > 0:
         marker=dict(symbol='triangle-down', size=16, color='red', line=dict(width=1, color='darkred'))
     ))
 
+# 過去の余計なデータにズームアウトできないよう、スライダーやボタンを削除してスッキリ固定
 fig.update_layout(
     xaxis_title=None, yaxis_title="株価 (円)", hovermode="x unified", height=550, 
     margin=dict(l=10, r=10, t=50, b=10), xaxis_rangeslider_visible=False,
-    legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
-    xaxis=dict(
-        rangeselector=dict(
-            buttons=list([
-                dict(count=3, label="3ヶ月", step="month", stepmode="backward"),
-                dict(count=6, label="半年", step="month", stepmode="backward"),
-                dict(count=1, label="1年", step="year", stepmode="backward"),
-                dict(step="all", label="全期間")
-            ]), font=dict(size=12)
-        ), type="date"
-    )
+    legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5)
 )
-
-if len(chart_test_df) > 0:
-    last_date = chart_test_df.index[-1]
-    six_months_ago = last_date - pd.DateOffset(months=6)
-    fig.update_xaxes(range=[six_months_ago, last_date])
 
 st.plotly_chart(fig, use_container_width=True)
 st.divider()
@@ -322,6 +325,8 @@ st.divider()
 # 6. バックテスト結果とグラフの表示
 # ==========================================
 st.subheader(f"📊 バックテスト検証成績（{macro_name}連動）")
+st.caption(f"※検証期間: {cutoff_str} 〜 現在（直近 {backtest_years} 年間）")
+
 col1, col2, col3, col4 = st.columns(4)
 total_return = (chart_test_df['AI戦略（累積資産）'].iloc[-1] / chart_test_df['AI戦略（累積資産）'].iloc[0] - 1.0) * 100
 col1.metric("総収益率", f"{total_return:+.1f}%")
@@ -331,9 +336,8 @@ col4.metric("期待値（1回平均R）", f"{expectancy_r:+.2f} R")
 
 if total_trades > 0:
     st.write("▼ **累積R推移グラフ**")
-    # 【バグ修正】横軸を確実に日付型にする
     r_chart_df = trades_df.copy()
-    r_chart_df['決済日'] = pd.to_datetime(r_chart_df['決済日'])
+    r_chart_df['決済日'] = pd.to_datetime(r_chart_df['決済日'].str.replace(' (期間末)', '', regex=False))
     r_chart_df = r_chart_df.set_index('決済日')[['累積R']]
     st.line_chart(r_chart_df)
     
