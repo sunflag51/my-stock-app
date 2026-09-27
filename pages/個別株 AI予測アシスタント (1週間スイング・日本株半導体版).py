@@ -9,8 +9,8 @@ import plotly.graph_objects as go
 # 画面全体の幅を広げて見やすく設定
 st.set_page_config(page_title="AI予測 ＆ ビジュアルバックテスト", layout="wide")
 
-st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (スマホ最適化版)")
-st.write("AIの過去の売買ポイントをチャート上で確認できます。左上のボタンで期間を絞ると見やすくなります。")
+st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (本格チャート版)")
+st.write("ボリンジャーバンドや移動平均線を表示した**TradingView風ローソク足チャート**で、AIの売買ポイントを検証できます。")
 
 st.divider()
 
@@ -55,7 +55,7 @@ if is_holding:
     entry_date_input = st.sidebar.date_input("買付日（約定日）", value=date.today())
 
 # ==========================================
-# 1. データの取得と前処理
+# 1. データの取得と前処理（ローソク足用にOpen/High/Lowも取得）
 # ==========================================
 if sector_type == "半導体ハイテク（SOX連動）":
     macro_symbol = "^SOX"
@@ -68,8 +68,11 @@ else:
     macro_name = "米S&P500指数"
 
 try:
-    stock_df = yf.Ticker(ticker_symbol).history(period="5y")[['Close', 'Volume']]
-    stock_data = stock_df.rename(columns={'Close': 'Stock_Close', 'Volume': 'Stock_Volume'})
+    # 【変更点】ローソク足を描くため、Open, High, Low, Close すべてを取得
+    stock_df = yf.Ticker(ticker_symbol).history(period="5y")[['Open', 'High', 'Low', 'Close', 'Volume']]
+    stock_data = stock_df.rename(columns={
+        'Open': 'Stock_Open', 'High': 'Stock_High', 'Low': 'Stock_Low', 'Close': 'Stock_Close', 'Volume': 'Stock_Volume'
+    })
     
     macro_data = yf.Ticker(macro_symbol).history(period="5y")[['Close']].rename(columns={'Close': 'Macro_Close'})
     usdjpy_data = yf.Ticker("JPY=X").history(period="5y")[['Close']].rename(columns={'Close': 'USDJPY_Close'})
@@ -113,17 +116,24 @@ if is_holding and entry_price_input > 0:
     st.divider()
 
 # ==========================================
-# 2. テクニカル指標の計算
+# 2. テクニカル指標の計算（チャート用ライン追加）
 # ==========================================
 df['Stock_Return_1d'] = df['Stock_Close'].pct_change() * 100
 df['Stock_Return_5d'] = df['Stock_Close'].pct_change(periods=5) * 100
+
+# 移動平均線とボリンジャーバンド
 df['SMA_20'] = df['Stock_Close'].rolling(window=20).mean()
 df['STD_20'] = df['Stock_Close'].rolling(window=20).std()
+df['BB_Upper'] = df['SMA_20'] + (df['STD_20'] * 2)  # チャート用 +2σ
+df['BB_Lower'] = df['SMA_20'] - (df['STD_20'] * 2)  # チャート用 -2σ
 df['BB_Position'] = (df['Stock_Close'] - df['SMA_20']) / df['STD_20']
-df['Volume_MA20'] = df['Stock_Volume'].rolling(window=20).mean()
-df['Volume_Ratio'] = df['Stock_Volume'] / df['Volume_MA20']
+
 df['SMA_50'] = df['Stock_Close'].rolling(window=50).mean()
 df['SMA_50_Dev'] = (df['Stock_Close'] - df['SMA_50']) / df['SMA_50'] * 100
+
+df['Volume_MA20'] = df['Stock_Volume'].rolling(window=20).mean()
+df['Volume_Ratio'] = df['Stock_Volume'] / df['Volume_MA20']
+
 df['Macro_Change'] = df['Macro_Close'].pct_change() * 100
 df['USDJPY_Change'] = df['USDJPY_Close'].pct_change() * 100
 
@@ -231,41 +241,72 @@ else:
     win_rate, profit_factor, total_r, expectancy_r = 0, 0, 0, 0
 
 # ==========================================
-# 5. 【スマホ最適化】AI売買ポイントのチャート可視化
+# 5. 【TradingView風】チャートの描画
 # ==========================================
-st.subheader(f"📈 【{ticker_symbol}】 AI売買ポイントのチャート確認")
+st.subheader(f"📈 【{ticker_symbol}】 TradingView風 ビジュアル・バックテスト")
 
 fig = go.Figure()
 
-# ① 株価推移（グレーの線）
-fig.add_trace(go.Scatter(
-    x=test_df.index, y=test_df['Stock_Close'], 
-    mode='lines', name='株価 (終値)', 
-    line=dict(color='#888888', width=1.5)
+# ① ローソク足 (Candlestick)
+fig.add_trace(go.Candlestick(
+    x=test_df.index,
+    open=test_df['Stock_Open'],
+    high=test_df['Stock_High'],
+    low=test_df['Stock_Low'],
+    close=test_df['Stock_Close'],
+    name='ローソク足',
+    increasing_line_color='#26a69a', # TradingViewでお馴染みの緑
+    decreasing_line_color='#ef5350'  # TradingViewでお馴染みの赤
 ))
 
-# ② 売買マーカーのプロット（スマホ用に少し大きく見やすく設定）
+# ② 20日移動平均線 (SMA 20)
+fig.add_trace(go.Scatter(
+    x=test_df.index, y=test_df['SMA_20'], 
+    mode='lines', name='SMA 20 (中心線)', 
+    line=dict(color='orange', width=1.5)
+))
+
+# ③ 50日移動平均線 (SMA 50)
+fig.add_trace(go.Scatter(
+    x=test_df.index, y=test_df['SMA_50'], 
+    mode='lines', name='SMA 50 (中期線)', 
+    line=dict(color='blue', width=1.5)
+))
+
+# ④ ボリンジャーバンド (+2σ / -2σ)
+fig.add_trace(go.Scatter(
+    x=test_df.index, y=test_df['BB_Upper'], 
+    mode='lines', name='BB +2σ', 
+    line=dict(color='rgba(173, 216, 230, 0.5)', width=1, dash='dot') # 水色の点線
+))
+fig.add_trace(go.Scatter(
+    x=test_df.index, y=test_df['BB_Lower'], 
+    mode='lines', name='BB -2σ', 
+    line=dict(color='rgba(173, 216, 230, 0.5)', width=1, dash='dot'),
+    fill='tonexty', fillcolor='rgba(173, 216, 230, 0.1)' # 上の線との間を薄い水色で塗りつぶし
+))
+
+# ⑤ 売買マーカーのプロット（🔵買い / 🔴売り）
 if total_trades > 0:
     fig.add_trace(go.Scatter(
         x=trades_df['raw_entry_date'], y=trades_df['raw_entry_price'],
-        mode='markers', name='🔵 買い',
+        mode='markers', name='🔵 買いエントリー',
         marker=dict(symbol='triangle-up', size=16, color='blue', line=dict(width=1, color='darkblue'))
     ))
     fig.add_trace(go.Scatter(
         x=trades_df['raw_exit_date'], y=trades_df['raw_exit_price'],
-        mode='markers', name='🔴 売り',
+        mode='markers', name='🔴 決済（売り）',
         marker=dict(symbol='triangle-down', size=16, color='red', line=dict(width=1, color='darkred'))
     ))
 
-# ③ スマホ向けレイアウト設定
+# ⑥ スマホ・TradingView向けレイアウト設定
 fig.update_layout(
     xaxis_title=None, yaxis_title="株価 (円)",
     hovermode="x unified", 
-    height=450, # スマホ画面に収まりやすい高さ
-    margin=dict(l=10, r=10, t=50, b=10), # 左右の余白を極限まで削減
-    legend=dict(
-        orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5 # 凡例を下に配置
-    ),
+    height=550, 
+    margin=dict(l=10, r=10, t=50, b=10),
+    xaxis_rangeslider_visible=False, # ローソク足デフォルトの下部スライダーを消してスッキリさせる
+    legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
     xaxis=dict(
         rangeselector=dict(
             buttons=list([
@@ -280,7 +321,7 @@ fig.update_layout(
     )
 )
 
-# ④ アプリ起動時のデフォルト表示を「直近半年」にズームする
+# アプリ起動時のデフォルト表示を「直近半年」にズームする
 if len(test_df) > 0:
     last_date = pd.to_datetime(test_df.index[-1])
     six_months_ago = last_date - pd.DateOffset(months=6)
