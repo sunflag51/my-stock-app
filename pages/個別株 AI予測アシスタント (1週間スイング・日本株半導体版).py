@@ -4,13 +4,13 @@ import pandas as pd
 import numpy as np
 from datetime import date
 from sklearn.ensemble import RandomForestClassifier
-import plotly.graph_objects as go  # ← 【新規追加】チャート描画用ライブラリ
+import plotly.graph_objects as go
 
 # 画面全体の幅を広げて見やすく設定
 st.set_page_config(page_title="AI予測 ＆ ビジュアルバックテスト", layout="wide")
 
-st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (チャート確認版)")
-st.write("AIの過去の売買ポイント（エントリーと決済）を**実際のチャート上**で視覚的に確認できます。")
+st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (スマホ最適化版)")
+st.write("AIの過去の売買ポイントをチャート上で確認できます。左上のボタンで期間を絞ると見やすくなります。")
 
 st.divider()
 
@@ -196,7 +196,6 @@ for i in range(n_days):
             entry_price_sim = closes[i]
             entry_date_sim = dates[i]
 
-# 期間末の強制決済
 if holding:
     exit_price = closes[-1]
     trade_ret = (exit_price - entry_price_sim) / entry_price_sim
@@ -232,42 +231,60 @@ else:
     win_rate, profit_factor, total_r, expectancy_r = 0, 0, 0, 0
 
 # ==========================================
-# 5. 【新規追加】AIの売買ポイントをチャートで可視化 (Plotly)
+# 5. 【スマホ最適化】AI売買ポイントのチャート可視化
 # ==========================================
 st.subheader(f"📈 【{ticker_symbol}】 AI売買ポイントのチャート確認")
-st.write("青い上矢印（🔵）が「買った日」、赤い下矢印（🔴）が「売った日（5日後）」を示しています。")
 
 fig = go.Figure()
 
-# ① 株価の推移（折れ線グラフ）
+# ① 株価推移（グレーの線）
 fig.add_trace(go.Scatter(
     x=test_df.index, y=test_df['Stock_Close'], 
     mode='lines', name='株価 (終値)', 
-    line=dict(color='gray', width=1.5)
+    line=dict(color='#888888', width=1.5)
 ))
 
-# ② 売買マーカーのプロット
+# ② 売買マーカーのプロット（スマホ用に少し大きく見やすく設定）
 if total_trades > 0:
-    # 買いポイント（青い上向き三角形）
     fig.add_trace(go.Scatter(
         x=trades_df['raw_entry_date'], y=trades_df['raw_entry_price'],
-        mode='markers', name='🔵 買いエントリー',
-        marker=dict(symbol='triangle-up', size=14, color='blue', line=dict(width=1, color='darkblue'))
+        mode='markers', name='🔵 買い',
+        marker=dict(symbol='triangle-up', size=16, color='blue', line=dict(width=1, color='darkblue'))
     ))
-    # 売りポイント（赤い下向き三角形）
     fig.add_trace(go.Scatter(
         x=trades_df['raw_exit_date'], y=trades_df['raw_exit_price'],
-        mode='markers', name='🔴 決済（売り）',
-        marker=dict(symbol='triangle-down', size=14, color='red', line=dict(width=1, color='darkred'))
+        mode='markers', name='🔴 売り',
+        marker=dict(symbol='triangle-down', size=16, color='red', line=dict(width=1, color='darkred'))
     ))
 
-# チャートの見た目調整（ズーム可能）
+# ③ スマホ向けレイアウト設定
 fig.update_layout(
-    xaxis_title="日付", yaxis_title="株価 (円)",
-    hovermode="x unified", height=550,
-    margin=dict(l=0, r=0, t=30, b=0),
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    xaxis_title=None, yaxis_title="株価 (円)",
+    hovermode="x unified", 
+    height=450, # スマホ画面に収まりやすい高さ
+    margin=dict(l=10, r=10, t=50, b=10), # 左右の余白を極限まで削減
+    legend=dict(
+        orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5 # 凡例を下に配置
+    ),
+    xaxis=dict(
+        rangeselector=dict(
+            buttons=list([
+                dict(count=3, label="3ヶ月", step="month", stepmode="backward"),
+                dict(count=6, label="半年", step="month", stepmode="backward"),
+                dict(count=1, label="1年", step="year", stepmode="backward"),
+                dict(step="all", label="全期間")
+            ]),
+            font=dict(size=12)
+        ),
+        type="date"
+    )
 )
+
+# ④ アプリ起動時のデフォルト表示を「直近半年」にズームする
+if len(test_df) > 0:
+    last_date = pd.to_datetime(test_df.index[-1])
+    six_months_ago = last_date - pd.DateOffset(months=6)
+    fig.update_xaxes(range=[six_months_ago.strftime('%Y-%m-%d'), last_date.strftime('%Y-%m-%d')])
 
 st.plotly_chart(fig, use_container_width=True)
 
@@ -285,7 +302,7 @@ col3.metric("プロフィットファクター", f"{profit_factor:.2f}")
 col4.metric("期待値（1回平均R）", f"{expectancy_r:+.2f} R")
 
 if total_trades > 0:
-    with st.expander("📝 全トレード履歴の明細ログを表示（クリックで展開）"):
+    with st.expander("📝 全トレード履歴の明細ログを表示（タップで展開）"):
         display_cols = ['エントリー日', '決済日', '買値', '売値', '損益率', '獲得R']
         st.dataframe(trades_df[display_cols].sort_index(ascending=False), use_container_width=True)
 
