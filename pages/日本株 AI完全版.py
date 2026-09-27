@@ -7,10 +7,10 @@ from sklearn.ensemble import RandomForestClassifier
 import plotly.graph_objects as go
 
 # 画面全体の幅を広げて見やすく設定
-st.set_page_config(page_title="AI予測 ＆ ビジュアルバックテスト", layout="wide")
+st.set_page_config(page_title="AI予測 ＆ 資金管理マスター", layout="wide")
 
-st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (スイング・解説機能版)")
-st.write("資金管理、窓開けスリッページ、休場日を厳密に処理したプロ仕様の環境と、**AIの判断理由レポート**を提供します。")
+st.title("📈 株価予測 AIアシスタント (資金管理・ポジションサイジング完全版)")
+st.write("保有期間を自由に設定し、資金管理、窓開けスリッページ、休場日を厳密に処理した**プロ仕様の検証環境**です。")
 
 st.divider()
 
@@ -32,11 +32,21 @@ elif sector_type == "自動車・輸出（S&P500連動）":
 
 ticker_symbol = st.sidebar.text_input("銘柄コード（Yahoo! Finance表記）", value=default_ticker)
 
+# 【修正】一番見やすい位置に保有期間スライダーを移動
+st.sidebar.divider()
+st.sidebar.header("⏱️ トレード期間の設定")
+holding_days = st.sidebar.slider(
+    "保有期間（営業日）を選択", 
+    min_value=1, max_value=20, value=5, 
+    help="1: 1泊2日（翌日決済） / 5: 1週間スイング / 10: 2週間スイング"
+)
+
+# 資金管理の設定
+st.sidebar.divider()
+st.sidebar.header("💰 資金管理＆リスク設定")
 account_capital = st.sidebar.number_input("総運用資金（円）", min_value=100_000, max_value=100_000_000, value=2_000_000, step=100_000)
 risk_percent = st.sidebar.slider("1トレードの許容リスク（1R %）", min_value=0.5, max_value=5.0, value=1.0, step=0.1)
-
-default_sl = 7.0 if sector_type == "半導体ハイテク（SOX連動）" else 4.0
-stop_loss_pct = st.sidebar.slider("損切り幅の目安（%）", min_value=1.0, max_value=15.0, value=default_sl, step=0.5)
+stop_loss_pct = st.sidebar.slider("損切り幅の目安（%）", min_value=1.0, max_value=20.0, value=5.0, step=0.5)
 
 risk_amount_1r = account_capital * (risk_percent / 100.0)
 
@@ -55,7 +65,7 @@ if is_holding:
     entry_date_input = st.sidebar.date_input("買付日（約定日）", value=date.today())
 
 # ==========================================
-# 1. データの取得と前処理（ダミー休日の完全排除）
+# 1. データの取得と前処理
 # ==========================================
 if sector_type == "半導体ハイテク（SOX連動）":
     macro_symbol = "^SOX"
@@ -107,14 +117,14 @@ if is_holding and entry_price_input > 0:
     col_h1.metric("買付株価", f"{entry_price_input:,.1f} 円")
     col_h2.metric("現在株価", f"{current_stock_price:,.1f} 円", f"{current_pnl_pct:+.2f}%")
     col_h3.metric("損切りライン", f"{stop_loss_threshold:,.1f} 円", f"-{stop_loss_pct:.1f}%")
-    col_h4.metric("経過日数", f"{days_held} 営業日目", "目標: 5営業日")
+    col_h4.metric("経過日数", f"{days_held} 営業日目", f"目標: {holding_days}営業日")
     
     if current_stock_price <= stop_loss_threshold:
         st.error(f"🚨 **【損切り発動アラート】損切りライン（{stop_loss_threshold:,.1f} 円）を突破しました！** 本日中に全株売却してください。")
-    elif days_held >= 5:
-        st.success(f"🎯 **【満期手仕舞いアラート】保有5営業日目に到達しました！** 本日の引けで全株売却してください。")
+    elif days_held >= holding_days:
+        st.success(f"🎯 **【満期手仕舞いアラート】目標の{holding_days}営業日目に到達しました！** 本日の引けで全株売却してください。")
     else:
-        st.info(f"⏳ **【ホールド継続】** 満期まであと {5 - days_held} 営業日です。手仕舞い日まで静観してください。")
+        st.info(f"⏳ **【ホールド継続】** 満期まであと {holding_days - days_held} 営業日です。手仕舞い日まで静観してください。")
     st.divider()
 
 # ==========================================
@@ -133,16 +143,18 @@ df['Volume_MA20'] = df['Stock_Volume'].rolling(window=20).mean()
 df['Volume_Ratio'] = df['Stock_Volume'] / df['Volume_MA20']
 df['Macro_Change'] = df['Macro_Close'].pct_change() * 100
 df['USDJPY_Change'] = df['USDJPY_Close'].pct_change() * 100
-df['Next_5d_Return_Pct'] = (df['Stock_Close'].shift(-5) - df['Stock_Close']) / df['Stock_Close']
-df['Target'] = np.where(df['Next_5d_Return_Pct'] > 0, 1, 0)
+
+# スライダーで設定された保有日数に応じた正解ラベルを作成
+df['Next_Return_Pct'] = (df['Stock_Close'].shift(-holding_days) - df['Stock_Close']) / df['Stock_Close']
+df['Target'] = np.where(df['Next_Return_Pct'] > 0, 1, 0)
 
 df = df.dropna(subset=['Stock_Return_1d', 'SMA_50_Dev', 'Macro_Change'])
 features = ['Stock_Return_1d', 'Stock_Return_5d', 'Volume_Ratio', 'BB_Position', 'SMA_50_Dev', 'Macro_Change', 'USDJPY_Change']
 today_row = df.iloc[-1:][features]
-past_df = df.dropna(subset=['Next_5d_Return_Pct']).copy()
+past_df = df.dropna(subset=['Next_Return_Pct']).copy()
 
 # ==========================================
-# 3. 学習（Train）とテスト（Test）の分割
+# 3. 学習（Train）とテスト（Test）の厳密な分割
 # ==========================================
 latest_date = pd.to_datetime(df.index[-1])
 cutoff_date = latest_date - pd.DateOffset(years=backtest_years)
@@ -157,7 +169,7 @@ ai_agent.fit(train_df[features], train_df['Target'])
 chart_df['Signal'] = ai_agent.predict(chart_df[features])
 
 # ==========================================
-# 4. 【厳格修正】リアル・シミュレーションループ
+# 4. リアル・シミュレーションループ
 # ==========================================
 dates = chart_df.index.strftime('%Y-%m-%d').tolist()
 closes = chart_df['Stock_Close'].values
@@ -184,7 +196,7 @@ for i in range(n_days):
         days_held_sim += 1
         stop_loss_price_sim = entry_price_sim * (1.0 - (stop_loss_pct / 100.0))
 
-        # 日中の安値が損切りラインに触れたら即座に損切り決済
+        # 窓開け＆日中安値による厳格な損切り処理
         if lows[i] <= stop_loss_price_sim:
             exit_price = min(stop_loss_price_sim, opens[i])
             trade_ret = (exit_price - entry_price_sim) / entry_price_sim
@@ -212,8 +224,8 @@ for i in range(n_days):
         daily_ret = (closes[i] - closes[i-1]) / closes[i-1]
         daily_strategy_returns[i] = daily_ret * position_weight
         
-        # 5日経過で満期決済
-        if days_held_sim == 5:
+        # 設定した保有日数経過で満期決済
+        if days_held_sim == holding_days:
             exit_price = closes[i]
             trade_ret = (exit_price - entry_price_sim) / entry_price_sim
             trade_records.append({
@@ -228,7 +240,7 @@ for i in range(n_days):
                 '損益率': f"{trade_ret * 100:+.2f}%",
                 '獲得R': trade_ret / r_unit,
                 'status': 'closed',
-                '備考': '✅ 5日満期決済'
+                '備考': f'✅ {holding_days}日満期決済'
             })
             holding = False
             days_held_sim = 0
@@ -262,7 +274,7 @@ if holding:
 
 chart_df['AI戦略（累積資産）'] = (1.0 + pd.Series(daily_strategy_returns, index=chart_df.index)).cumprod() * 100
 
-# 最大ドローダウンの計算（完全復旧）
+# 最大ドローダウンの計算
 equity = chart_df['AI戦略（累積資産）']
 cummax = equity.cummax()
 drawdown = (equity - cummax) / cummax * 100
@@ -345,9 +357,9 @@ st.plotly_chart(fig, use_container_width=True)
 st.divider()
 
 # ==========================================
-# 6. バックテスト結果とグラフの表示（指標完全復旧）
+# 6. バックテスト結果とグラフの表示
 # ==========================================
-st.subheader(f"📊 1週間スイング バックテスト検証成績（{macro_name}連動）")
+st.subheader(f"📊 {holding_days}日間ホールドモデル バックテスト検証成績")
 st.caption(f"※検証期間: {cutoff_str} 〜 現在（直近 {backtest_years} 年間） / 完了したトレードのみ集計")
 
 total_return_ai = (chart_df['AI戦略（累積資産）'].iloc[-1] / chart_df['AI戦略（累積資産）'].iloc[0] - 1.0) * 100
@@ -385,7 +397,7 @@ st.divider()
 # ==========================================
 # 7. AIの頭の中（重要度グラフ）
 # ==========================================
-st.subheader(f"🧠 AIが重視した指標ランキング（{ticker_symbol} 1週間予測）")
+st.subheader(f"🧠 AIが重視した指標ランキング（{ticker_symbol} 特化）")
 importances = ai_agent.feature_importances_
 importance_df = pd.DataFrame(
     {"重要度（%）": importances * 100},
@@ -404,7 +416,7 @@ st.bar_chart(importance_df)
 st.divider()
 
 # ==========================================
-# 8. 【大幅アップグレード】明日の予測と判断根拠レポート
+# 8. 明日の予測と判断根拠レポート
 # ==========================================
 st.subheader(f"🔮 明日の【{ticker_symbol}】予測 ＆ AI判断レポート")
 st.write(f"直近終値: **{current_stock_price:,.1f} 円**")
@@ -419,19 +431,19 @@ if st.button("明日の株価を予測し、判断理由を診断する"):
     val_bb = today_row['BB_Position'].values[0]
     val_sma50 = today_row['SMA_50_Dev'].values[0]
     val_vol = today_row['Volume_Ratio'].values[0]
+    val_ret = today_row['Stock_Return_1d'].values[0]
 
     st.divider()
 
     if prediction == 1:
-        st.success(f"🤖 AIの判定: **「買いサイン点灯（今後1週間で上昇する可能性が高いです）」**")
+        st.success(f"🤖 AIの判定: **「買いサイン点灯（今後{holding_days}日間で上昇する可能性が高いです）」**")
         st.metric("AIの強気度（上昇確率）", f"{up_prob:.1f}%", help="100本の決定木AIのうち何%が上昇に投票したか")
     else:
         st.error(f"🤖 AIの判定: **「見送り（下落または方向感の乏しい相場が予想されます）」**")
         st.metric("AIの弱気度（下落/停滞確率）", f"{100.0 - up_prob:.1f}%")
 
-    st.markdown("### 📋 なぜこの判断になったのか？（AIの中長期・材料チェックシート）")
+    st.markdown("### 📋 なぜこの判断になったのか？（AIの材料チェックシート）")
 
-    # ① 外部指標（マクロ）
     if val_macro >= 0.5:
         macro_text = f"🟢 **追い風（好材料）:** {macro_name}が `{val_macro:+.2f}%` と堅調。外部環境のマネー流入が当セクターの追い風になっています。"
     elif val_macro <= -0.5:
@@ -439,23 +451,20 @@ if st.button("明日の株価を予測し、判断理由を診断する"):
     else:
         macro_text = f"⚪ **中立:** {macro_name}は `{val_macro:+.2f}%` と小動き。外部環境からの大きな影響は少なそうです。"
 
-    # ② 出来高クライマックス
     if val_vol >= 1.5:
-        vol_text = f"🟢 **大口の買い介入:** 出来高が過去20日平均の `{val_vol:.1f}倍` に急増しています。大口投資家や機関投資家の強い資金流入（トレンド発生の兆し）がうかがえます。"
+        vol_text = f"🟢 **大口の買い介入:** 出来高が過去20日平均の `{val_vol:.1f}倍` に急増しています。大口投資家の強い資金流入（トレンド発生の兆し）がうかがえます。"
     elif val_vol <= 0.7:
-        vol_text = f"🔴 **枯散（閑散）:** 出来高が過去20日平均の `{val_vol:.1f}倍` に落ち込んでおり、市場の関心が薄れています。強いトレンドは発生しにくい状態です。"
+        vol_text = f"🔴 **枯散（閑散）:** 出来高が過去20日平均の `{val_vol:.1f}倍` に落ち込んでおり、市場の関心が薄れています。"
     else:
         vol_text = f"⚪ **中立:** 出来高は過去平均の `{val_vol:.1f}倍` と平常運転です。"
 
-    # ③ 50日線（中期トレンド）
     if val_sma50 >= 5.0:
-        sma50_text = f"🟢 **上昇トレンド:** 50日移動平均線を `{val_sma50:+.2f}%` 上回っており、中期的な上昇トレンドが強固です。順張りに適した環境です。"
+        sma50_text = f"🟢 **上昇トレンド:** 50日線を `{val_sma50:+.2f}%` 上回っており、中期的な上昇トレンドが強固です。順張りに適した環境です。"
     elif val_sma50 <= -5.0:
-        sma50_text = f"🔴 **下落トレンド:** 50日移動平均線を `{val_sma50:+.2f}%` 下回っています。中期的に売り圧力が強く、上値が重い展開が予想されます。"
+        sma50_text = f"🔴 **下落トレンド:** 50日線を `{val_sma50:+.2f}%` 下回っています。中期的に売り圧力が強く、上値が重い展開が予想されます。"
     else:
-        sma50_text = f"⚪ **トレンド転換期:** 50日移動平均線との乖離が `{val_sma50:+.2f}%` と小さく、トレンドの転換点（もみ合い）に位置しています。"
+        sma50_text = f"⚪ **トレンド転換期:** 50日線との乖離が `{val_sma50:+.2f}%` と小さく、トレンドの転換点（もみ合い）に位置しています。"
 
-    # ④ ボリンジャーバンド
     if val_bb <= -1.0:
         bb_text = f"🟢 **買い場（自律反発期待）:** ボリンジャーバンドの `{val_bb:+.2f}σ` に位置しています。短期的に売られすぎ水準に達しており、反発のチャンスです。"
     elif val_bb >= 1.5:
@@ -464,7 +473,7 @@ if st.button("明日の株価を予測し、判断理由を診断する"):
         bb_text = f"⚪ **中立:** バンドの `{val_bb:+.2f}σ` と中心線付近におり、過熱感はありません。"
 
     st.info(f"""
-    **【現在のスイング用 4大材料の診断結果】**
+    **【現在の4大材料の診断結果】**
     * **外部環境 ({macro_name}):** {macro_text}
     * **出来高 (資金流入):** {vol_text}
     * **中期トレンド (50日線):** {sma50_text}
@@ -473,8 +482,8 @@ if st.button("明日の株価を予測し、判断理由を診断する"):
 
     if prediction == 1:
         st.markdown(f"""
-        > 💡 **AIの総合結論:** > 上記の材料を総合した結果、**「今後5日間で上値を目指す確率（{up_prob:.1f}%）がリスクを上回る」**とAIが判断しました。  
-        > ルール通り、本日の引けでエントリーし、5日後の引け（または損切りライン）で手仕舞う計画を立ててください。
+        > 💡 **AIの総合結論:** > 上記の材料を総合した結果、**「今後{holding_days}日間で上値を目指す確率（{up_prob:.1f}%）がリスクを上回る」**とAIが判断しました。  
+        > ルール通り、本日の引けでエントリーし、{holding_days}営業日後の引け（または損切りライン）で手仕舞う計画を立ててください。
         """)
 
         stop_loss_price = current_stock_price * (1.0 - (stop_loss_pct / 100.0))
@@ -492,6 +501,6 @@ if st.button("明日の株価を予測し、判断理由を診断する"):
         st.caption(f"・推奨株数: 約 **{exact_shares:.1f}株**（単元なら {unit_shares}株 / 約{total_unit_cost:,.0f}円）")
     else:
         st.markdown(f"""
-        > 💡 **AIの総合結論:** > 現在の環境は、中長期的な向かい風となる材料があり、**「5日間ホールドする勝率や期待値が十分に見込めない」**とAIが判断しました。  
+        > 💡 **AIの総合結論:** > 現在の環境は、向かい風となる材料があり、**「勝率や期待値が十分に見込めない」**とAIが判断しました。  
         > **本日のエントリーは見送りです。** 無理に手を出さず、現金を温存して次の安全なチャンスを待ちましょう。
         """)
