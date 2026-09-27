@@ -35,7 +35,6 @@ df['BB_Position'] = (df['Close'] - df['SMA_20']) / df['STD_20']
 # 3. 正解ラベル（未来の答え合わせ）を作る
 # ==========================================
 # 明日の終値が、今日の終値より高ければ「1（上昇）」、低ければ「0（下落）」とする
-# shift(-1) は「1日未来のデータを見る」というプログラミングのテクニックです
 df['Target'] = np.where(df['Close'].shift(-1) > df['Close'], 1, 0)
 
 # 計算の都合上、データが空っぽの行（最初の20日間や一番最後の日）を削除する
@@ -54,6 +53,32 @@ ai_agent = RandomForestClassifier(n_estimators=100, random_state=42)
 ai_agent.fit(X, y)
 
 st.success("✔️ 過去5年分のボリンジャーバンドと値動きのパターンの学習が完了しました！")
+
+# ==========================================
+# 4.5 AIの頭の中（重視した条件）を覗く
+# ==========================================
+st.subheader("📊 AIはどのデータを重視してルールを作った？")
+
+# AIが各データをどのくらい重視したか（0〜1の割合）を取り出す
+importances = ai_agent.feature_importances_
+
+# グラフで表示しやすいように表にまとめる
+importance_df = pd.DataFrame(
+    {"重要度（%）": importances * 100}, # %表示にするために100をかける
+    index=features
+)
+
+# 重要度が高い順に並べ替える
+importance_df = importance_df.sort_values(by="重要度（%）", ascending=False)
+
+# 表の数値を表示
+st.write("▼ 各データの重要度割合")
+st.dataframe(importance_df)
+
+# Streamlitの機能で棒グラフとして表示
+st.bar_chart(importance_df)
+
+st.divider()
 
 # ==========================================
 # 5. 今日のデータで明日の予測をする
