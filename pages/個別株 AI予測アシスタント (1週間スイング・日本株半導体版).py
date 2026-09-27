@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 # 画面全体の幅を広げて見やすく設定
 st.set_page_config(page_title="AI予測 ＆ ビジュアルバックテスト", layout="wide")
 
-st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (本格チャート版)")
+st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (バグ修正版)")
 st.write("ボリンジャーバンドや移動平均線を表示した**TradingView風ローソク足チャート**で、AIの売買ポイントを検証できます。")
 
 st.divider()
@@ -55,7 +55,7 @@ if is_holding:
     entry_date_input = st.sidebar.date_input("買付日（約定日）", value=date.today())
 
 # ==========================================
-# 1. データの取得と前処理（ローソク足用にOpen/High/Lowも取得）
+# 1. データの取得と前処理
 # ==========================================
 if sector_type == "半導体ハイテク（SOX連動）":
     macro_symbol = "^SOX"
@@ -68,7 +68,6 @@ else:
     macro_name = "米S&P500指数"
 
 try:
-    # 【変更点】ローソク足を描くため、Open, High, Low, Close すべてを取得
     stock_df = yf.Ticker(ticker_symbol).history(period="5y")[['Open', 'High', 'Low', 'Close', 'Volume']]
     stock_data = stock_df.rename(columns={
         'Open': 'Stock_Open', 'High': 'Stock_High', 'Low': 'Stock_Low', 'Close': 'Stock_Close', 'Volume': 'Stock_Volume'
@@ -116,16 +115,15 @@ if is_holding and entry_price_input > 0:
     st.divider()
 
 # ==========================================
-# 2. テクニカル指標の計算（チャート用ライン追加）
+# 2. テクニカル指標の計算
 # ==========================================
 df['Stock_Return_1d'] = df['Stock_Close'].pct_change() * 100
 df['Stock_Return_5d'] = df['Stock_Close'].pct_change(periods=5) * 100
 
-# 移動平均線とボリンジャーバンド
 df['SMA_20'] = df['Stock_Close'].rolling(window=20).mean()
 df['STD_20'] = df['Stock_Close'].rolling(window=20).std()
-df['BB_Upper'] = df['SMA_20'] + (df['STD_20'] * 2)  # チャート用 +2σ
-df['BB_Lower'] = df['SMA_20'] - (df['STD_20'] * 2)  # チャート用 -2σ
+df['BB_Upper'] = df['SMA_20'] + (df['STD_20'] * 2)
+df['BB_Lower'] = df['SMA_20'] - (df['STD_20'] * 2)
 df['BB_Position'] = (df['Stock_Close'] - df['SMA_20']) / df['STD_20']
 
 df['SMA_50'] = df['Stock_Close'].rolling(window=50).mean()
@@ -183,8 +181,8 @@ for i in range(n_days):
             exit_price = closes[i]
             trade_ret = (exit_price - entry_price_sim) / entry_price_sim
             trade_records.append({
-                'raw_entry_date': entry_date_sim,
-                'raw_exit_date': dates[i],
+                'raw_entry_date': pd.to_datetime(entry_date_sim),
+                'raw_exit_date': pd.to_datetime(dates[i]),
                 'raw_entry_price': entry_price_sim,
                 'raw_exit_price': exit_price,
                 'エントリー日': entry_date_sim,
@@ -193,7 +191,7 @@ for i in range(n_days):
                 '売値': f"{exit_price:,.1f}",
                 '損益率': f"{trade_ret * 100:+.2f}%",
                 '獲得R': trade_ret / r_unit,
-                'raw_ret': trade_ret
+                '備考': '5日満期決済'
             })
             holding = False
             days_held_sim = 0
@@ -206,87 +204,84 @@ for i in range(n_days):
             entry_price_sim = closes[i]
             entry_date_sim = dates[i]
 
+# 期間末の強制決済（ここで文字列を足さずに、備考欄に記載するよう修正）
 if holding:
     exit_price = closes[-1]
     trade_ret = (exit_price - entry_price_sim) / entry_price_sim
     trade_records.append({
-        'raw_entry_date': entry_date_sim,
-        'raw_exit_date': dates[-1],
+        'raw_entry_date': pd.to_datetime(entry_date_sim),
+        'raw_exit_date': pd.to_datetime(dates[-1]),
         'raw_entry_price': entry_price_sim,
         'raw_exit_price': exit_price,
         'エントリー日': entry_date_sim,
-        '決済日': dates[-1] + " (期間末)",
+        '決済日': dates[-1],
         '買値': f"{entry_price_sim:,.1f}",
         '売値': f"{exit_price:,.1f}",
         '損益率': f"{trade_ret * 100:+.2f}%",
         '獲得R': trade_ret / r_unit,
-        'raw_ret': trade_ret
+        '備考': '期間末強制決済'
     })
 
-test_df['AI戦略（累積資産）'] = (1.0 + pd.Series(daily_strategy_returns, index=test_df.index)).cumprod() * 100
-benchmark_daily = test_df['Stock_Close'].pct_change().fillna(0.0)
-test_df['バイ＆ホールド'] = (1.0 + benchmark_daily).cumprod() * 100
+# グラフ描画用にインデックスを正確な日付型に変換
+chart_test_df = test_df.copy()
+chart_test_df.index = pd.to_datetime(chart_test_df.index)
+
+chart_test_df['AI戦略（累積資産）'] = (1.0 + pd.Series(daily_strategy_returns, index=chart_test_df.index)).cumprod() * 100
+benchmark_daily = chart_test_df['Stock_Close'].pct_change().fillna(0.0)
+chart_test_df['バイ＆ホールド'] = (1.0 + benchmark_daily).cumprod() * 100
 
 trades_df = pd.DataFrame(trade_records)
 total_trades = len(trades_df)
 
 if total_trades > 0:
-    wins = trades_df[trades_df['raw_ret'] > 0]
-    losses = trades_df[trades_df['raw_ret'] <= 0]
+    wins = trades_df[trades_df['獲得R'] > 0]
+    losses = trades_df[trades_df['獲得R'] <= 0]
     win_rate = (len(wins) / total_trades) * 100
-    profit_factor = (wins['raw_ret'].sum() / abs(losses['raw_ret'].sum())) if abs(losses['raw_ret'].sum()) > 0 else 999.0
+    profit_factor = (wins['獲得R'].sum() / abs(losses['獲得R'].sum())) if abs(losses['獲得R'].sum()) > 0 else 999.0
     total_r = float(trades_df['獲得R'].sum())
     expectancy_r = float(trades_df['獲得R'].mean())
+    trades_df['累積R'] = trades_df['獲得R'].cumsum()
 else:
     win_rate, profit_factor, total_r, expectancy_r = 0, 0, 0, 0
 
 # ==========================================
-# 5. 【TradingView風】チャートの描画
+# 5. 【TradingView風】チャートの描画（日付バグ修正）
 # ==========================================
 st.subheader(f"📈 【{ticker_symbol}】 TradingView風 ビジュアル・バックテスト")
 
 fig = go.Figure()
 
-# ① ローソク足 (Candlestick)
 fig.add_trace(go.Candlestick(
-    x=test_df.index,
-    open=test_df['Stock_Open'],
-    high=test_df['Stock_High'],
-    low=test_df['Stock_Low'],
-    close=test_df['Stock_Close'],
+    x=chart_test_df.index,
+    open=chart_test_df['Stock_Open'],
+    high=chart_test_df['Stock_High'],
+    low=chart_test_df['Stock_Low'],
+    close=chart_test_df['Stock_Close'],
     name='ローソク足',
-    increasing_line_color='#26a69a', # TradingViewでお馴染みの緑
-    decreasing_line_color='#ef5350'  # TradingViewでお馴染みの赤
+    increasing_line_color='#26a69a',
+    decreasing_line_color='#ef5350'
 ))
 
-# ② 20日移動平均線 (SMA 20)
 fig.add_trace(go.Scatter(
-    x=test_df.index, y=test_df['SMA_20'], 
-    mode='lines', name='SMA 20 (中心線)', 
-    line=dict(color='orange', width=1.5)
+    x=chart_test_df.index, y=chart_test_df['SMA_20'], 
+    mode='lines', name='SMA 20 (中心線)', line=dict(color='orange', width=1.5)
 ))
 
-# ③ 50日移動平均線 (SMA 50)
 fig.add_trace(go.Scatter(
-    x=test_df.index, y=test_df['SMA_50'], 
-    mode='lines', name='SMA 50 (中期線)', 
-    line=dict(color='blue', width=1.5)
+    x=chart_test_df.index, y=chart_test_df['SMA_50'], 
+    mode='lines', name='SMA 50 (中期線)', line=dict(color='blue', width=1.5)
 ))
 
-# ④ ボリンジャーバンド (+2σ / -2σ)
 fig.add_trace(go.Scatter(
-    x=test_df.index, y=test_df['BB_Upper'], 
-    mode='lines', name='BB +2σ', 
-    line=dict(color='rgba(173, 216, 230, 0.5)', width=1, dash='dot') # 水色の点線
+    x=chart_test_df.index, y=chart_test_df['BB_Upper'], 
+    mode='lines', name='BB +2σ', line=dict(color='rgba(173, 216, 230, 0.5)', width=1, dash='dot')
 ))
 fig.add_trace(go.Scatter(
-    x=test_df.index, y=test_df['BB_Lower'], 
-    mode='lines', name='BB -2σ', 
-    line=dict(color='rgba(173, 216, 230, 0.5)', width=1, dash='dot'),
-    fill='tonexty', fillcolor='rgba(173, 216, 230, 0.1)' # 上の線との間を薄い水色で塗りつぶし
+    x=chart_test_df.index, y=chart_test_df['BB_Lower'], 
+    mode='lines', name='BB -2σ', line=dict(color='rgba(173, 216, 230, 0.5)', width=1, dash='dot'),
+    fill='tonexty', fillcolor='rgba(173, 216, 230, 0.1)'
 ))
 
-# ⑤ 売買マーカーのプロット（🔵買い / 🔴売り）
 if total_trades > 0:
     fig.add_trace(go.Scatter(
         x=trades_df['raw_entry_date'], y=trades_df['raw_entry_price'],
@@ -299,13 +294,9 @@ if total_trades > 0:
         marker=dict(symbol='triangle-down', size=16, color='red', line=dict(width=1, color='darkred'))
     ))
 
-# ⑥ スマホ・TradingView向けレイアウト設定
 fig.update_layout(
-    xaxis_title=None, yaxis_title="株価 (円)",
-    hovermode="x unified", 
-    height=550, 
-    margin=dict(l=10, r=10, t=50, b=10),
-    xaxis_rangeslider_visible=False, # ローソク足デフォルトの下部スライダーを消してスッキリさせる
+    xaxis_title=None, yaxis_title="株価 (円)", hovermode="x unified", height=550, 
+    margin=dict(l=10, r=10, t=50, b=10), xaxis_rangeslider_visible=False,
     legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
     xaxis=dict(
         rangeselector=dict(
@@ -314,21 +305,17 @@ fig.update_layout(
                 dict(count=6, label="半年", step="month", stepmode="backward"),
                 dict(count=1, label="1年", step="year", stepmode="backward"),
                 dict(step="all", label="全期間")
-            ]),
-            font=dict(size=12)
-        ),
-        type="date"
+            ]), font=dict(size=12)
+        ), type="date"
     )
 )
 
-# アプリ起動時のデフォルト表示を「直近半年」にズームする
-if len(test_df) > 0:
-    last_date = pd.to_datetime(test_df.index[-1])
+if len(chart_test_df) > 0:
+    last_date = chart_test_df.index[-1]
     six_months_ago = last_date - pd.DateOffset(months=6)
-    fig.update_xaxes(range=[six_months_ago.strftime('%Y-%m-%d'), last_date.strftime('%Y-%m-%d')])
+    fig.update_xaxes(range=[six_months_ago, last_date])
 
 st.plotly_chart(fig, use_container_width=True)
-
 st.divider()
 
 # ==========================================
@@ -336,15 +323,25 @@ st.divider()
 # ==========================================
 st.subheader(f"📊 バックテスト検証成績（{macro_name}連動）")
 col1, col2, col3, col4 = st.columns(4)
-total_return = (test_df['AI戦略（累積資産）'].iloc[-1] / test_df['AI戦略（累積資産）'].iloc[0] - 1.0) * 100
+total_return = (chart_test_df['AI戦略（累積資産）'].iloc[-1] / chart_test_df['AI戦略（累積資産）'].iloc[0] - 1.0) * 100
 col1.metric("総収益率", f"{total_return:+.1f}%")
 col2.metric("勝率", f"{win_rate:.1f}%", f"計{total_trades}回")
 col3.metric("プロフィットファクター", f"{profit_factor:.2f}")
 col4.metric("期待値（1回平均R）", f"{expectancy_r:+.2f} R")
 
 if total_trades > 0:
+    st.write("▼ **累積R推移グラフ**")
+    # 【バグ修正】横軸を確実に日付型にする
+    r_chart_df = trades_df.copy()
+    r_chart_df['決済日'] = pd.to_datetime(r_chart_df['決済日'])
+    r_chart_df = r_chart_df.set_index('決済日')[['累積R']]
+    st.line_chart(r_chart_df)
+    
+    st.write("▼ **資産推移グラフ（初期資金 100 からの推移）**")
+    st.line_chart(chart_test_df[['AI戦略（累積資産）', 'バイ＆ホールド']])
+
     with st.expander("📝 全トレード履歴の明細ログを表示（タップで展開）"):
-        display_cols = ['エントリー日', '決済日', '買値', '売値', '損益率', '獲得R']
+        display_cols = ['エントリー日', '決済日', '買値', '売値', '損益率', '獲得R', '備考']
         st.dataframe(trades_df[display_cols].sort_index(ascending=False), use_container_width=True)
 
 # ==========================================
