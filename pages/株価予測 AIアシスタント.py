@@ -16,15 +16,19 @@ st.subheader("1. AIが過去のデータ（株価・金利・為替）を勉強�
 
 # ① 日経平均株価（^N225）
 nikkei = yf.Ticker("^N225").history(period="5y")[['Close']].rename(columns={'Close': 'Nikkei_Close'})
-
 # ② 米国10年債利回り（^TNX）
 us10y = yf.Ticker("^TNX").history(period="5y")[['Close']].rename(columns={'Close': 'US10Y'})
-
 # ③ ドル/円レート（JPY=X）
 usdjpy = yf.Ticker("JPY=X").history(period="5y")[['Close']].rename(columns={'Close': 'USDJPY'})
 
-# 3つのデータを日付でキレイにガッチャンコ（結合）する
-df = pd.concat([nikkei, us10y, usdjpy], axis=1).dropna()
+# 【エラー修正】時差（タイムゾーン）によるズレをなくすため、日付（YYYY-MM-DD）の形に統一する
+nikkei.index = nikkei.index.strftime('%Y-%m-%d')
+us10y.index = us10y.index.strftime('%Y-%m-%d')
+usdjpy.index = usdjpy.index.strftime('%Y-%m-%d')
+
+# 3つのデータを日付でガッチャンコする
+# 日米の祝日の違いでデータが抜けている日は、前日のデータで穴埋め（ffill）する
+df = pd.concat([nikkei, us10y, usdjpy], axis=1).ffill().dropna()
 
 # ==========================================
 # 2. AIの判断材料（テクニカル＆マクロ指標）を計算する
