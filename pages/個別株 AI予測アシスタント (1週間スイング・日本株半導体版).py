@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 # 画面全体の幅を広げて見やすく設定
 st.set_page_config(page_title="AI予測 ＆ ビジュアルバックテスト", layout="wide")
 
-st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (チャート厳格版)")
+st.title("🌊 個別株 AI予測 ＆ 手仕舞いアシスタント (完全チャート版)")
 st.write("ボリンジャーバンドや移動平均線を表示した**TradingView風ローソク足チャート**で、AIの売買ポイントを検証できます。")
 
 st.divider()
@@ -41,15 +41,11 @@ stop_loss_pct = st.sidebar.slider("損切り幅の目安（%）", min_value=1.0,
 risk_amount_1r = account_capital * (risk_percent / 100.0)
 
 # ------------------------------------------
-# 【新規追加】バックテスト検証期間の指定
+# バックテスト検証期間の指定
 # ------------------------------------------
 st.sidebar.divider()
 st.sidebar.header("📊 バックテスト設定")
-backtest_years = st.sidebar.slider(
-    "検証期間（直近の年数）", 
-    min_value=1, max_value=3, value=1, 
-    help="チャートと成績表に表示し、AIの実力をテストする期間です。これより古いデータはAIの「学習用」としてのみ裏側で使用されます。"
-)
+backtest_years = st.sidebar.slider("検証期間（直近の年数）", min_value=1, max_value=3, value=1)
 
 # ------------------------------------------
 # 保有ポジション管理（アシスト機能）
@@ -148,33 +144,33 @@ df['USDJPY_Change'] = df['USDJPY_Close'].pct_change() * 100
 
 df['Next_5d_Return_Pct'] = (df['Stock_Close'].shift(-5) - df['Stock_Close']) / df['Stock_Close']
 df['Target'] = np.where(df['Next_5d_Return_Pct'] > 0, 1, 0)
-df = df.dropna()
+df = df.dropna(subset=['Stock_Return_1d', 'SMA_50_Dev', 'Macro_Change']) # 正解が無い直近5日も残す
 
 features = ['Stock_Return_1d', 'Stock_Return_5d', 'Volume_Ratio', 'BB_Position', 'SMA_50_Dev', 'Macro_Change', 'USDJPY_Change']
 today_row = df.iloc[-1:][features]
-past_df = df.dropna(subset=['Next_5d_Return_Pct']).copy()
+past_df = df.dropna(subset=['Next_5d_Return_Pct']).copy() # 正解があるデータのみ抽出
 
 # ==========================================
 # 3. 学習（Train）とテスト（Test）の厳密な分割
 # ==========================================
-# AIの学習用（カンペ）と、テスト用（本番）を日付で明確に分割
 past_df_dates = pd.to_datetime(past_df.index)
-latest_date = past_df_dates.max()
+latest_date = pd.to_datetime(df.index[-1]) # チャート用は「最新日」を基準にする
 cutoff_date = latest_date - pd.DateOffset(years=backtest_years)
 cutoff_str = cutoff_date.strftime('%Y-%m-%d')
 
-# 指定した年数より「古い」データはAIの学習に使用
 train_df = past_df[past_df.index < cutoff_str].copy()
-
-# 指定した年数より「新しい」データのみをバックテスト（チャート表示）に使用
 test_df = past_df[past_df.index >= cutoff_str].copy()
+
+# 【修正1】チャート描画用データフレームは「最新日」まで含める
+chart_df = df[df.index >= cutoff_str].copy()
+chart_df.index = pd.to_datetime(chart_df.index)
 
 ai_agent = RandomForestClassifier(n_estimators=100, random_state=42)
 ai_agent.fit(train_df[features], train_df['Target'])
 test_df['Signal'] = ai_agent.predict(test_df[features])
 
 # ==========================================
-# 4. 単一ポジションシミュレーション（テスト期間のみ）
+# 4. 単一ポジションシミュレーション
 # ==========================================
 dates = test_df.index.tolist()
 closes = test_df['Stock_Close'].values
@@ -187,13 +183,11 @@ days_held_sim = 0
 entry_price_sim = 0.0
 entry_date_sim = ""
 
-daily_strategy_returns = np.zeros(n_days)
+daily_strategy_returns = np.zeros(len(chart_df))
 trade_records = []
 
 for i in range(n_days):
     if holding:
-        daily_ret = (closes[i] - closes[i-1]) / closes[i-1]
-        daily_strategy_returns[i] = daily_ret
         days_held_sim += 1
         
         if days_held_sim == 5:
@@ -209,8 +203,7 @@ for i in range(n_days):
                 '買値': f"{entry_price_sim:,.1f}",
                 '売値': f"{exit_price:,.1f}",
                 '損益率': f"{trade_ret * 100:+.2f}%",
-                '獲得R': trade_ret / r_unit,
-                '備考': '5日満期決済'
+                '獲得R': trade_ret / r_unit
             })
             holding = False
             days_held_sim = 0
@@ -223,29 +216,7 @@ for i in range(n_days):
             entry_price_sim = closes[i]
             entry_date_sim = dates[i]
 
-if holding:
-    exit_price = closes[-1]
-    trade_ret = (exit_price - entry_price_sim) / entry_price_sim
-    trade_records.append({
-        'raw_entry_date': pd.to_datetime(entry_date_sim),
-        'raw_exit_date': pd.to_datetime(dates[-1]),
-        'raw_entry_price': entry_price_sim,
-        'raw_exit_price': exit_price,
-        'エントリー日': entry_date_sim,
-        '決済日': dates[-1] + " (期間末)",
-        '買値': f"{entry_price_sim:,.1f}",
-        '売値': f"{exit_price:,.1f}",
-        '損益率': f"{trade_ret * 100:+.2f}%",
-        '獲得R': trade_ret / r_unit,
-        '備考': '期間末強制決済'
-    })
-
-chart_test_df = test_df.copy()
-chart_test_df.index = pd.to_datetime(chart_test_df.index)
-
-chart_test_df['AI戦略（累積資産）'] = (1.0 + pd.Series(daily_strategy_returns, index=chart_test_df.index)).cumprod() * 100
-benchmark_daily = chart_test_df['Stock_Close'].pct_change().fillna(0.0)
-chart_test_df['バイ＆ホールド'] = (1.0 + benchmark_daily).cumprod() * 100
+# 【修正2】期間末の不自然な「強制決済」を廃止（未決済分は無視する）
 
 trades_df = pd.DataFrame(trade_records)
 total_trades = len(trades_df)
@@ -262,39 +233,39 @@ else:
     win_rate, profit_factor, total_r, expectancy_r = 0, 0, 0, 0
 
 # ==========================================
-# 5. 【TradingView風】チャートの描画（バックテスト期間のみ完全ロック）
+# 5. 【TradingView風】チャートの描画（右端バグ修正）
 # ==========================================
 st.subheader(f"📈 【{ticker_symbol}】 TradingView風 ビジュアル・バックテスト")
 
 fig = go.Figure()
 
 fig.add_trace(go.Candlestick(
-    x=chart_test_df.index,
-    open=chart_test_df['Stock_Open'],
-    high=chart_test_df['Stock_High'],
-    low=chart_test_df['Stock_Low'],
-    close=chart_test_df['Stock_Close'],
+    x=chart_df.index,
+    open=chart_df['Stock_Open'],
+    high=chart_df['Stock_High'],
+    low=chart_df['Stock_Low'],
+    close=chart_df['Stock_Close'],
     name='ローソク足',
     increasing_line_color='#26a69a',
     decreasing_line_color='#ef5350'
 ))
 
 fig.add_trace(go.Scatter(
-    x=chart_test_df.index, y=chart_test_df['SMA_20'], 
+    x=chart_df.index, y=chart_df['SMA_20'], 
     mode='lines', name='SMA 20 (中心線)', line=dict(color='orange', width=1.5)
 ))
 
 fig.add_trace(go.Scatter(
-    x=chart_test_df.index, y=chart_test_df['SMA_50'], 
+    x=chart_df.index, y=chart_df['SMA_50'], 
     mode='lines', name='SMA 50 (中期線)', line=dict(color='blue', width=1.5)
 ))
 
 fig.add_trace(go.Scatter(
-    x=chart_test_df.index, y=chart_test_df['BB_Upper'], 
+    x=chart_df.index, y=chart_df['BB_Upper'], 
     mode='lines', name='BB +2σ', line=dict(color='rgba(173, 216, 230, 0.5)', width=1, dash='dot')
 ))
 fig.add_trace(go.Scatter(
-    x=chart_test_df.index, y=chart_test_df['BB_Lower'], 
+    x=chart_df.index, y=chart_df['BB_Lower'], 
     mode='lines', name='BB -2σ', line=dict(color='rgba(173, 216, 230, 0.5)', width=1, dash='dot'),
     fill='tonexty', fillcolor='rgba(173, 216, 230, 0.1)'
 ))
@@ -311,11 +282,15 @@ if total_trades > 0:
         marker=dict(symbol='triangle-down', size=16, color='red', line=dict(width=1, color='darkred'))
     ))
 
-# 過去の余計なデータにズームアウトできないよう、スライダーやボタンを削除してスッキリ固定
 fig.update_layout(
     xaxis_title=None, yaxis_title="株価 (円)", hovermode="x unified", height=550, 
     margin=dict(l=10, r=10, t=50, b=10), xaxis_rangeslider_visible=False,
-    legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5)
+    legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+    # 【修正3】土日の空白（ギャップ）を削除して詰める
+    xaxis=dict(
+        rangebreaks=[dict(bounds=["sat", "mon"])],
+        type="date"
+    )
 )
 
 st.plotly_chart(fig, use_container_width=True)
@@ -328,24 +303,20 @@ st.subheader(f"📊 バックテスト検証成績（{macro_name}連動）")
 st.caption(f"※検証期間: {cutoff_str} 〜 現在（直近 {backtest_years} 年間）")
 
 col1, col2, col3, col4 = st.columns(4)
-total_return = (chart_test_df['AI戦略（累積資産）'].iloc[-1] / chart_test_df['AI戦略（累積資産）'].iloc[0] - 1.0) * 100
-col1.metric("総収益率", f"{total_return:+.1f}%")
-col2.metric("勝率", f"{win_rate:.1f}%", f"計{total_trades}回")
-col3.metric("プロフィットファクター", f"{profit_factor:.2f}")
+col1.metric("勝率", f"{win_rate:.1f}%", f"計{total_trades}回")
+col2.metric("プロフィットファクター", f"{profit_factor:.2f}")
+col3.metric("累積獲得R (Total R)", f"{total_r:+.1f} R")
 col4.metric("期待値（1回平均R）", f"{expectancy_r:+.2f} R")
 
 if total_trades > 0:
     st.write("▼ **累積R推移グラフ**")
     r_chart_df = trades_df.copy()
-    r_chart_df['決済日'] = pd.to_datetime(r_chart_df['決済日'].str.replace(' (期間末)', '', regex=False))
+    r_chart_df['決済日'] = pd.to_datetime(r_chart_df['決済日'])
     r_chart_df = r_chart_df.set_index('決済日')[['累積R']]
     st.line_chart(r_chart_df)
-    
-    st.write("▼ **資産推移グラフ（初期資金 100 からの推移）**")
-    st.line_chart(chart_test_df[['AI戦略（累積資産）', 'バイ＆ホールド']])
 
     with st.expander("📝 全トレード履歴の明細ログを表示（タップで展開）"):
-        display_cols = ['エントリー日', '決済日', '買値', '売値', '損益率', '獲得R', '備考']
+        display_cols = ['エントリー日', '決済日', '買値', '売値', '損益率', '獲得R']
         st.dataframe(trades_df[display_cols].sort_index(ascending=False), use_container_width=True)
 
 # ==========================================
