@@ -349,7 +349,7 @@ def run_gemini_weather_ai(summary_text: str, api_key: str) -> dict:
 
 
 # ==========================================
-# 5. チャート描画（4段の市場天気図）
+# 5. チャート描画（4段の市場天気図・欠損指標にも安全対応）
 # ==========================================
 def build_weather_chart(data: dict) -> go.Figure:
     fig = make_subplots(
@@ -366,51 +366,64 @@ def build_weather_chart(data: dict) -> go.Figure:
         ),
     )
 
-    def norm100(df_sub):
-        s = df_sub["Close"].tail(90)
-        return (s / s.iloc[0]) * 100.0
+    def norm100(item: dict) -> pd.Series | None:
+        if not item or "df" not in item:
+            return None
+        df_sub = item["df"]
+        if "Close" not in df_sub.columns:
+            return None
+        s = df_sub["Close"].dropna().tail(90)
+        if len(s) < 2 or float(s.iloc[0]) == 0.0:
+            return None
+        return (s / float(s.iloc[0])) * 100.0
 
-    if "^GSPC" in data:
-        s_sp = norm100(data["^GSPC"])
+    s_sp = norm100(data.get("^GSPC"))
+    if s_sp is not None:
         fig.add_trace(
             go.Scatter(x=s_sp.index, y=s_sp.values, name="S&P 500", line=dict(color="#2563eb", width=2.2)),
             row=1, col=1,
         )
-    if "^DJI" in data:
-        s_dj = norm100(data["^DJI"])
+
+    s_dj = norm100(data.get("^DJI"))
+    if s_dj is not None:
         fig.add_trace(
             go.Scatter(x=s_dj.index, y=s_dj.values, name="NYダウ", line=dict(color="#059669", width=2.2)),
             row=1, col=1,
         )
 
-    if "^NDX" in data:
-        s_ndx = norm100(data["^NDX"])
+    s_ndx = norm100(data.get("^NDX"))
+    if s_ndx is not None:
         fig.add_trace(
             go.Scatter(x=s_ndx.index, y=s_ndx.values, name="ナスダック100(ハイテク)", line=dict(color="#7c3aed", width=2.0)),
             row=2, col=1,
         )
-    if "XLP" in data:
-        s_xlp = norm100(data["XLP"])
+
+    s_xlp = norm100(data.get("XLP"))
+    if s_xlp is not None:
         fig.add_trace(
             go.Scatter(x=s_xlp.index, y=s_xlp.values, name="生活必需品(XLP)", line=dict(color="#f59e0b", width=2.2)),
             row=2, col=1,
         )
 
-    if "^VIX" in data:
-        vix_s = data["^VIX"]["df"]["Close"].tail(90)
-        fig.add_trace(
-            go.Scatter(x=vix_s.index, y=vix_s.values, name="VIX恐怖指数", line=dict(color="#ef4444", width=2.2)),
-            row=3, col=1,
-        )
-        fig.add_hline(y=20.0, line=dict(color="#f59e0b", width=1.1, dash="dot"), annotation_text="20(警戒)", row=3, col=1)
-        fig.add_hline(y=25.0, line=dict(color="#991b1b", width=1.1, dash="dash"), annotation_text="25(荒天)", row=3, col=1)
+    vix_item = data.get("^VIX")
+    if vix_item and "df" in vix_item and "Close" in vix_item["df"].columns:
+        vix_s = vix_item["df"]["Close"].dropna().tail(90)
+        if not vix_s.empty:
+            fig.add_trace(
+                go.Scatter(x=vix_s.index, y=vix_s.values, name="VIX恐怖指数", line=dict(color="#ef4444", width=2.2)),
+                row=3, col=1,
+            )
+    fig.add_hline(y=20.0, line=dict(color="#f59e0b", width=1.1, dash="dot"), annotation_text="20(警戒)", row=3, col=1)
+    fig.add_hline(y=25.0, line=dict(color="#991b1b", width=1.1, dash="dash"), annotation_text="25(荒天)", row=3, col=1)
 
-    if "^TNX" in data:
-        tnx_s = data["^TNX"]["df"]["Close"].tail(90)
-        fig.add_trace(
-            go.Scatter(x=tnx_s.index, y=tnx_s.values, name="米10年債利回り(%)", line=dict(color="#0284c7", width=2.0)),
-            row=4, col=1,
-        )
+    tnx_item = data.get("^TNX")
+    if tnx_item and "df" in tnx_item and "Close" in tnx_item["df"].columns:
+        tnx_s = tnx_item["df"]["Close"].dropna().tail(90)
+        if not tnx_s.empty:
+            fig.add_trace(
+                go.Scatter(x=tnx_s.index, y=tnx_s.values, name="米10年債利回り(%)", line=dict(color="#0284c7", width=2.0)),
+                row=4, col=1,
+            )
 
     fig.update_layout(
         height=880,
@@ -487,6 +500,8 @@ for idx, sym in enumerate(top_keys):
             delta=f"1日 {d['chg_1d']:+.2f}% / 5日 {d['chg_5d']:+.2f}% ({sma_tag})",
             delta_color="inverse" if sym == "^VIX" else "normal",
         )
+    else:
+        cols[idx].metric(label=WEATHER_TICKERS[sym]["name"].split("（")[0], value="取得待ち", delta="データ未取得")
 
 cols2 = st.columns(3)
 sub_keys = ["^TNX", "XLP", "XLK"]
@@ -500,6 +515,8 @@ for idx, sym in enumerate(sub_keys):
             delta=f"1日 {d['chg_1d']:+.2f}% / 5日 {d['chg_5d']:+.2f}% ({sma_tag})",
             delta_color="inverse" if sym == "^TNX" else "normal",
         )
+    else:
+        cols2[idx].metric(label=WEATHER_TICKERS[sym]["name"].split("（")[0], value="取得待ち", delta="データ未取得")
 
 st.divider()
 
