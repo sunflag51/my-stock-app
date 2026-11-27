@@ -125,17 +125,12 @@ def analyze_high_zone_and_distribution(
     obv_norm_series: pd.Series,
     cfg: CheckerConfig,
 ) -> Dict:
-    """
-    高値圏圧縮（スクイーズ）と本格売り抜け（ディストリビューション）を切り分けて判定する。
-    - 出来高を伴わない単発の上ヒゲや含み益の自然な消化は「注意メモ（軽度）」にとどめ、即DANGERにしない。
-    - 「直近高値圏での出来高急増陰線」＋「CMF/OBV悪化」など複合一致した場合のみ本格DANGERとする。
-    """
+    """高値圏圧縮（スクイーズ）と本格売り抜け（ディストリビューション）を切り分けて判定する。"""
     last_close = float(df["Close"].iloc[-1])
     box_high = float(box_df["High"].max())
     dist_from_high_pct = ((box_high - last_close) / max(box_high, 1e-9)) * 100.0
     in_high_zone = dist_from_high_pct <= cfg.high_zone_pct
 
-    # 直近5日の値幅（高値圏圧縮・エネルギー溜め判定）
     recent_5 = df.iloc[-5:]
     range_5d_pct = ((float(recent_5["High"].max()) - float(recent_5["Low"].min())) / max(last_close, 1e-9)) * 100.0
     vol_20_avg = float(df["Volume"].rolling(20, min_periods=5).mean().iloc[-1])
@@ -144,7 +139,6 @@ def analyze_high_zone_and_distribution(
 
     is_high_squeeze = in_high_zone and (range_5d_pct <= cfg.squeeze_range_pct) and vol_contracting
 
-    # 直近10営業日での「高値圏 × 出来高急増 × 長い上ヒゲ陰線（または大陰線）」カウント
     recent_10 = df.iloc[-10:].copy()
     recent_10["vol_ma20"] = df["Volume"].rolling(20, min_periods=5).mean().iloc[-10:]
 
@@ -171,7 +165,6 @@ def analyze_high_zone_and_distribution(
         elif is_long_upper_wick:
             light_upper_wicks += 1
 
-    # 需給ダイバージェンス（高値圏維持なのにCMFまたはOBVが明確悪化）
     cmf_now = float(cmf_series.iloc[-1])
     cmf_prev = float(cmf_series.iloc[-10]) if len(cmf_series) >= 10 else cmf_now
     cmf_deteriorating = (cmf_now < -0.05) or (in_high_zone and (cmf_now - cmf_prev) < -0.12 and cmf_now < 0.02)
@@ -183,7 +176,6 @@ def analyze_high_zone_and_distribution(
         if in_high_zone and (last_obv_max < first_obv_max - 18.0):
             obv_deteriorating = True
 
-    # 複合判定：本格的な売り抜け（DANGER） vs 軽度の利確消化メモ（WAIT/許容）
     danger_factors: List[str] = []
     minor_notes: List[str] = []
 
@@ -202,7 +194,6 @@ def analyze_high_zone_and_distribution(
     if obv_deteriorating:
         danger_factors.append("高値圏維持に対してOBV正規化ピークが明確に切り下がり（大口売り抜け示唆）")
 
-    # 「出来高急増の上ヒゲ陰線」と「需給悪化（CMF/OBV）」の複合、または出来高急増上ヒゲ陰線が閾値以上で本格DANGER
     is_confirmed_danger = (
         (heavy_dist_bars >= cfg.upper_wick_count_th)
         or (heavy_dist_bars >= 1 and (cmf_deteriorating or obv_deteriorating))
@@ -307,12 +298,10 @@ def evaluate_pullback(
     sma20_rising = float(sma20.iloc[-1]) > float(sma20.iloc[-5])
     above_sma20 = last_close >= last_sma20
 
-    # 谷線との乖離率（%）
     dist_valley_pct = ((last_close - valley_line) / max(valley_line, 1e-9)) * 100.0
     stop_loss_price = valley_line * (1.0 - cfg.stop_buffer_pct / 100.0)
     risk_pct = ((stop_loss_price - last_close) / max(last_close, 1e-9)) * 100.0
 
-    # 上値余地（現在値超の出来高比率のみ保持）
     above_vol_ratio = float(
         (box_df.loc[box_df["Close"] > last_close, "Volume"].sum() / max(box_df["Volume"].sum(), 1)) * 100.0
     )
@@ -331,7 +320,6 @@ def evaluate_pullback(
         rebound_min_pct=cfg.rs_rebound_min_pct,
     )
 
-    # --- 1. シグナル判定（ブレーキ役：DANGER / WAIT / GO） ---
     in_mid_air = dist_valley_pct > cfg.valley_tolerance_pct
     broken_valley = last_close < valley_line
 
@@ -357,7 +345,6 @@ def evaluate_pullback(
         signal = "🟢 GO"
         signal_reason = "第2ステージ・谷線引きつけ・反発サインが揃い、本格売り抜け警戒なし"
 
-    # --- 2. 押し目スコア算出（魅力度・優先順位付け 0〜100点） ---
     score = 0
     if is_stage2:
         score += 25
@@ -415,66 +402,57 @@ def evaluate_pullback(
 def build_gemini_prompt(r: Dict) -> str:
     """Gemini相談用の整形済みテキストを生成"""
     da = r["dist_analysis"]
-    danger_lines = "
-".join([f"  - [本格警戒] {w}" for w in da["danger_factors"]]) if da["danger_factors"] else "  - なし"
-    note_lines = "
-".join([f"  - [経過観察メモ] {n}" for n in da["minor_notes"]]) if da["minor_notes"] else "  - なし"
-
-    return f"""【チェッカー分析結果共有：{r['ticker']}】
-基準日：{r['last_date']}（ボックス期間：{r['box_period']}）
-総合判定：{r['signal']}（{r['signal_reason']}） ｜ 押し目スコア：{r['score']} / 100
-ステージ：📈 {r['stage_label']}
-・最新終値：{r['last_close']:.2f}
-・20日線 (SMA20)：{r['sma20']:.2f}（{"上向き" if r['sma20_rising'] else "横ばい・下向き"}）
-・自動谷線（支持線）：{r['valley_line']:.2f}（乖離 {r['dist_valley_pct']:+.2f}%）
-・自動山線（抵抗線）：{r['mountain_line']:.2f}（高値からの距離 -{da['dist_from_high_pct']:.2f}%）
-・逆指値目安（谷線下）：{r['stop_loss_price']:.2f}（想定損切り幅 {r['risk_pct']:+.2f}%）
-・需給指標：CMF 20 = {r['cmf']:+.3f} ／ MFI 14 = {r['mfi']:.1f} ／ OBV正規化(0-100) = {r['obv_norm']:.1f}
-・反発サイン：{r['rebound_detail']}
-・RSライン（補助）：{r['rs_status']}（対 {r['bench_ticker']}）
-・上値出来高比率：現在値超 {r['above_vol_ratio']:.1f}%（POC {r['poc_price']:.2f}）
-【高値圏圧縮・売り抜け判定】
-・高値圏圧縮状態：{"はい（直近5日値幅 " + f"{da['range_5d_pct']:.1f}%" + "）" if da['is_high_squeeze'] else "いいえ"}
-・本格売り抜け警戒（DANGER要因）：
-{danger_lines}
-・含み益消化・軽度メモ：
-{note_lines}
-→ 第2ステージの押し目ルール（および高値圏圧縮・売り抜け切り分け）に照らして、今エントリーすべきか・待つべきか、またどの価格帯・条件を待つべきかアドバイスをお願いします。"""
+    nl = chr(10)
+    danger_lines = nl.join([f"  - [本格警戒] {w}" for w in da["danger_factors"]]) if da["danger_factors"] else "  - なし"
+    note_lines = nl.join([f"  - [経過観察メモ] {n}" for n in da["minor_notes"]]) if da["minor_notes"] else "  - なし"
+    squeeze_text = f"はい（直近5日値幅 {da['range_5d_pct']:.1f}%）" if da["is_high_squeeze"] else "いいえ"
+    sma20_dir = "上向き" if r["sma20_rising"] else "横ばい・下向き"
+    lines = [
+        f"【チェッカー分析結果共有：{r['ticker']}】",
+        f"基準日：{r['last_date']}（ボックス期間：{r['box_period']}）",
+        f"総合判定：{r['signal']}（{r['signal_reason']}） ｜ 押し目スコア：{r['score']} / 100",
+        f"ステージ：📈 {r['stage_label']}",
+        f"・最新終値：{r['last_close']:.2f}",
+        f"・20日線 (SMA20)：{r['sma20']:.2f}（{sma20_dir}）",
+        f"・自動谷線（支持線）：{r['valley_line']:.2f}（乖離 {r['dist_valley_pct']:+.2f}%）",
+        f"・自動山線（抵抗線）：{r['mountain_line']:.2f}（高値からの距離 -{da['dist_from_high_pct']:.2f}%）",
+        f"・逆指値目安（谷線下）：{r['stop_loss_price']:.2f}（想定損切り幅 {r['risk_pct']:+.2f}%）",
+        f"・需給指標：CMF 20 = {r['cmf']:+.3f} ／ MFI 14 = {r['mfi']:.1f} ／ OBV正規化(0-100) = {r['obv_norm']:.1f}",
+        f"・反発サイン：{r['rebound_detail']}",
+        f"・RSライン（補助）：{r['rs_status']}（対 {r['bench_ticker']}）",
+        f"・上値出来高比率：現在値超 {r['above_vol_ratio']:.1f}%（POC {r['poc_price']:.2f}）",
+        "【高値圏圧縮・売り抜け判定】",
+        f"・高値圏圧縮状態：{squeeze_text}",
+        "・本格売り抜け警戒（DANGER要因）：",
+        danger_lines,
+        "・含み益消化・軽度メモ：",
+        note_lines,
+        "→ 第2ステージの押し目ルール（および高値圏圧縮・売り抜け切り分け）に照らして、今エントリーすべきか・待つべきか、またどの価格帯・条件を待つべきかアドバイスをお願いします。",
+    ]
+    return nl.join(lines)
 
 
 def render_copy_button(text_to_copy: str, button_id: str) -> None:
     """ワンクリックでクリップボードにコピーできるHTMLボタンを描画"""
     escaped_text = json.dumps(text_to_copy)
-    html_code = f"""
-    <div style="margin: 6px 0 12px 0;">
-        <button id="btn_{button_id}" onclick="copyText_{button_id}()" style="
-            background-color: #1f77b4;
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.15);
-        ">📋 Gemini相談用テキストをコピー</button>
-        <span id="msg_{button_id}" style="margin-left: 10px; font-size: 13px; color: #2e7d32; font-weight: 600;"></span>
-    </div>
-    <script>
-    function copyText_{button_id}() {{
-        const text = {escaped_text};
-        navigator.clipboard.writeText(text).then(function() {{
-            document.getElementById("msg_{button_id}").innerText = "✅ コピーしました！そのままGeminiに貼り付けて相談できます";
-            setTimeout(function() {{
-                document.getElementById("msg_{button_id}").innerText = "";
-            }}, 4000);
-        }}, function(err) {{
-            document.getElementById("msg_{button_id}").innerText = "⚠️ コピーに失敗しました（下のテキスト枠から手動コピーしてください）";
-        }});
-    }}
-    </script>
-    """
-    components.html(html_code, height=48)
+    nl = chr(10)
+    html_lines = [
+        '<div style="margin: 6px 0 12px 0;">',
+        f'  <button id="btn_{button_id}" onclick="copyText_{button_id}()" style="background-color: #1f77b4; color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 14px; font-weight: 600; cursor: pointer;">📋 Gemini相談用テキストをコピー</button>',
+        f'  <span id="msg_{button_id}" style="margin-left: 10px; font-size: 13px; color: #2e7d32; font-weight: 600;"></span>',
+        '</div>',
+        '<script>',
+        f'function copyText_{button_id}() {{',
+        f'  const text = {escaped_text};',
+        '  navigator.clipboard.writeText(text).then(function() {',
+        f'    document.getElementById("msg_{button_id}").innerText = "✅ コピーしました！そのままGeminiに貼り付けて相談できます";',
+        '  }, function(err) {',
+        f'    document.getElementById("msg_{button_id}").innerText = "⚠️ コピーに失敗しました（下のテキスト枠から手動コピーしてください）";',
+        '  });',
+        '}}',
+        '</script>',
+    ]
+    components.html(nl.join(html_lines), height=48)
 
 
 def main() -> None:
@@ -525,7 +503,6 @@ def main() -> None:
     if not results:
         return
 
-    # 概要サマリーテーブル
     summary_rows = []
     for r in sorted(results, key=lambda x: x["score"], reverse=True):
         da = r["dist_analysis"]
@@ -545,13 +522,11 @@ def main() -> None:
     st.subheader("監視リスト比較（スコア順）")
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
 
-    # 銘柄別詳細
     for idx, r in enumerate(results):
         st.divider()
         st.subheader(f"{r['ticker']}（基準日: {r['last_date']}）— {r['signal']} ｜ スコア: {r['score']} / 100")
         st.write(f"**判定理由：** {r['signal_reason']}")
 
-        # Gemini相談用ワンクリックコピーボタン＆プレビュー
         gemini_text = build_gemini_prompt(r)
         render_copy_button(gemini_text, button_id=f"{r['ticker']}_{idx}")
         with st.expander("📋 Gemini相談用テキストを確認・手動コピーする"):
